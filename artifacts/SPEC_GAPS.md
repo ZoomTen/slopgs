@@ -1325,3 +1325,120 @@ Expression=127 extrapolates from the CC7 controls. Probe 37 has no measured
 full-scale control to pin it, and `probes/07_pan_volume.mid` rules out level
 compression (the reference-vs-render offset there is flat to 0.15 dB from CC7=16
 to CC7=127). Worth one more case if Expression's reset value ever matters.
+
+## 23. A real, multi-dB EG1 decay on HIGH-sustain instruments that this project's decay model cannot produce, and no authored parameter predicts which instruments show it -- OPEN
+
+**Path:** Same underlying mechanism as #8 and #15 -- `voice.c`'s `ENV_DECAY`
+case and `exp_coef_scaled`'s "asymptotically approach the authored sustain
+level, calibrated to 96.5dB over the authored `decay_tc`" model. That model
+places a hard ceiling on how far a note CAN decay:
+`20*log10(sustain_permille/1000)`. For any instrument with sustain authored
+above ~90%, that ceiling is under 1 dB, reached (per the model) within a few
+seconds regardless of `decay_tc`.
+
+**Found via:** `field/onestop_extract.mid`, a three-note chord on program 99
+("Atmosphere") measuring -13.3 dB spectral residual / 0.729 env r -- much
+worse than the corpus mean (~-28 dB). A 150ms-smoothed RMS envelope showed
+the reference decaying ~6 dB over ~700-1400ms while this project's render
+stayed flat, matching the model's own <1.1 dB ceiling for Atmosphere's 88.2%
+sustain. The chord is a bad isolation target (notes 55/56 are a semitone
+apart, ~11.5 Hz beat; alignment is only 50ms-hop coarse), so this was
+followed up with two dedicated probes on isolated single notes.
+
+**Measured** (`probes/39_high_sustain_decay.mid` + `probes/41_sustain_decay_curve.mid`,
+`probe-results/39.flac` + `41.flac`, one held note per instrument, key 60
+unless noted, no chord, no CC, no bend):
+
+| instrument | sustain% | decay_tc | real decay (ref) | settle time | model ceiling |
+|---|---|---|---|---|---|
+| Solo Vox | 98.2% | 4.00s | ~0 dB | -- | -0.16 dB |
+| Syn.Calliope | 98.6% | 2.30s | ~0 dB | -- | -0.12 dB |
+| Star Theme | 97.8% | 3.31s | ~0 dB | -- | -0.19 dB |
+| Charang | 95.8% | 14.60s | ~0 dB | -- | -0.37 dB |
+| Synth Brass1 | 94.6% | 9.70s | ~2 dB | ~0.5-1s | -0.48 dB |
+| Polysynth | 94.1% | 10.87s | ~3.4 dB | ~1.6s | -0.53 dB |
+| Soundtrack | 93.0% | 18.09s | ~4.5-5.2 dB | ~1-1.5s | -0.63 dB |
+| 5th Saw Wave | 94.6% | 12.17s | ~7.6 dB | ~1.0-1.2s | -0.48 dB |
+| Atmosphere | 88.2% | 7.74s | ~7 dB | ~1-1.5s | -1.09 dB |
+| Bowed Glass | 90.9% | 11.76s | ~8.7 dB | ~2.3s | -0.83 dB |
+
+Every instrument above was screened for `usSource=3` (KEYNUMBER decay
+key-follow, item #10/#15's variable) and `usSource=1/usDestination=0x0001`
+(LFO->ATTENUATION tremolo, item #10's variable): none of the ten carry
+either connection, so this is a third, distinct axis from both of those.
+
+**Ruled out, with measurements, not assumptions:**
+- **Chord beating / coarse alignment** -- the single-note probes reproduce
+  the same shape cleanly (Atmosphere: ~7 dB across keys 48/60/72, three
+  independent recordings), so it is not an artifact of `onestop_extract`'s
+  chord or of the compare tooling's 50ms-hop alignment.
+- **Velocity-triggered transient/compression** -- `probes/39` section D
+  (Atmosphere, key 60, velocity 20/50/80/110) measured the *same* ~7.4 dB
+  drop at the *same* settle time across a >5x velocity range. An
+  amplitude-triggered recording-chain effect (AGC, compander) would scale
+  with level; this does not.
+- **The authored `decay_tc` alone** -- Synth Brass1 (9.70s) shows ~2 dB
+  while Atmosphere (7.74s, a *shorter* authored decay) shows ~7 dB.
+- **Authored sustain% alone** -- the first pass across probe 39 (4
+  instruments) fit a clean monotonic curve against sustain%; probe 41 (8
+  more instruments, specifically designed to break that fit) did: Charang
+  (95.8% sustain, 14.60s decay) shows ~0 dB while 5th Saw Wave at nearly
+  the same sustain (94.6%) shows ~7.6 dB, and Bowed Glass (90.9%, *higher*
+  sustain than Atmosphere's 88.2%) shows *more* decay (8.7 dB vs. 7 dB) and
+  takes over twice as long to settle (2.3s vs. ~1-1.5s) -- the wrong
+  direction for a sustain%-driven story.
+- **Region/velocity-layer structure** -- every tested instrument uses a
+  single region covering the full 0-127 velocity range at key 60 (no
+  crossfade in play); region counts (2-6) do not separate the two groups.
+- **Per-region attenuation (`wsmp.lAttenuation`)** -- spans 0 dB to -66 dB
+  across both groups with no separating threshold.
+- **Loop timing** -- loop length (3.8ms-487ms), loop start (12.9ms-381ms),
+  and the resulting native loop frequency do not separate the groups either
+  (Polysynth and Atmosphere share an near-identical 84-sample/262.5Hz loop
+  but show 3.4 dB vs. 7 dB; Square Wave, a clean control, and 5th Saw Wave
+  share a ~160ms loop length but show ~0 dB vs. 7.6 dB).
+- **Unity-note pitch-shift amount** -- Synth Brass1 and Charang are both
+  played at unity (no pitch shift) at key 60, yet show ~2 dB and ~0 dB
+  respectively; no consistent relationship between shift direction/amount
+  and decay magnitude.
+- **EG2 (pitch envelope) presence** -- Atmosphere and 5th Saw Wave (both
+  showing large real decay) both carry EG2 depth 0 (no pitch envelope at
+  all), same as several `0 dB` instruments; presence/depth does not track
+  the grouping.
+- **The wave's own baked-in transient** -- extracted raw PCM directly from
+  `gm.dls` (bypassing the synth entirely) for both groups: every wave has
+  *some* natural amplitude variation in its pre-loop portion (this is
+  normal, not a smoking gun), but that portion is 38ms-350ms long even
+  before any pitch-shift compression -- an order of magnitude too short to
+  explain a decay settling over 0.5-2.3 SECONDS. The render already plays
+  this portion through once before looping (`render.c`'s `phase_pos`
+  advance/wrap logic, verified directly), so there is no unplayed content
+  being skipped.
+
+**One incidental, genuine finding along the way (separate from the above):**
+Bowed Glass authors a `usSource=2 (KEYONVELOCITY) -> usDestination=0x0206
+(EG1 ATTACK)` connection -- velocity-scaled attack TIME, not just the
+already-implemented velocity-to-attenuation (`usDestination=0x0001`).
+`dls.c`'s own comment on this destination currently reads "not authored
+anywhere impactful for gm.dls's amplitude EG in the common case" -- that is
+not true for this instrument. Not implemented in `voice_note_on`. Almost
+certainly NOT the explanation for the multi-second decay above (the
+connection only scales an attack time of tens of milliseconds), but it is a
+real, separate gap worth its own fix independent of this item -- grep
+`gm.dls` for `usSource=2, usDestination=0x0206/0x030a` counts before
+attempting it, the same way item #10 was scoped.
+
+**Status:** open. Three probe rounds (39, 41, plus the field discovery) and
+nine authored-parameter axes checked without a correlate. This is squarely
+inside what SPEC.md itself marks `[O]` -- the real per-sample envelope
+consumption algorithm (S3.4.2/S6.6's "block-cadenced ramp mechanism") --
+and, per item #15's own history, guessing a global constant from a small
+matching subset (there, `DECAY_RATE_MULT=2.85` fit to one note that turned
+out to be key-follow in disguise) has a specific, documented failure mode
+in this codebase. Do not fit a multiplier to the four probe-39 instruments
+alone; probe 41 existed specifically to catch that trap and did. Next step
+if picked back up: either real disassembly of the envelope consumption code
+(the only source that has ever actually settled one of this shape -- see
+item #20's resolution), or a hand-built custom `.dls` file that varies one
+EG1 parameter at a time independent of `gm.dls`'s own authored combinations,
+since no combination `gm.dls` happens to author has isolated it so far.

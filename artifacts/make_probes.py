@@ -1923,6 +1923,131 @@ def p38_same_tick_locale():
                           sel(k, SI), note(60, "(same onset)", "(same onset)"),
                           sel(k, OC), note(60, "(same onset)", "(same onset)")))
     return _write_manifest("38_same_tick_locale.mid", tr, man)
+
+
+def p39_high_sustain_decay():
+    """Does EG1 decay actually stop at a HIGH authored sustain level, or does
+    the real driver keep decaying past it?
+
+    field/onestop_extract.mid (a three-note "Atmosphere", program 99, chord)
+    measures ~13.3 dB spectral residual against the reference, and a
+    150ms-smoothed RMS envelope shows the reference decaying ~6 dB over
+    roughly 700ms-1400ms while this project's render stays flat. That chord
+    is a bad isolation target: notes 55/56 are a semitone apart and beat at
+    ~11.5 Hz, and the alignment is only 50ms-hop coarse, so either could be
+    manufacturing the appearance of a difference.
+
+    This project's own EG1 decay model (`voice.c`'s `exp_coef_scaled` /
+    `ENV_DECAY`, DLS-1's "decays toward the authored sustain level" reading)
+    caps how much a note CAN decay at 20*log10(sustain_permille/1000) --
+    for Atmosphere's 88.2% sustain that ceiling is 1.09 dB, reached (to
+    within the 0.0005 snap threshold) at 3.80s per the current model. A
+    6 dB drop is not reachable under this model at ANY sustain level this
+    high, on ANY held note, regardless of chord/beating/alignment -- so if
+    the reference shows one, on a SINGLE held note, in isolation, that is
+    this project's decay model being wrong, not a measurement artifact.
+
+    **First cut of this probe (sections A/B/C) confirmed exactly that**: on
+    isolated single notes, Atmosphere and Soundtrack both showed a real
+    ~5-6 dB drop landing well inside 1s, then a hard plateau, while this
+    project's render stayed flat as the current model predicts. The
+    surprising part: that ~5-6 dB / ~0.5-1s shape looked roughly the SAME
+    for both instruments despite a 2.3x difference in authored decay_tc
+    (7.74s vs 18.09s) and different sustain (88.2% vs 93.0%) -- i.e. the
+    real decay did NOT visibly scale with the DLS data the way the model
+    assumes it must.
+
+    That "looks the same across two instruments" is exactly the shape of
+    the trap this project already fell into once: a `DECAY_RATE_MULT=2.85`
+    fit against ONE instrument (Piano note 60) looked like a universal
+    constant and turned out to be key-follow specific to that single note,
+    regressing every other instrument when shipped as a global multiplier
+    (see voice.c's decay_tc_keyfollow comment and FITTED.md Entry 1). Two
+    agreeing data points is not enough to rule out coincidence here either.
+    This cut adds more instruments spanning a wider decay_tc/sustain range,
+    plus a velocity sweep, specifically to separate "real, roughly-fixed
+    driver behavior" from "these two just happened to land close."
+
+    gm.dls authors this shape (high sustain, long decay_tc, i.e. "the decay
+    segment is nearly a no-op" under the current model) on 51+ instruments,
+    so this is a systemic question, not an Atmosphere-specific one. Seven
+    sections, none carrying a usSource=3 (KEYNUMBER) decay key-follow row
+    (probe 35 already owns that variable) and none carrying an LFO->
+    ATTENUATION connection (ruled out separately for Atmosphere already):
+
+      A. **Square Wave** (program 80): decay 3.10s -> 96.8% sustain, ceiling
+         0.28 dB, model snap 1.16s. Synthetic, no natural sample dynamics --
+         the cleanest RMS proxy, and the smallest ceiling of the set.
+      B. **Atmosphere** (program 99): decay 7.74s -> 88.2% sustain, ceiling
+         1.09 dB, model snap 3.80s. The instrument onestop_extract actually
+         uses -- already measured showing the ~6 dB/~1s real decay.
+      C. **Soundtrack** (program 97): decay 18.09s -> 93.0% sustain, ceiling
+         0.63 dB, model snap 8.05s -- already measured showing a ~4.5-4.8 dB/
+         ~1-1.5s real decay, i.e. a similar shape despite 2.3x the decay_tc.
+      D. **Atmosphere velocity sweep**, key 60 fixed, velocity 20/50/80/110:
+         does the ~6 dB drop's SIZE or TIMING track velocity (a velocity-
+         triggered attack-overshoot-and-settle would), or is it velocity-
+         independent like the rest of this data suggests?
+      E. **Solo Vox** (program 85): decay 4.00s -> 98.2% sustain, ceiling
+         0.16 dB, model snap 1.29s -- the smallest ceiling of the new
+         instruments, closest in decay_tc to Atmosphere.
+      F. **Synth Brass1** (program 62): decay 9.70s -> 94.6% sustain,
+         ceiling 0.48 dB, model snap 4.09s -- between Atmosphere and
+         Soundtrack on both axes.
+      G. **Halo Pad** (program 94): decay 10.27s -> 91.4% sustain, ceiling
+         0.78 dB, model snap 4.76s -- closest sustain% to Atmosphere at a
+         decay_tc closer to Synth Brass1/Soundtrack, to help separate which
+         axis (if either) the real decay actually tracks.
+
+    Keys 48/60/72 per key-sweep section (no key-follow authored, so the
+    model predicts identical curves across them); velocity fixed at 100
+    except section D. No CC, no bend, no pedal, no GS Reset (all bank 0,
+    none need it) -- nothing here should decay for any reason this probe
+    isn't naming.
+    """
+    tr = Track()
+    clock = t(0.5)
+    man = ["# 39_high_sustain_decay.mid -- expected EG1 decay per note onset",
+           "# current-model columns are this project's own exp_coef_scaled "
+           "prediction, not a measurement",
+           "# onset_seconds\tsection\tprogram\tkey\tvel\tdecay_s\tsustain_pct\t"
+           "model_max_drop_db\tmodel_snap_s"]
+
+    def section(tag, program, keys, decay_s, sustain_pct, max_drop_db, snap_s,
+                hold, gap, vel=100):
+        nonlocal clock
+        tr.prog(clock, 0, program)
+        clock += t(0.05)
+        for key in keys:
+            tr.note(clock, t(hold), 0, key, vel)
+            man.append(f"{clock / TPS:.3f}\t{tag}\t{program}\t{key}\t{vel}\t{decay_s:.2f}\t"
+                       f"{sustain_pct:.1f}\t{max_drop_db:.2f}\t{snap_s:.2f}")
+            clock += t(hold + gap)
+        clock += t(1.0)
+
+    def velocity_section(tag, program, key, vels, decay_s, sustain_pct,
+                          max_drop_db, snap_s, hold, gap):
+        nonlocal clock
+        tr.prog(clock, 0, program)
+        clock += t(0.05)
+        for vel in vels:
+            tr.note(clock, t(hold), 0, key, vel)
+            man.append(f"{clock / TPS:.3f}\t{tag}\t{program}\t{key}\t{vel}\t{decay_s:.2f}\t"
+                       f"{sustain_pct:.1f}\t{max_drop_db:.2f}\t{snap_s:.2f}")
+            clock += t(hold + gap)
+        clock += t(1.0)
+
+    section("A_square", 80, (48, 60, 72), 3.10, 96.8, -0.28, 1.16, 2.0, 2.0)
+    section("B_atmosphere", 99, (48, 60, 72), 7.74, 88.2, -1.09, 3.80, 5.0, 2.0)
+    section("C_soundtrack", 97, (48, 60, 72), 18.09, 93.0, -0.63, 8.05, 9.0, 2.0)
+    velocity_section("D_atmosphere_velocity", 99, 60, (20, 50, 80, 110),
+                      7.74, 88.2, -1.09, 3.80, 4.0, 2.0)
+    section("E_solovox", 85, (48, 60, 72), 4.00, 98.2, -0.16, 1.29, 3.0, 2.0)
+    section("F_synthbrass1", 62, (48, 60, 72), 9.70, 94.6, -0.48, 4.09, 6.0, 2.0)
+    section("G_halopad", 94, (48, 60, 72), 10.27, 91.4, -0.78, 4.76, 6.0, 2.0)
+    return _write_manifest("39_high_sustain_decay.mid", tr, man)
+
+
 def p40_same_tick_bank():
     """Probe 38's leftover: when several Bank Select MSBs land on ONE channel at
     ONE tick, which one does the note-on's locale end up carrying?
@@ -2018,6 +2143,102 @@ def p40_same_tick_bank():
     case("M_8_then_b1_no_pc", "b8 pc80, on60, b1 (no pc)",
          lambda k, note: (sel(k, 8), note(k), bank(k, 1)), 8, 8, 8)
     return _write_manifest("40_same_tick_bank.mid", tr, man)
+
+
+def p41_sustain_decay_curve():
+    """Probe 39's leftover: what does the real EG1 "decay" against a HIGH
+    authored sustain level actually correlate with?
+
+    Probe 39 (sections A-G) measured a real, on-the-record decay this
+    project's model does not predict -- on isolated single notes, no chord,
+    no beating, velocity-independent (section D's 20/50/80/110 sweep on
+    Atmosphere all showed the same ~7.4 dB drop), key-independent (identical
+    across keys 48/60/72 on every clean instrument). But its magnitude did
+    NOT track the thing the current model uses, authored decay_tc: Synth
+    Brass1 (9.7s) showed only ~2 dB while Atmosphere (7.74s, a SHORTER
+    authored decay) showed ~7 dB. What it DID track, monotonically, across
+    all four clean instruments measured, was authored sustain%:
+
+        Solo Vox      98.2% sustain, decay_tc  4.0s -> ~0 dB real decay
+        Synth Brass1  94.6% sustain, decay_tc  9.7s -> ~2 dB
+        Soundtrack    93.0% sustain, decay_tc 18.1s -> ~4.5-5.2 dB
+        Atmosphere    88.2% sustain, decay_tc  7.7s -> ~7 dB
+
+    decay_tc spans 4.0s-18.1s across those four with no corresponding trend;
+    sustain% alone predicts the ordering exactly. This probe is a denser
+    sweep across sustain% (98.6% down to 90.4%) specifically to see whether
+    the real decay-dB is a function of sustain% alone (and if so, fit its
+    shape -- squared? some other dB-domain transform of the linear reading
+    SPEC.md's disassembly currently backs?) or whether it is confounded by
+    something else once more instruments are added.
+
+    Two instruments deliberately share a sustain% with a probe-39 instrument
+    at a DIFFERENT decay_tc, to directly test decay_tc-independence rather
+    than assume it from the trend so far:
+      Syn.Strings2 (98.2% sustain, decay_tc 2.43s) vs. Solo Vox (98.2%,
+        4.0s, probe 39E) -- same sustain, different decay_tc: matching
+        results here confirms decay_tc really is irrelevant at this end of
+        the curve too, not just coincidentally at the two points already in
+        hand.
+      5th Saw Wave (94.6% sustain, decay_tc 12.17s) vs. Synth Brass1 (94.6%,
+        9.7s, probe 39F) -- same test at the ~2 dB point.
+
+    Halo Pad (probe 39G) is dropped: several-dB oscillation throughout its
+    hold in BOTH ref and slop, no clean settle -- almost certainly an
+    inherent (non-CC1-gated) LFO->PITCH connection on that patch that this
+    probe did not screen for. Every instrument below was checked for
+    usSource=1/usDestination=0x0003/usControl=0 (inherent vibrato) and
+    excluded if its depth exceeded a few cents, in addition to the existing
+    screens (no usSource=3 key-follow, no usSource=1/usDestination=0x0001
+    tremolo).
+
+    One note per instrument, key 60, velocity 100 (key- and velocity-
+    independence are probe 39's finding, not re-assumed -- if this cut
+    disagrees on either axis for any instrument, that itself is new
+    information). Held past each instrument's own real-decay settle window
+    (probe 39: consistently under ~1.5s) with margin, sorted by sustain%
+    descending so the manifest reads as a curve top to bottom:
+
+      A. Syn.Calliope  (program 82): 98.6% sustain, decay_tc 2.30s
+      B. Syn.Strings2  (program 51): 98.2% sustain, decay_tc 2.43s
+      C. Star Theme    (program 103): 97.8% sustain, decay_tc 3.31s
+      D. Charang       (program 84): 95.8% sustain, decay_tc 14.60s
+      E. 5th Saw Wave  (program 86): 94.6% sustain, decay_tc 12.17s
+      F. Polysynth     (program 90): 94.1% sustain, decay_tc 10.87s
+      G. Bowed Glass   (program 92): 90.9% sustain, decay_tc 11.76s
+      H. Echo Drops    (program 102): 90.4% sustain, decay_tc 2.10s
+
+    No CC, no bend, no pedal, no GS Reset (all bank 0) -- nothing here
+    should decay for any reason this probe isn't naming.
+    """
+    tr = Track()
+    clock = t(0.5)
+    man = ["# 41_sustain_decay_curve.mid -- expected EG1 decay per note onset",
+           "# current-model columns are this project's own exp_coef_scaled "
+           "prediction, not a measurement",
+           "# onset_seconds\tsection\tprogram\tkey\tvel\tdecay_s\tsustain_pct\t"
+           "model_max_drop_db\tmodel_snap_s"]
+
+    def note(tag, program, decay_s, sustain_pct, max_drop_db, snap_s, hold, gap):
+        nonlocal clock
+        tr.prog(clock, 0, program)
+        clock += t(0.05)
+        tr.note(clock, t(hold), 0, 60, 100)
+        man.append(f"{clock / TPS:.3f}\t{tag}\t{program}\t60\t100\t{decay_s:.2f}\t"
+                   f"{sustain_pct:.1f}\t{max_drop_db:.2f}\t{snap_s:.2f}")
+        clock += t(hold + gap + 1.0)
+
+    note("A_syncalliope", 82, 2.30, 98.6, -0.12, 0.69, 3.0, 2.0)
+    note("B_synstrings2", 51, 2.43, 98.2, -0.16, 0.78, 3.0, 2.0)
+    note("C_startheme", 103, 3.31, 97.8, -0.19, 1.13, 3.0, 2.0)
+    note("D_charang", 84, 14.60, 95.8, -0.37, 5.82, 3.5, 2.0)
+    note("E_5thsawwave", 86, 12.17, 94.6, -0.48, 5.13, 3.5, 2.0)
+    note("F_polysynth", 90, 10.87, 94.1, -0.53, 4.67, 3.5, 2.0)
+    note("G_bowedglass", 92, 11.76, 90.9, -0.83, 5.51, 3.5, 2.0)
+    note("H_echodrops", 102, 2.10, 90.4, -0.88, 0.99, 3.0, 2.0)
+    return _write_manifest("41_sustain_decay_curve.mid", tr, man)
+
+
 def p42_multitrack_same_tick():
     """Is the same-tick Bank/Program look-ahead scoped to the MERGED tick, or
     to each TRACK separately?
@@ -2150,7 +2371,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
           p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
-          p38_same_tick_locale, p40_same_tick_bank, p42_multitrack_same_tick]
+          p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
+          p41_sustain_decay_curve, p42_multitrack_same_tick]
 
 
 def check(path):
