@@ -138,8 +138,10 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
 
 /* SPEC.md S4.2.1/S4.7: the Bank/Program pair is the one scheduled-controller
  * queue whose value a note-on reads back, and the read is a LOOK-AHEAD -- at
- * one timestamp the note takes the LAST Program Change of that timestamp, not
- * the one that preceded it in the byte stream. Measured, `[M: probe 40]`:
+ * one timestamp the note takes the last Program Change BEFORE THE NEXT NOTE
+ * EVENT of that timestamp, not the one that preceded it in the byte stream.
+ * The forward reach and where it stops were measured separately; the reach
+ * first, `[M: probe 40]`:
  * 13 of 13 cases, every one within 1.9 dB of its control against 28-49 dB of
  * separation between the three controls (000:080 / 001:080 / 008:080, all
  * program 80 so only the bank moves). The two cases that separate this from
@@ -151,7 +153,7 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
  * collapses to the last group's patch on all three notes and sits 19 dB from
  * what stream order renders. (38's case F disagrees with 40's case G on
  * byte-identical input; 1 outlier in 21 observations across the two captures,
- * unexplained, recorded in SPEC_GAPS.md.)
+ * unexplained and still open -- not yet written up in SPEC_GAPS.md.)
  *
  * Probe 40's K settles that this is the PROGRAM CHANGE queue and not the bank
  * byte: two Bank Selects with ONE Program Change and no queue tie at all reads
@@ -159,14 +161,38 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
  * Program Change after it never reaches the note, so there is no live bank
  * read at voice-render time either.
  *
- * So the narrowest change that produces it: within one timestamp, move Bank
- * Select and Program Change ahead of the NOTE events, stably, preserving
- * their order among themselves so each Program Change still latches the bank
- * byte that was live when it ran. Nothing else moves -- not SysEx, not tempo,
- * not the other five S4.2.1 queues. Hoisting those too was measured and is
- * wrong twice over: it puts controllers ahead of a tick-0 GS Reset (wiping it)
- * and probe 37 already pinned same-tick CC7/CC121 behaviour a blanket hoist
- * would disturb.
+ * Where the reach STOPS is probe 42, which restages 40's cases across separate
+ * tracks the way a sequencer lays out layered parts, and adds the two shapes
+ * 40 structurally cannot have: more than one note in a tick. Its F/G still say
+ * the read passes over a following group (3.67/3.29 dB against 28.65/30.69 for
+ * plain stream order), so the scope is the merged tick and not the track. But
+ * H (three groups, three keys) and J (serum_opening's Type B shape -- two
+ * tracks playing both keys, a third playing only the upper one, the last group
+ * the sine) both refute reaching all the way to the end of the tick: 3.15 and
+ * 2.40 dB for stopping at the next note, against 12.05 and 23.31 for running
+ * to the end. Probe 40 cannot see the difference, 13/13 either way, because it
+ * never puts two notes in one tick. Probe means, ref-vs-build, for
+ * stream / reach-to-end / stop-at-next-note: 42 is 8.98/5.68/2.70, 38 is
+ * 10.20/9.01/8.89 (38's case G improves 9.46 -> 8.55).
+ *
+ * So the narrowest change that produces it: within one timestamp, each NOTE
+ * event slides right over the run of Bank Select / Program Change events
+ * immediately following it, preserving their order among themselves so each
+ * Program Change still latches the bank byte that was live when it ran.
+ * Nothing else moves -- not SysEx, not tempo, not the other five S4.2.1
+ * queues. Moving those too was measured and is wrong twice over: it puts
+ * controllers ahead of a tick-0 GS Reset (wiping it) and probe 37 already
+ * pinned same-tick CC7/CC121 behaviour a blanket hoist would disturb.
+ *
+ * On serum_opening this restores the Type B saw layer the reach-to-end reading
+ * deleted: its tick is `[t4 b1 pc80][n3][n15][t5 b1 pc81][n3'][n15'][t6 b8
+ * pc80][n15'']`, and stopping at the next note leaves n3' on 001:081, which
+ * survives the same-key choke. Both gestures improve over reach-to-end (Type A
+ * 10.8 -> 9.3, Type B 25.2 -> 16.7 dB rms band error) and the two field files
+ * densest in same-tick groups stop regressing (GENERAL_SERUM -19.24 -> -19.54,
+ * CrystalOscillator -24.66 -> -24.96). Type B is still 16.7 dB out, now
+ * uniformly too LOUD rather than too quiet -- a level/patch question, not an
+ * ordering one, and unresolved.
  *
  * A/B guard for measurement only, same role as synth.c's SYNTH_SCHEDULE_LOCALE:
  * 0 restores plain stream order. Not exposed by the Makefile. */
@@ -184,22 +210,20 @@ static int is_bankprog_event(const Event *e) {
     return (e->status & 0xF0) == 0xB0 && (e->d1 == 0 || e->d1 == 32);
 }
 
-/* One stable pass per equal-tick run: each Bank Select / Program Change slides
- * left over the note events it is sitting behind, and stops at anything else
- * (SysEx, tempo, any other CC, pitch bend). `ins` is where the next one lands. */
-static void hoist_bankprog(Event *arr, uint32_t n) {
+/* One pass per equal-tick run: each note event bubbles right over the run of
+ * Bank Select / Program Change events immediately following it, stopping at
+ * another note or at anything else (SysEx, tempo, any other CC, pitch bend). */
+static void slide_notes_past_bankprog(Event *arr, uint32_t n) {
     uint32_t i = 0;
     while (i < n) {
         uint32_t end = i;
         while (end < n && arr[end].abs_tick == arr[i].abs_tick) end++;
-        uint32_t ins = i;
         for (uint32_t k = i; k < end; k++) {
-            if (is_bankprog_event(&arr[k])) {
-                Event tmp = arr[k];
-                for (uint32_t j = k; j > ins; j--) arr[j] = arr[j - 1];
-                arr[ins++] = tmp;
-            } else if (!is_note_event(&arr[k])) {
-                ins = k + 1;
+            if (!is_note_event(&arr[k])) continue;
+            uint32_t j = k;
+            while (j + 1 < end && is_bankprog_event(&arr[j + 1])) {
+                Event tmp = arr[j]; arr[j] = arr[j + 1]; arr[j + 1] = tmp;
+                j++;
             }
         }
         i = end;
@@ -287,7 +311,7 @@ int smf_load(const uint8_t *data, uint32_t len) {
 
     merge_sort_events(arr, total);
 #if SMF_BANKPROG_LOOKAHEAD
-    hoist_bankprog(arr, total);
+    slide_notes_past_bankprog(arr, total);
 #endif
 
     /* Tempo map pass: convert abs_tick -> sample_time. */

@@ -63,9 +63,10 @@ class Track:
         self.cc(tick, ch, 6, data_msb)
         return self
 
-    def serialize(self):
+    def serialize(self, tempo=True):
         body = bytearray()
-        body += b"\x00\xff\x51\x03" + struct.pack(">I", TEMPO)[1:]
+        if tempo:
+            body += b"\x00\xff\x51\x03" + struct.pack(">I", TEMPO)[1:]
         prev = 0
         for tick, _, data in sorted(self.events, key=lambda e: (e[0], e[1])):
             body += varlen(tick - prev) + data
@@ -80,9 +81,15 @@ class Track:
 PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probes")
 
 
-def write(name, track, raw_track=None):
-    chunk = raw_track if raw_track is not None else track.serialize()
-    head = b"MThd" + struct.pack(">IHHH", 6, 0, 1, TPQ)
+def write(name, track, raw_track=None, tracks=None):
+    """`tracks` (a list of Track) writes a FORMAT 1 file, one MTrk each, tempo
+    in the first only -- probe 42 needs it, everything else is format 0."""
+    if tracks is not None:
+        chunk = b"".join(tr.serialize(tempo=(i == 0)) for i, tr in enumerate(tracks))
+        head = b"MThd" + struct.pack(">IHHH", 6, 1, len(tracks), TPQ)
+    else:
+        chunk = raw_track if raw_track is not None else track.serialize()
+        head = b"MThd" + struct.pack(">IHHH", 6, 0, 1, TPQ)
     os.makedirs(PROBE_DIR, exist_ok=True)
     path = os.path.join(PROBE_DIR, name)
     with open(path, "wb") as f:
@@ -1026,8 +1033,8 @@ def p26_other_gains():
     return _write_manifest("26_other_gains.mid", tr, man)
 
 
-def _write_manifest(name, tr, man):
-    path = write(name, tr)
+def _write_manifest(name, tr, man, tracks=None):
+    path = write(name, tr, tracks=tracks)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(PROBE_DIR, name.replace(".mid", ".manifest.tsv")), "w") as f:
         f.write("\n".join(man) + "\n")
@@ -2011,6 +2018,129 @@ def p40_same_tick_bank():
     case("M_8_then_b1_no_pc", "b8 pc80, on60, b1 (no pc)",
          lambda k, note: (sel(k, 8), note(k), bank(k, 1)), 8, 8, 8)
     return _write_manifest("40_same_tick_bank.mid", tr, man)
+def p42_multitrack_same_tick():
+    """Is the same-tick Bank/Program look-ahead scoped to the MERGED tick, or
+    to each TRACK separately?
+
+    Probe 40 settled the rule 13/13: a note-on takes the last Program Change at
+    its tick. Every probe that measured it, though, is FORMAT 0 -- one track,
+    one stream, no scoping question to ask. Every real file that exercises the
+    rule is format 1 with the groups on SEPARATE tracks (serum_opening 64
+    same-tick multi-PC groups, GENERAL_SERUM 1603, CrystalOscillator 947), and
+    there the merged-tick reading is measurably wrong on half the gestures:
+    serum_opening's alternating Type A gesture improves 28.3 -> 10.8 dB rms
+    band error under it, while Type B goes 19.8 -> 25.2 and flips from ~20 dB
+    too loud to ~25 dB too quiet. Type B's tick ends with `CC0=8, PC80`, so a
+    merged look-ahead sends every note there to 008:080 sine and the reference
+    plainly carries something brighter.
+
+    Per-track scoping would explain that and no format-0 probe could see it.
+    So: probe 40's discriminating cases restaged across tracks, plus
+    serum_opening's Type B shape reproduced structurally.
+
+    Format 1. Track 0 is tempo + GS Reset only; tracks 1-3 are the "voices",
+    each sending its own CC0/CC32/PC and its own note, all on one tick, the way
+    a sequencer lays out layered parts. Program 80 throughout except case D and
+    J, so the bank is what moves; 000:080 / 001:080 / 008:080 / 001:081 are all
+    mutually 28 dB or more apart.
+
+      A/B/C/D  controls, one group on track 1. D (001:081 Saw Wave) exists for
+               case J.
+      E        t1 group, t2 group + note. Both readings say the note takes
+               t2's bank -- the control proving that splitting across tracks
+               does not by itself change anything.
+      F        t1 group + NOTE, t2 group. merged -> t2's 008:080,
+               per-track -> t1's own 001:080.  THE DISCRIMINATOR.
+      G        F mirrored, so the answer cannot be "the duller one wins".
+      H        three tracks, three groups, three DIFFERENT keys -- exactly
+               serum_opening's Type A layering. merged -> all three notes on
+               t3's 000:080, per-track -> 001:080/008:080/000:080 on
+               48/60/72. Roughly 30 dB apart either way.
+      I        H on one key: choke leaves the last note-on whichever way the
+               scoping goes, so this is a control on the choke surviving a
+               track split, not a discriminator.
+      J        serum_opening's Type B shape: two tracks each playing both keys,
+               a third playing only the upper one, the last group being the
+               sine. merged -> sine on both keys (the too-quiet render),
+               per-track -> 001:081 saw on key 60, 008:080 sine on key 72.
+
+    How to read it: F and G are single notes and label straight off the A-D
+    controls. H and J are multi-note cases, so a single-note control cannot
+    label them -- compare those against the two candidate RENDERS instead,
+    which is exact, because the two hypotheses are just this file rendered with
+    SMF_BANKPROG_LOOKAHEAD 1 and 0:
+
+        cc -std=c11 -O2 -Isrc -DSMF_BANKPROG_LOOKAHEAD=0 -o /tmp/off \\
+           src/cli.c src/engine/*.c
+
+    Under the shipped build F/G/H/J read 008:080 / 001:080 / 000:080 x3 /
+    008:080; with the flag off they read 001:080 / 008:080 / a three-patch mix
+    / 001:081-ish. Every other case is identical between the two, which is the
+    check that the split itself changed nothing.
+    """
+    t0, t1, t2, t3 = Track(), Track(), Track(), Track()
+    t0.sysex(0, GS_RESET)
+    man = ["# 42_multitrack_same_tick.mid",
+           "# onset\tcase\tkey\ttracks\texpect_merged_tick\texpect_per_track"]
+    clock = t(0.5)
+    DUR, GAP = t(0.6), t(1.5)
+    NAME = {(0, 80): "squarelead(000:080)", (1, 80): "squarewave(001:080)",
+            (8, 80): "sine(008:080)", (1, 81): "saw(001:081)"}
+
+    def group(tr, tick, msb, prog=80):
+        tr.cc(tick, 0, 0, msb)
+        tr.cc(tick, 0, 32, 0)
+        tr.prog(tick, 0, prog)
+
+    def case(name, tracks_desc, build, notes):
+        """notes: list of (key, merged, per_track), one row per note onset."""
+        nonlocal clock
+        build(clock)
+        for key, merged, per_track in notes:
+            man.append(f"{clock / TPS:.3f}\t{name}\t{key}\t{tracks_desc}\t"
+                       f"{NAME[merged]}\t{NAME[per_track]}")
+        clock += GAP
+
+    case("A_ctl_b0", "t1: b0 pc80 on60",
+         lambda k: (group(t1, k, 0), t1.note(k, DUR, 0, 60, 100)),
+         [(60, (0, 80), (0, 80))])
+    case("B_ctl_b1", "t1: b1 pc80 on60",
+         lambda k: (group(t1, k, 1), t1.note(k, DUR, 0, 60, 100)),
+         [(60, (1, 80), (1, 80))])
+    case("C_ctl_b8", "t1: b8 pc80 on60",
+         lambda k: (group(t1, k, 8), t1.note(k, DUR, 0, 60, 100)),
+         [(60, (8, 80), (8, 80))])
+    case("D_ctl_b1_p81", "t1: b1 pc81 on60",
+         lambda k: (group(t1, k, 1, 81), t1.note(k, DUR, 0, 60, 100)),
+         [(60, (1, 81), (1, 81))])
+    case("E_note_on_t2", "t1: b1 pc80 | t2: b8 pc80 on60",
+         lambda k: (group(t1, k, 1), group(t2, k, 8), t2.note(k, DUR, 0, 60, 100)),
+         [(60, (8, 80), (8, 80))])
+    case("F_note_on_t1", "t1: b1 pc80 on60 | t2: b8 pc80",
+         lambda k: (group(t1, k, 1), t1.note(k, DUR, 0, 60, 100), group(t2, k, 8)),
+         [(60, (8, 80), (1, 80))])
+    case("G_note_on_t1_rev", "t1: b8 pc80 on60 | t2: b1 pc80",
+         lambda k: (group(t1, k, 8), t1.note(k, DUR, 0, 60, 100), group(t2, k, 1)),
+         [(60, (1, 80), (8, 80))])
+    case("H_three_tracks_3keys", "t1: b1 pc80 on48 | t2: b8 pc80 on60 | t3: b0 pc80 on72",
+         lambda k: (group(t1, k, 1), t1.note(k, DUR, 0, 48, 100),
+                    group(t2, k, 8), t2.note(k, DUR, 0, 60, 100),
+                    group(t3, k, 0), t3.note(k, DUR, 0, 72, 100)),
+         [(48, (0, 80), (1, 80)), (60, (0, 80), (8, 80)), (72, (0, 80), (0, 80))])
+    case("I_three_tracks_1key", "t1: b1 pc80 on60 | t2: b8 pc80 on60 | t3: b0 pc80 on60",
+         lambda k: (group(t1, k, 1), t1.note(k, DUR, 0, 60, 100),
+                    group(t2, k, 8), t2.note(k, DUR, 0, 60, 100),
+                    group(t3, k, 0), t3.note(k, DUR, 0, 60, 100)),
+         [(60, (0, 80), (0, 80))])
+    case("J_typeB_shape", "t1: b1 pc80 on60 on72 | t2: b1 pc81 on60 on72 | t3: b8 pc80 on72",
+         lambda k: (group(t1, k, 1), t1.note(k, DUR, 0, 60, 100), t1.note(k, DUR, 0, 72, 100),
+                    group(t2, k, 1, 81), t2.note(k, DUR, 0, 60, 100), t2.note(k, DUR, 0, 72, 100),
+                    group(t3, k, 8), t3.note(k, DUR, 0, 72, 100)),
+         [(60, (8, 80), (1, 81)), (72, (8, 80), (8, 80))])
+    return _write_manifest("42_multitrack_same_tick.mid", t0, man,
+                           tracks=[t0, t1, t2, t3])
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2020,7 +2150,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
           p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
-          p38_same_tick_locale, p40_same_tick_bank]
+          p38_same_tick_locale, p40_same_tick_bank, p42_multitrack_same_tick]
 
 
 def check(path):
@@ -2030,13 +2160,20 @@ def check(path):
     assert data[:4] == b"MThd", path
     assert struct.unpack(">I", data[4:8])[0] == 6, path
     fmt, ntrk, div = struct.unpack(">HHH", data[8:14])
-    assert (fmt, ntrk, div) == (0, 1, TPQ), (path, fmt, ntrk, div)
-    assert data[14:18] == b"MTrk", path
-    length = struct.unpack(">I", data[18:22])[0]
-    assert len(data) == 22 + length, (path, len(data), length)
+    assert div == TPQ and (fmt, ntrk) == (0, 1) or fmt == 1, (path, fmt, ntrk, div)
+    pos = 14
+    for _ in range(ntrk):
+        assert data[pos:pos + 4] == b"MTrk", (path, pos)
+        length = struct.unpack(">I", data[pos + 4:pos + 8])[0]
+        assert pos + 8 + length <= len(data), (path, pos, length)
+        _check_track(path, data, pos + 8, pos + 8 + length)
+        pos += 8 + length
+    assert pos == len(data), (path, pos, len(data))
 
-    i, status, saw_eot = 22, None, False
-    while i < len(data):
+
+def _check_track(path, data, start, end):
+    i, status, saw_eot = start, None, False
+    while i < end:
         while data[i] & 0x80:          # delta time
             i += 1
         i += 1
@@ -2065,7 +2202,7 @@ def check(path):
                 i += 1
             assert status is not None, f"{path}: running status with no status"
             i += 1 if (status & 0xF0) in (0xC0, 0xD0) else 2
-    assert i == len(data), f"{path}: trailing garbage"
+    assert i == end, f"{path}: trailing garbage"
     assert saw_eot, f"{path}: no end-of-track"
 
 
