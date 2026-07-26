@@ -3962,80 +3962,204 @@ sub-objects beyond their own `+0x10`/`+0x14`/`+0x28`/`+0x2c`, and the object
 pointed to by `+0x104`) are `[O]` — out of scope here and not required to
 implement the voice model.
 
-#### 5.1.1 The `+0x104` object's `+0x40` field, and the attack-segment rate formula (`0x188b0`) — LOCATED this pass
+#### 5.1.1 Voice `+0x8`: the pitch-LFO run-state object, not an EG1 segment — CORRECTS a prior pass of this section
 
-Found while chasing a decay-model discrepancy this project measured on
-several high-sustain instruments (`SPEC_GAPS.md` item 23) — not yet a full
-resolution of that item, but two concrete new facts about mechanisms this
-section had left `[O]`.
-
-**The object at voice `+0x104` has a `+0x40` field: six raw DWORDs, one per
-EG1 segment/format slot, copied verbatim into the voice's own `+0x38`
-sub-object at note setup.** `0x19b54` (note setup, called with the region
-pointer in one argument and the `+0x104` object — call it `art` — passed
-through) does, for the attack/hold sub-object specifically:
+An earlier pass of this section, chasing the same decay-model discrepancy
+`SPEC_GAPS.md` item 23 describes, misidentified `voice+0x8`'s setup call
+(`0x188b0`) as an "attack-segment rate formula" on `voice+0x38`. That was
+wrong on the object identity: `voice+0x38` is never the `this` for
+`0x188b0` anywhere in `voice_note_on` (`0x19b54`); `voice+0x8` is.
+`0x188b0` is called as:
 
 ```c
-// 0x19c32-0x19c48, this = voice+0x38 (the attack/hold sub-object, §5.1's
-// "+0x38" row)
-EG1Setup(/*this=*/ &voice->_0x38, /*arg0=*/ art + 0x40,
-         /*arg1=*/ regionArg2, /*arg2=*/ regionArg3, /*arg3=*/ regionArg4);
+// 0x19c41-0x19c48: this = &voice->_0x8
+LFORateSetup(/*this=*/ &voice->_0x8, /*arg=*/ articBlock + 0x40, ...);
 ```
 
-`0x188b0` (the callee, `this=ecx` bound to `voice+0x38`) `[A:0x188b0]`:
+and `articBlock+0x40` is **`SPEC.md`'s own already-confirmed LFO_FREQUENCY
+storage location** (§2.4.3's table: DLS dest `0x0104` → `wave+0x40`,
+`[A:0x15a0c]` — "wave" there is this same articulation-block object).
+`voice+0x8` is therefore this voice's **pitch-LFO run-state** (rate/phase),
+not an EG1 amplitude segment; `0x188b0`'s `0x20000/duration` computation
+(still accurate as read) is a phase-step-style rate derived from the LFO's
+own period, unrelated to attack timing. `articBlock+0x48`/`+0x4c` (LFO
+start-offset/delay, DLS dest `0x0105`, `[A:0x159fa]`) feeds the same
+object's delay-gating, matching this project's own `lfo_delay_s` concept.
+Not fully re-traced this pass beyond establishing the object identity; the
+rest of `voice+0x8`'s layout is `[O]`.
+
+#### 5.1.2 Voice `+0x68`: the actual EG1 (amplitude) state machine — LOCATED this pass, resolves most of `SPEC_GAPS.md` item 23
+
+`voice+0x68` (this section already names it "release-envelope-segment,"
+from observing it gets *reconfigured* at note-off, §5.6) is in fact the
+**entire** EG1 attack→decay→sustain→release state machine — note-off just
+switches its mode, it doesn't create a separate object. Its note-on setup,
+`0x19c8e`-`0x19ca4` inside `voice_note_on`:
 
 ```c
-// this = &voice->_0x38 (attack/hold sub-object)
-this->_0x20 = arg3;
-memcpy(this /* +0x00 */, art /* +0x40 */, 6 * sizeof(DWORD));  // 0x188cb
-this->_0x18 = arg1;
-this->_0x1c = arg2;
-if (this->_0x10_as_word == 0 && this->_0x12_as_word == 0 &&
-    this->_0x14_as_word == 0 && this->_0x16_as_word == 0) {
-    // the two DWORDs at copied-offset +0x10/+0x14 (words 4-5 of the six),
-    // all-zero: fall back to a hardcoded rate
-    this->_0x28 = 0xac44;   // 44100 decimal
-    this->_0x2c = 0;
-} else {
-    // 64-bit divide: 0x20000 (2^17) / this->_0x00 (the FIRST copied DWORD)
-    this->_0x28 = 0x20000 / this->_0x00;   // quotient
-    this->_0x2c = 0x20000 % this->_0x00;   // remainder, 0x18902-0x18908
-}
-return {this->_0x28, this->_0x2c};
+// this = &voice->_0x68
+EG1Configure(/*this=*/ &voice->_0x68, /*src=*/ articBlock + 0x20,
+             /*velArgA=*/ vel_ish_1, /*velArgB=*/ vel_ish_2);
 ```
 
-i.e. the sub-object's own `+0x28`/`+0x2c` (this section's §5.1 already names
-this field "target" from its role as the release-ramp's compare value) is,
-for the attack segment specifically, computed as **a fixed-point rate**:
-`0x20000 / duration_in_samples`, where `duration_in_samples` is the FIRST of
-six DWORDs copied from `art+0x40` — almost certainly the attack duration
-this project already computes via `0x15364` (§3.4.1) and stores at the
-articulation's own `wave+0x20` (DLS dest `0x0206`, §2.4.3's table). The
-`44100` fallback fires only when the SECOND PAIR of the six copied DWORDs
-(copied-offsets `+0x10`-`+0x16`, i.e. the 5th/6th of the six source DWORDs)
-is entirely zero — their own identity is not established this pass; a
-plausible reading given the position (immediately after four DWORDs that
-line up with attack/decay/target/release-ish slots) is a wave-format or
-rate-class flag pair, but that is `[I]`, not confirmed.
+`articBlock+0x20` is confirmed EG1 attack (§2.4.3's table); the callee,
+`0x198b6`, copies **eight** DWORDs (not six) from there, landing exactly on
+this section's own already-confirmed EG1 field offsets, read relative to
+the copy's own base (`articBlock+0x20`):
 
-**Open, narrower than before:** this pass only traced the ATTACK-segment
-call (`voice+0x38`); the analogous call configuring `voice+0x68` (the
-release sub-object, §5.6) was not re-examined here, so it is not confirmed
-that the DECAY segment specifically (as opposed to attack) uses this same
-`0x20000/duration` formula, nor which of the six copied DWORDs corresponds
-to the decay duration versus the sustain target. The per-sample consumption
-of this rate value — i.e. what `0x194da` (§5.1's "envelope-advance helper",
-cited but not itself disassembled by any pass to date) does with it each
-block, and specifically whether the resulting per-sample step operates on a
-LINEAR or LOG-domain envelope value (the `+0x13c` field is documented above
-as logarithmic-scale) — remains `[O]`. This matters beyond curiosity: this
-project's own measurement (`SPEC_GAPS.md` item 23) found real decay on
-several instruments several times larger than their authored sustain
-permille can produce under a "ramp toward the authored linear sustain
-level" model, in EITHER a linear or log ramp shape — which means whatever
-`0x194da` actually does, it is not simply "ramp toward the raw `wsmp`
-sustain-permille value," in either domain. `0x194da` is the next concrete
-disassembly target for that question.
+| copy offset | `articBlock` offset | field (§2.4.3's table) |
+|---|---|---|
+| `+0x00`/`+0x04` | `+0x20`/`+0x24` | EG1 attack duration |
+| `+0x08`/`+0x0c` | `+0x28`/`+0x2c` | EG1 decay duration |
+| `+0x10`/`+0x14` | `+0x30`/`+0x34` | EG1 release duration |
+| `+0x18` (WORD pair) | `+0x38` | not previously in this table — see below |
+| `+0x1c` (WORD, low half) | `+0x3c` | EG1 sustain, permille |
+
+`0x198b6` `[A:0x198b6]`, in full:
+
+```c
+// this = &voice->_0x68; src = articBlock+0x20; velA/velB are two WORD-ish
+// note-on arguments (both trace toward the note's velocity, not
+// independently confirmed as raw velocity vs. a pre-scaled term)
+this->_0x28 = -1; this->_0x2c = 0x7fffffff;      // 0x198c5/0x198d6: "not yet
+                                                   // computed" sentinels for
+                                                   // a lazily-cached bound,
+                                                   // §5.1's own "+0x108/+0x10c"
+                                                   // scheduling family
+this->_0x20 = regionArg1; this->_0x24 = regionArg2; // per-note args, distinct
+                                                      // from the copy below
+memcpy(this, src, 8 * sizeof(DWORD));             // 0x198df: the table above
+
+// Velocity-scale attack duration (usSource=2 KEYONVELOCITY -> usDestination
+// 0x0206 EG1 ATTACK -- SPEC.md's own dls.c comment calls this destination
+// "not modeled: not authored anywhere impactful," which `gm.dls` itself
+// contradicts for at least 3 instruments, see SPEC_GAPS.md item 23):
+int16 velScaleAttack = (int16)this->_0x18_low_word;
+int32 attackFactorQ12 = TableLookup_0x18e1c((velScaleAttack * velA) / 127);
+int64 attack = (int64)(this->_0x00_0x04) * attackFactorQ12 / 0x1000;  // _allmul/_alldiv
+this->_0x00 = (int32)attack;                       // 0x1990e-0x1991e
+
+// Velocity-scale decay duration identically, using the WORD pair's high half
+// and velB (usSource=2 -> usDestination 0x0207 EG1 DECAY -- NOT in this
+// project's dls.c at all; gm.dls authors none of it for the tested
+// instruments either, confirmed by direct query, so this term is inert for
+// SPEC_GAPS.md item 23's dataset, but is a real, separate, generalizable gap):
+int16 velScaleDecay = (int16)this->_0x18_high_word;   // at copied-offset +0x1a
+int32 decayFactorQ12 = TableLookup_0x18e1c((velScaleDecay * velB) / 127);
+int64 decay = (int64)(this->_0x08_0x0c) * decayFactorQ12 / 0x1000;
+this->_0x08 = (int32)decay;                        // 0x19944-0x19957
+
+// THE KEY STEP -- rescale the (velocity-adjusted) decay duration by how far
+// the decay segment actually has to travel, in PERMILLE, not by its
+// authored linear-amplitude sustain FRACTION:
+int32 sustainPermille = (int16)this->_0x1c;                  // e.g. 882
+int64 decayToSustain = decay * (1000 - sustainPermille) / 1000;  // 0x19968-0x1997e
+this->_0x08 = (int32)decayToSustain;               // OVERWRITES the decay
+                                                     // duration field with
+                                                     // this shorter value
+```
+
+(`TableLookup_0x18e1c` reads a 256-entry WORD table this project inspected
+directly from the binary at `0x1a9d8` — **confirmed all-zero** in this
+build, so the velocity term above is `0` whenever no `usSource=2` connection
+scales that dimension. A second, structurally identical table at `0x1a7d8`
+feeding `voice+0x8`'s own LFO path is likewise all-zero. Both read as
+disabled/vestigial in this shipped binary, not load-bearing here.)
+
+**Then, every render block, `voice+0x68`'s own advance routine consumes
+this rescaled duration.** The wrapper `0x18d28` `[A:0x18d28]` (called from
+`0x19490`, itself called once per active voice per buffer from the
+service routine `0x13054`, §3.4.2/§6.6's confirmed block cadence) does:
+
+```c
+int32 progressPermille = Advance(this, elapsed);   // 0x18a7a, below
+return progressPermille * 96 / 10 - 9600;           // hundredths-of-a-dB;
+                                                     // 0x18d3d-0x18d49
+```
+
+`0x18a7a` `[A:0x18a7a]` is a shared, generic "advance a bounded, possibly-
+repeating counter" state machine (also used, with different field data, by
+`voice+0x8`'s LFO path) that walks THREE successive 64-bit boundaries —
+attack (`this+0x00`/`+0x04`), decay (`this+0x08`/`+0x0c`, now holding the
+rescaled `decayToSustain` value above), then a third pair (`this+0x10`/
+`+0x14`, the release duration) reached via a recursive self-call once
+note-off reconfigures the object. Its return value, in every region, is a
+0-1000 **progress permille**, and the caller (`0x18d28`) always applies the
+same `*9.6 - 9600` transform to it, regardless of region — so working out
+each region's own progress formula fully determines the resulting dB.
+
+For the **decay region specifically** (`0x18b4a`-`0x18b8b`), the progress
+returned is:
+
+```c
+// elapsedInDecay counts up from 0 (decay start) to decayToSustain (decay
+// complete); sustainPermille is this->_0x1c, read again, unscaled
+progressPermille = 1000 - (elapsedInDecay * (1000 - sustainPermille)
+                           / decayToSustain);
+```
+
+Substituting `decayToSustain = decay * (1000 - sustainPermille) / 1000`
+(the note-setup rescaling above) makes the `(1000 - sustainPermille)` terms
+in numerator and denominator **cancel exactly**:
+
+```c
+progressPermille = 1000 * (1 - elapsedInDecay / decay);   // decay = the
+                                                            // ORIGINAL,
+                                                            // velocity-scaled
+                                                            // but NOT
+                                                            // sustain-rescaled
+                                                            // duration
+```
+
+i.e. progress runs from `1000` (decay start, `elapsedInDecay=0` → `1000*9.6
+- 9600 = 0` dB, matching the level attack just reached) down to exactly
+`sustainPermille` at `elapsedInDecay = decayToSustain` (decay complete) —
+**not down to 0**. Feeding that endpoint through the same `*9.6 - 9600`
+transform gives this pass's central result:
+
+```c
+sustainLevel_hundredthsDb = sustainPermille * 9.6 - 9600;
+```
+
+**This is the mechanism `SPEC_GAPS.md` item 23 was missing.** It is not
+`20*log10(sustainPermille/1000)` (a linear-amplitude reading of the raw
+permille value, which this project currently implements and which SPEC.md
+Part 2 correctly confirmed as the *storage* format — raw, unscaled, `[A:
+0x15aa4]` etc.). At **consumption** time, during the decay segment
+specifically, the same raw permille value is instead treated as a
+progress-domain marker on the *same* 96dB linear-dB scale used for
+attack/release, giving a target roughly an order of magnitude further from
+0dB than the linear reading for any sustain below the high-90s%. Checked
+against `SPEC_GAPS.md` item 23's own measured data (`probes/39`/`41`): the
+decay-segment DURATION this predicts (`decay_tc_seconds *
+(1-sustainPermille/1000)`) lands within ~2x of every measured settle time
+(3 of 6 near-exact); the dB MAGNITUDE this predicts is in the right order
+of magnitude and correctly separates "no perceptible decay" (sustain >
+97.8%) from "real decay" (sustain ≤ 95.8%) for the first time, though it
+does not fit every tested instrument's measured drop precisely (see
+`SPEC_GAPS.md` item 23 for the full comparison table — that document is
+the one to update with this mechanism's fit quality, not this section).
+
+**`voice+0x38`'s own identity, left open above, is already settled elsewhere
+in this document and was not cross-referenced when this pass started:**
+§3.8.2's pre-existing pseudocode (`[A:0x19a2c]`, `[A:0x19aa4]`) labels
+`voice+0x38` "pitch EG" and `voice+0x68` "amplitude EG" explicitly, from an
+independent read of the note-off/choke paths. That confirms `voice+0x38` is
+EG2, not a second EG1-adjacent object — consistent with, not contradicted
+by, this section's finding that its `0x198b6` source pointer is
+`articBlock+0x0` rather than `+0x20`.
+
+**Still open:** the identity of `articBlock+0x38` (record copy-offset
+`+0x18`) beyond "a signed-WORD pair, low half scales attack duration by
+velocity, high half scales decay duration by velocity" — not one of
+`SPEC.md`'s previously-confirmed `art1` destinations, and this pass did not
+locate which `usDestination` code, if any, writes it during `art1` parsing.
+Whether the ATTACK region (`0x18b02`-`0x18b24`, its own table-lookup branch
+at `0x1a9d8`) or the post-release/idle region (`0x18c0b` onward) hold any
+further surprises was not re-examined beyond confirming their tables are
+empty. `0x104a8`/`0x1049c`/`0x10490` are the imported CRT 64-bit helpers
+`_allshr`/`_allmul`/`_alldiv` respectively (confirmed against this binary's
+own import table, not inferred).
 
 ---
 
@@ -4539,19 +4663,21 @@ in prose and are not claimed to be covered by a script.
 
 - The object pointed to by voice `+0x104` — only 4 of its own offsets
   (`+0x0`, `+0x4`, `+0x18`, `+0x1c`) are exercised by the code paths read for
-  this section; its full layout and identity are unresolved. **Partially
-  extended, §5.1.1**: a 5th offset, `+0x40`, is now located (six raw DWORDs
-  feeding EG1 segment setup) — the object's full layout is still not
-  established.
+  this section; its full layout and identity are unresolved. **Extended,
+  §5.1.1/§5.1.2**: `+0x40` is LFO_FREQUENCY (this is the confirmed
+  articulation-block object, not a separate one — see §2.4.3's own table),
+  and `+0x20` onward is the confirmed EG1 attack/decay/release/sustain
+  block. `+0x0` (what feeds `voice+0x38`, confirmed EG2 by §3.8.2's
+  pre-existing pseudocode) is still not laid out field-by-field.
 - The exact scheduling semantics of the `+0x108`/`+0x10c` and `+0x118`/
   `+0x11c` 64-bit timestamp pairs beyond "consumed by the DSP-advance
   routine `0x19644`" — these matter for exact sample-accurate envelope
   timing but not for the pool/steal/choke/note-off algorithms specified
-  here. **See also §5.1.1**: the attack segment's own rate value (stored in
-  the analogous `+0x28`/`+0x2c` slot on the `+0x38` sub-object) is now known
-  to be `0x20000/duration_samples`; whether the same formula governs decay,
-  and how it ultimately drives `+0x13c`'s log-domain level via `0x194da`,
-  is still open.
+  here. **Resolved, §5.1.2**: `voice+0x68`'s own decay-region progress
+  formula, `+0x13c`'s log-domain level, and the `0x18d28`/`0x18a7a`
+  consumption path are now traced end to end; `0x194da` turned out to be
+  one instruction (the `+0x13c` write) inside `0x19490`, not a distinct
+  function.
 - *Why* the driver splits the pool into 48+6 rather than one flat 54-deep
   free list is not stated anywhere in the code and is not inferable from
   disassembly alone (the *mechanics* of the split are fully resolved in
