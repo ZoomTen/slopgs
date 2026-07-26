@@ -41,6 +41,14 @@ const SlopgsCompare = (() => {
   const SPEC_CANVAS_HEIGHT = 300;
   const NYQUIST = SYNTH_RATE / 2; // 11025 Hz -- the whole visible spectrum
   const MIN_FREQ_SPAN = 100; // narrowest frequency window, in Hz
+  // Vertical axis warp. Linear by default; "log" is log(f + LOG_KNEE) rather
+  // than log(f) so 0 Hz stays on the axis instead of running to -infinity --
+  // the band that matters here starts at DC, not at some arbitrary cutoff.
+  // The knee is where the axis stops being logarithmic and goes linear-ish;
+  // 30Hz puts the whole audible bass range on the log part.
+  const LOG_KNEE = 30;
+  function warpHz(f, log) { return log ? Math.log(Math.max(0, f) + LOG_KNEE) : f; }
+  function unwarpHz(w, log) { return log ? Math.exp(w) - LOG_KNEE : w; }
   const ZOOM_STEP = 2; // per +/- press and per ctrl+wheel notch
 
   // -----------------------------------------------------------------------
@@ -379,7 +387,11 @@ const SlopgsCompare = (() => {
     // Visible frequency window, shared by both canvases (see buildSpectrograms).
     const fLo = meta && isFinite(meta.fLo) ? meta.fLo : 0;
     const fHi = meta && isFinite(meta.fHi) ? meta.fHi : NYQUIST;
-    const fSpan = Math.max(1, fHi - fLo);
+    // Rows are laid out on the warped axis; only the row<->Hz conversion
+    // changes between linear and log, everything downstream still works in Hz.
+    const log = !!(meta && meta.logFreq);
+    const wLo = warpHz(fLo, log), wHi = warpHz(fHi, log);
+    const wSpan = Math.max(1e-9, wHi - wLo);
     // Band-pass meter over exactly the visible band and the visible time span,
     // accumulated from the transforms we are computing anyway.
     const bLo = Math.max(0, Math.min(bins - 1, Math.floor((fLo / NYQUIST) * bins)));
@@ -409,8 +421,8 @@ const SlopgsCompare = (() => {
         // band's bins rather than sampling one -- when a 2048-point window
         // gives 1024 bins for 300 rows, picking every ~3rd bin drops narrow
         // partials entirely, which is exactly what this page exists to show.
-        const fTop = fHi - (row * fSpan) / height;
-        const fBot = fHi - ((row + 1) * fSpan) / height;
+        const fTop = unwarpHz(wHi - (row * wSpan) / height, log);
+        const fBot = unwarpHz(wHi - ((row + 1) * wSpan) / height, log);
         let b0 = Math.floor((fBot / NYQUIST) * bins);
         let b1 = Math.ceil((fTop / NYQUIST) * bins);
         b0 = Math.max(0, Math.min(bins - 1, b0));
@@ -431,9 +443,13 @@ const SlopgsCompare = (() => {
     // see it sits at 3.2kHz, and a screenshot has to carry that on its face.
     ctx.font = "11px monospace";
     ctx.textBaseline = "middle";
-    for (const f of niceTicks(fLo, fHi, 6)) {
-      const y = Math.round(((fHi - f) * height) / fSpan) + 0.5;
+    let lastY = -Infinity;
+    for (const f of log ? logTicks(fLo, fHi) : niceTicks(fLo, fHi, 6)) {
+      const y = Math.round(((wHi - warpHz(f, log)) * height) / wSpan) + 0.5;
       if (y < 12 || y > height - 4) continue;
+      // A log axis bunches its low decades; drop labels that would overlap.
+      if (y - lastY < 14) continue;
+      lastY = y;
       ctx.strokeStyle = "rgba(120,190,255,0.28)";
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
@@ -452,7 +468,7 @@ const SlopgsCompare = (() => {
     // difference stays directly comparable across every view.
     const bandRmsDb = toDb(Math.sqrt(bandSumSq / Math.max(1, bandN))) - scale.maxDb;
     const bandPeakDb = toDb(bandPeak) - scale.maxDb;
-    return { fftSize, bandRmsDb, bandPeakDb, fLo, fHi };
+    return { fftSize, bandRmsDb, bandPeakDb, fLo, fHi, log };
   }
 
   // Text block, drawn after both canvases are analysed so each can quote the
@@ -492,6 +508,20 @@ const SlopgsCompare = (() => {
     const step = stepMul * mag;
     const out = [];
     for (let f = Math.ceil(lo / step) * step; f <= hi; f += step) out.push(f);
+    return out;
+  }
+
+  // 1/2/5-per-decade ticks for the log axis -- linear ticks over a log axis
+  // would crowd every label into the top third and leave the low end, which
+  // is the reason to be in log mode at all, unlabelled.
+  function logTicks(lo, hi) {
+    const out = [];
+    for (let d = 1; d <= 100000; d *= 10) {
+      for (const m of [1, 2, 5]) {
+        const f = d * m;
+        if (f >= lo && f <= hi) out.push(f);
+      }
+    }
     return out;
   }
 
@@ -714,6 +744,9 @@ const SlopgsCompare = (() => {
     // time nudge, which is deliberately per-signal, comparing two spectra only
     // means anything if they are on the same frequency axis.
     let fLo = 0, fHi = NYQUIST;
+    // Linear or log-ish vertical axis. Shared by both canvases for the same
+    // reason the band is: two spectra on different axes compare to nothing.
+    let logFreq = false;
 
     function viewWidth() { return cRef.width || 1; }
     function visibleSamples() { return Math.max(viewWidth(), Math.round(total / zoom)); }
@@ -723,11 +756,11 @@ const SlopgsCompare = (() => {
       const count = visibleSamples();
       const start = viewStart();
       const toMs = (s) => (s / SYNTH_RATE) * 1000;
-      const view = { zoom, fLo, fHi, dynRangeDb: dynRange };
+      const view = { zoom, fLo, fHi, logFreq, dynRangeDb: dynRange };
       const sRef = drawSpectrogramWindow(cRef, monoRef, start + refOff, count, scale, view);
       const sSlop = drawSpectrogramWindow(cSlop, monoSlop, start + slopOff, count, scale, view);
 
-      const band = `${fmtHz(fLo)}–${fmtHz(fHi)}`;
+      const band = `${fmtHz(fLo)}–${fmtHz(fHi)}${logFreq ? " log" : ""}`;
       const viewLine = (off, st) =>
         `${((start + off) / SYNTH_RATE).toFixed(3)}s–${((start + off + count) / SYNTH_RATE).toFixed(3)}s`
         + `   ${band}   offset ${off >= 0 ? "+" : ""}${toMs(off).toFixed(1)}ms`
@@ -781,11 +814,20 @@ const SlopgsCompare = (() => {
 
     // Frequency zoom about the centre of the visible band, clamped to the
     // real spectrum: there is nothing above Nyquist to look at.
+    // Zoom about the centre of the axis as drawn: on a log axis the visual
+    // centre of 0–11kHz is a few hundred Hz, not 5.5kHz, and zooming towards
+    // the linear midpoint would walk straight past the band you switched to
+    // log mode to look at.
     function setFreqZoom(factor) {
-      const mid = (fLo + fHi) / 2;
-      let half = ((fHi - fLo) / 2) * factor;
-      half = Math.max(MIN_FREQ_SPAN / 2, Math.min(NYQUIST / 2, half));
-      panFreq(mid - half, mid + half);
+      const wMid = (warpHz(fLo, logFreq) + warpHz(fHi, logFreq)) / 2;
+      const wHalf = ((warpHz(fHi, logFreq) - warpHz(fLo, logFreq)) / 2) * factor;
+      let lo = Math.max(0, unwarpHz(wMid - wHalf, logFreq));
+      let hi = Math.min(NYQUIST, unwarpHz(wMid + wHalf, logFreq));
+      if (hi - lo < MIN_FREQ_SPAN) {
+        const mid = (lo + hi) / 2;
+        lo = mid - MIN_FREQ_SPAN / 2; hi = mid + MIN_FREQ_SPAN / 2;
+      }
+      panFreq(lo, hi);
     }
     function panFreq(lo, hi) {
       const s = hi - lo;
@@ -859,9 +901,11 @@ const SlopgsCompare = (() => {
         set(Math.round(base - (ev.clientX - from) * perPx));
         // Vertical: pan the frequency window, and do it for both canvases.
         // Dragging down reveals higher frequencies, since high is at the top.
-        const hzPerPx = (baseHi - baseLo) / Math.max(1, canvas.clientHeight);
-        const dHz = (ev.clientY - fromY) * hzPerPx;
-        panFreq(baseLo + dHz, baseHi + dHz);
+        // In warped units, so a drag moves the image by exactly the pointer's
+        // travel on a log axis too.
+        const wLo0 = warpHz(baseLo, logFreq), wHi0 = warpHz(baseHi, logFreq);
+        const dW = ((ev.clientY - fromY) * (wHi0 - wLo0)) / Math.max(1, canvas.clientHeight);
+        panFreq(unwarpHz(wLo0 + dW, logFreq), unwarpHz(wHi0 + dW, logFreq));
         schedulePaint();
       });
       const end = (ev) => {
@@ -902,11 +946,17 @@ const SlopgsCompare = (() => {
       value: String(SPEC_DYNAMIC_RANGE_DB), class: "contrast",
     });
     contrast.oninput = () => { dynRange = Number(contrast.value); schedulePaint(); };
+    const scaleBtn = mkBtn("linear", () => {
+      logFreq = !logFreq;
+      scaleBtn.textContent = logFreq ? "log" : "linear";
+      schedulePaint();
+    });
     const freqRow = el("div", { class: "zoomrow" }, [
       el("span", { class: "zoomlabel", text: "freq" }),
       mkBtn("−", () => setFreqZoom(2)),   // wider band = zoomed out
       mkBtn("+", () => setFreqZoom(0.5)),
       mkBtn("Full", () => panFreq(0, NYQUIST)),
+      scaleBtn,
       freqVal,
       el("span", { class: "zoomlabel", text: "contrast" }),
       contrast,
