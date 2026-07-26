@@ -83,9 +83,22 @@ typedef struct Voice {
     EnvStage env_stage;
     double env_level;         /* 0..1 amplitude envelope multiplier */
     double env_attack_step;   /* linear increment per sample during attack */
-    double env_decay_coef;    /* multiplicative approach-to-sustain coefficient */
+    double env_decay_coef;    /* SPEC.md S5.1.2.1: geometric per-sample ratio
+                                  toward env_sustain_level (env_level *=
+                                  env_decay_coef), same mechanism as
+                                  env_release_coef below, NOT an approach-to-
+                                  target coefficient -- the ramp is terminated
+                                  exactly by env_decay_samples_left, not by
+                                  this coefficient asymptoting. */
     double env_release_coef;  /* multiplicative approach-to-zero coefficient */
     double env_sustain_level; /* 0..1 */
+    int32_t env_decay_samples_left; /* SPEC.md S5.1.2.1: exact countdown so the
+                                  decay ramp snaps to env_sustain_level AT the
+                                  rescaled decay-to-sustain duration rather
+                                  than relying on a threshold test (a nonzero-
+                                  target geometric ramp never crosses a
+                                  threshold the way an approach-to-zero one
+                                  does). 0 while not in ENV_DECAY. */
 
     /* EG2, the PITCH envelope. SPEC.md S2.4.3 documents `(usSource=5 EG2,
      * usDestination=0x0003 PITCH)` as a real, dispatched connection

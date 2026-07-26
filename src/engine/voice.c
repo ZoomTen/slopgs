@@ -70,6 +70,7 @@ void voice_pool_reset(void) {
         v->atten_const_hdb = 0;
         v->env_stage = ENV_IDLE;
         v->env_level = 0.0;
+        v->env_decay_samples_left = 0;
         v->eg2_stage = ENV_IDLE;
         v->eg2_level = 0.0;
         v->eg2_depth_cents = 0.0;
@@ -224,10 +225,16 @@ static double lfo_freq_from_tc(int32_t tc) {
  * project has NOT confirmed it -- do not "clean it up" to 0.9633 without a
  * measurement that separates the two. RELEASE_RATE_MULT is untouched: probe
  * 35 measures decay only, and S5.6's 70ms fast-release still matches 100dB.
- * See FITTED.md Entry 15 and SPEC_GAPS.md #15. */
-#ifndef DECAY_RATE_MULT
-#define DECAY_RATE_MULT 0.965
-#endif
+ * See FITTED.md Entry 15 and SPEC_GAPS.md #15.
+ *
+ * SUPERSEDED 2026-07-26 by SPEC.md S5.1.2.1: this was a rate-multiplier on
+ * the OLD asymptotic approach-to-target decay shape, entangled with that
+ * shape's own "100dB over `seconds`" calibration. The decay segment is now a
+ * geometric ramp whose coefficient is derived directly from
+ * env_sustain_level and the already-rescaled decay-to-sustain duration (see
+ * voice_note_on) -- there is no free rate parameter left to scale, both
+ * endpoints are pinned by the target/duration formulas. Macro removed rather
+ * than left dead; probe 35's 0.965 measurement above stays as history. */
 #ifndef RELEASE_RATE_MULT
 #define RELEASE_RATE_MULT 1.0
 #endif
@@ -1111,18 +1118,64 @@ void voice_note_on(int channel, int note, int velocity) {
     double attack_s = timecents_to_seconds(r->artic->eg1_attack_tc);
     double decay_s = timecents_to_seconds(
         decay_tc_keyfollow(r->artic->eg1_decay_tc, r->artic->eg1_decay_kf_tc, note));
-    v->env_sustain_level = (double)r->artic->eg1_sustain_permille / 1000.0;
+    /* SPEC.md S5.1.2 [A:0x18d3d-0x18d49 / 0x18b4a-0x18b8b]: at CONSUMPTION
+     * time the real driver does not read the raw sustain permille as a
+     * linear-amplitude fraction (that reading is only the on-disk STORAGE
+     * format, S5.1 Part 2). The decay segment's advance routine treats it as
+     * a progress-domain marker on the same 96dB linear-dB scale used for
+     * attack/release: sustainLevel_hundredthsDb = sustainPermille*9.6-9600.
+     * Clamp the raw permille first (defends against malformed art1 data,
+     * same intent as the old post-division clamp below). */
+    int32_t sustain_permille = r->artic->eg1_sustain_permille;
+    if (sustain_permille < 0) sustain_permille = 0;
+    if (sustain_permille > 1000) sustain_permille = 1000;
+    double sustain_hundredths_db = (double)sustain_permille * 9.6 - 9600.0;
+    v->env_sustain_level = rt_pow(10.0, sustain_hundredths_db / 100.0 / 20.0);
     if (v->env_sustain_level < 0.0) v->env_sustain_level = 0.0;
     if (v->env_sustain_level > 1.0) v->env_sustain_level = 1.0;
+    /* SPEC.md S5.1.2 [A:0x19968-0x1997e]: note-on setup overwrites the
+     * (velocity-scaled) decay duration with decay*(1000-sustainPermille)/1000
+     * before the decay segment's advance routine ever consumes it -- the
+     * decay segment only has to travel down to sustainPermille, not to 0,
+     * so its real duration is shorter than the full authored decay time by
+     * exactly that fraction. */
+    double decay_to_sustain_s = decay_s * (double)(1000 - sustain_permille) / 1000.0;
+    /* SPEC.md S5.1.2.1: the decay segment's SHAPE is a plain geometric ramp
+     * (env_level *= env_decay_coef every sample), the same per-sample
+     * mechanism ENV_RELEASE below already uses -- NOT the asymptotic
+     * approach-to-target shape this project used pre-fix. S5.1.2.1 derives
+     * progressPermille as linear in elapsed samples (a countdown), not a
+     * ratio against a shrinking gap, and shows the geometric ramp reaching
+     * env_sustain_level exactly at the rescaled duration matches the
+     * reference's gradual settle where the asymptotic shape flattened out
+     * too early. The ramp always starts from env_level==1.0 (attack lands
+     * there exactly), so env_decay_coef = sustain_level^(1/N) reaches
+     * env_sustain_level exactly N samples later; env_decay_samples_left is
+     * the exact countdown that snaps it there instead of relying on a
+     * threshold test the way the old asymptotic code did (a nonzero-target
+     * ramp never crosses a small-delta threshold the way approach-to-zero
+     * does). */
+    int32_t decay_samples =
+        (int32_t)(decay_to_sustain_s * (double)RENDER_RATE + 0.5);
+    if (decay_samples > 0) {
+        v->env_decay_samples_left = decay_samples;
+        v->env_decay_coef = rt_pow(v->env_sustain_level, 1.0 / (double)decay_samples);
+    } else {
+        /* Rescaled duration is ~0 samples -- e.g. sustain_permille at/near
+         * 1000, no real decay to perform -- so there is nothing for
+         * ENV_DECAY to do; go straight to sustain below, matching how
+         * decay_s<=0 already worked pre-fix. */
+        v->env_decay_samples_left = 0;
+        v->env_decay_coef = 1.0;
+    }
     if (attack_s <= 0.0) {
         v->env_level = 1.0;
-        v->env_stage = (decay_s > 0.0) ? ENV_DECAY : ENV_SUSTAIN;
+        v->env_stage = (decay_samples > 0) ? ENV_DECAY : ENV_SUSTAIN;
     } else {
         v->env_level = 0.0;
         v->env_stage = ENV_ATTACK;
         v->env_attack_step = 1.0 / (attack_s * (double)RENDER_RATE);
     }
-    v->env_decay_coef = exp_coef_scaled(decay_s, DECAY_RATE_MULT);
 
     /* EG2 (pitch envelope), SPEC.md S2.4.3 `[A:0x15838]` / SPEC_GAPS.md #20.
      * Same segment structure as EG1 above, but its output scales
@@ -1204,13 +1257,21 @@ double voice_step_envelope(Voice *v) {
             v->env_level += v->env_attack_step;
             if (v->env_level >= 1.0) {
                 v->env_level = 1.0;
-                v->env_stage = (v->env_decay_coef > 0.0 && v->env_decay_coef < 1.0) ? ENV_DECAY : ENV_SUSTAIN;
+                v->env_stage = (v->env_decay_samples_left > 0) ? ENV_DECAY : ENV_SUSTAIN;
             }
             break;
         case ENV_DECAY:
-            v->env_level = v->env_sustain_level + (v->env_level - v->env_sustain_level) * v->env_decay_coef;
-            if (v->env_level - v->env_sustain_level < 0.0005) {
+            /* SPEC.md S5.1.2.1: geometric ramp, same mechanism as ENV_RELEASE
+             * below (env_level *= coef), not an approach-to-target -- see the
+             * note-on setup comment above for the coefficient's derivation.
+             * env_decay_samples_left is the exact countdown that snaps
+             * env_level to env_sustain_level AT the rescaled duration,
+             * avoiding both float drift and the old threshold test (which
+             * doesn't generalize to a nonzero target). */
+            v->env_level *= v->env_decay_coef;
+            if (--v->env_decay_samples_left <= 0) {
                 v->env_level = v->env_sustain_level;
+                v->env_decay_samples_left = 0;
                 v->env_stage = ENV_SUSTAIN;
             }
             break;
