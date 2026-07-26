@@ -4140,6 +4140,58 @@ does not fit every tested instrument's measured drop precisely (see
 `SPEC_GAPS.md` item 23 for the full comparison table — that document is
 the one to update with this mechanism's fit quality, not this section).
 
+#### 5.1.2.1 The decay segment's SHAPE, not just its target and duration — CORRECTS this section's own first pass, same day
+
+Implementing the target/duration formulas above literally, but *keeping
+this project's existing asymptotic "approach-to-target" decay shape*
+(`env_level = target + (env_level-target)*coef`, the shape this project
+already used pre-fix), produces an audibly wrong result: reference and
+render diverge sharply for the first ~500ms of decay and only agree once
+both have settled `[M: own listening/spectrogram comparison against
+probes/39, field/onestop_extract]`. The asymptotic shape is the wrong
+translation of the pseudocode above — re-reading §5.1.2's own derivation
+makes this an algebra error, not a new disassembly finding:
+
+```c
+progressPermille = 1000 - (elapsedInDecay * (1000 - sustainPermille)
+                           / decayToSustain);
+```
+
+is **linear in `elapsedInDecay`** — a plain countdown, not a ratio
+compared against a shrinking gap. Composed with the `*9.6 - 9600`
+transform (also linear), the resulting dB value is an exact straight line
+from `0` dB at `elapsedInDecay=0` to `sustainLevel_hundredthsDb` at
+`elapsedInDecay=decayToSustain` — reaching the target AT the (rescaled)
+duration, the same "reaches full silence/target AT the nominal duration,
+not asymptotically" shape this project's own `exp_coef` history already
+established for RELEASE (§3.4.2, the probe-04/S5.6 finding that motivated
+`exp_coef_scaled`'s "100dB-over-`seconds`" calibration in the first place —
+see `SPEC_GAPS.md` item 15). **Decay should use release's own existing
+per-sample mechanism** (`env_level *= coef`, a genuine geometric ramp, not
+release's "approach-to-target" cousin) — the only two differences from
+release are the endpoint (`sustainLevel`, not `0`) and that the ramp must
+terminate EXACTLY at the target, since a geometric ramp toward a nonzero
+target never asymptotically "snaps" the way one toward 0 does. Concretely:
+
+```c
+double N = decayToSustainSeconds * RENDER_RATE;          // samples
+double decayCoef = pow(sustainLevel, 1.0 / N);           // constant ratio
+// per sample, while in the decay stage:
+envLevel *= decayCoef;
+if (--samplesRemainingInDecay <= 0) {
+    envLevel = sustainLevel;      // snap exactly, avoid float drift
+    stage = SUSTAIN;
+}
+```
+
+Verified against a direct simulation for the Atmosphere case (`sustainPermille=882`,
+`sustainLevel≈0.271`, `decayToSustainSeconds≈0.913`): the asymptotic shape
+reaches -11dB by ~500ms (matching the "decays too fast, already flat"
+symptom observed by ear/spectrogram); the geometric ramp above reaches
+-0.6dB at 50ms, -6.2dB at 500ms, -11.33dB exactly at 913ms — a smooth
+transition over the full rescaled duration, matching the reference's own
+observed gradual settle far better than the asymptotic shape does.
+
 **`voice+0x38`'s own identity, left open above, is already settled elsewhere
 in this document and was not cross-referenced when this pass started:**
 §3.8.2's pre-existing pseudocode (`[A:0x19a2c]`, `[A:0x19aa4]`) labels
