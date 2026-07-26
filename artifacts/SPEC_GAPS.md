@@ -1274,3 +1274,54 @@ plateau-then-fall shape; this was not tested against the corpus and the
 isolate's own resolution limits (low-register fundamental period 8-53 ms)
 mean the 38 ms plateau length is not pinned precisely enough to fit a
 two-segment model from the data gathered this session alone.
+
+## 22. CC121 (Reset All Controllers) does not reset Channel Volume -- RESOLVED 2026-07-26 by `[M: probe 37]`, SHIPPED
+
+**Path:** `SPEC.md` S4.3's CC121 row, `[A:0x1351f]`: "re-schedules Volume=100,
+Pan=64, Expression=127, Pitch Bend=8192, Modulation=0".
+
+The Volume term is not observable in the reference. `probes/37_rac_volume_order.mid`
+puts one sine note per case behind a CC121 arranged four ways, with CC7=40 and
+CC7=100 controls (reference RMS -29.29 and -13.39 dB, 15.90 dB apart, a spread
+this project's own render reproduces to 0.02 dB):
+
+| case | reference | reads as |
+|---|---|---|
+| CC7=40 then CC121, same tick | -29.29 | 40 |
+| CC121 then CC7=40, same tick | -29.29 | 40 |
+| CC7=40, CC121 +50 ms | -29.29 | 40 |
+| CC7=40, CC121 +500 ms | -29.29 | 40 |
+| CC11=40 then CC121, same tick | -10.99 | reset (+18.30 dB over a surviving 40) |
+
+All four volume cases are exact to 0.00 dB. The +500 ms case is what settles
+it: this is **not** #14's queue-ordering question, because no same-timestamp
+tie-break can leave a value standing against a reset half a second later. The
+handler simply does not write Channel Volume -- either `0x1351f` re-schedules
+the channel's *current* volume rather than the constant `100`, or the constant
+was mis-attributed when the row was read. Expression is reset as documented,
+so the exemption is Volume's alone and the guard belongs on that one field.
+
+**What I did:** `CC121_RESETS_VOLUME` in `src/engine/synth.c` defaults to `0`;
+`reset_all_channel_controllers` leaves `c->volume` alone and still resets
+modulation, pitch bend, pan and expression.
+
+**Corpus, before -> after** (`artifacts/score.py`, 50 items): `tests/warm-echo`
+r 0.833 -> **0.994**, residual -25.25 -> **-34.68** dB; probe 37 itself 0.699 ->
+**0.977**, -9.66 -> **-37.49**; mean r 0.905 -> **0.914**, mean residual -28.21
+-> **-28.90**. 46 of 50 items are bit-identical -- every CC121 in the corpus
+that is not preceded by a CC7 on its own channel renders unchanged. The two
+others are the ones that authored CC7 before CC121 at tick 0: `field/flourish`
+(warm-echo's parent) r 0.581 -> 0.610, `field/town` mean level error -2.00 ->
+-0.91 dB. Both of those improve on every envelope/level metric and lose ~1.6 dB
+of spectral residual (flourish -17.08 -> -15.57, town -21.26 -> -19.71):
+restoring 11-15 channels to their authored balance redistributes spectral
+weight onto this project's remaining per-instrument errors, which the
+level-normalized residual then reads as worse. Per-frame level-error spread is
+the metric that tracks the fix directly -- warm-echo's falls from sd 3.42 dB /
+median |err| 2.02 dB to **sd 0.66 / 0.29**.
+
+**Still open, small:** case G lands 1.7 dB below where a full restore to
+Expression=127 extrapolates from the CC7 controls. Probe 37 has no measured
+full-scale control to pin it, and `probes/07_pan_volume.mid` rules out level
+compression (the reference-vs-render offset there is flat to 0.15 dB from CC7=16
+to CC7=127). Worth one more case if Expression's reset value ever matters.

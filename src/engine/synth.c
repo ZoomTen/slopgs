@@ -137,15 +137,27 @@ static void cc_data_entry_lsb(Channel *c, uint32_t d2) {
 }
 
 /* SPEC.md S4.3's CC121 row says the handler "re-schedules Volume=100, Pan=64,
- * Expression=127, Pitch Bend=8192, Modulation=0" `[A:0x1351f]` -- note
- * "re-schedules", the language of S4.2.1's timestamp-keyed controller queues,
- * not a direct write. Whether a Volume already set at the same timestamp
- * survives that reschedule is exactly the queue-ordering question SPEC_GAPS.md
- * #14 covers, and it is observable: flourish.mid sets CC7=76 (ch0) and CC7=52
- * (ch1) and then sends CC121 at the same tick. Toggle for measuring which
- * behaviour matches the reference. */
+ * Expression=127, Pitch Bend=8192, Modulation=0" `[A:0x1351f]`. The Volume
+ * half of that is wrong: `[M: probe 37]`, CC121 does not touch Channel Volume
+ * at all. probes/37_rac_volume_order.mid plays one sine per case and the
+ * reference reads (case RMS, dB, against its own CC7=40 and CC7=100 controls
+ * at -29.29 and -13.39):
+ *
+ *   CC7=40 then CC121, same tick   -29.29   CC7=40, CC121 +50ms    -29.29
+ *   CC121 then CC7=40, same tick   -29.29   CC7=40, CC121 +500ms   -29.29
+ *
+ * Exact to 0.00 dB on all four -- so this is not S4.2.1's queue-ordering
+ * question (SPEC_GAPS.md #14) at all: a CC121 half a second LATER leaves 40
+ * standing, which no same-timestamp tie-break can produce. Expression is a
+ * different story and does get reset (case G lands 18.30 dB above a surviving
+ * CC11=40), so the exemption is Volume's alone.
+ *
+ * Audible on tests/warm-echo.mid, whose two tracks both send CC7 (76 on ch0,
+ * 52 on ch1) and then CC121 at tick 0: resetting them to 100 rendered the
+ * two-channel section +4.84 dB against the one-channel section where the
+ * reference has -2.03 dB. r 0.833 -> 0.994, residual -25.25 -> -34.68 dB. */
 #ifndef CC121_RESETS_VOLUME
-#define CC121_RESETS_VOLUME 1
+#define CC121_RESETS_VOLUME 0
 #endif
 
 static void reset_all_channel_controllers(Channel *c) {

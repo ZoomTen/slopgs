@@ -1755,6 +1755,76 @@ def p36_kit_key_fallback():
     return write("36_kit_key_fallback.mid", tr)
 
 
+def p37_rac_volume_order():
+    """Does CC121 (Reset All Controllers) clobber a Channel Volume set at the
+    SAME timestamp, and does it clobber one set at an EARLIER timestamp?
+
+    SPEC.md S4.3's CC121 row `[A:0x1351f]` says the handler re-schedules
+    Volume=100 -- "re-schedules", into S4.2.1's timestamp-keyed queues, which
+    this project does not have (SPEC_GAPS.md #14): dispatch_cc writes the
+    reset straight over c->volume. tests/warm-echo.mid says that is wrong.
+    Both its tracks send CC7 (76 on ch0, 52 on ch1) and then CC121 at tick 0,
+    and the reference keeps 76/52: neutering the two CC121 events in the file
+    moves this project's two-channel-vs-one-channel level from +4.84 dB to
+    -2.12 dB against the reference's -2.03 dB `[M]`.
+
+    That is one data point, and it only constrains the same-tick case. Two
+    rules fit it and disagree elsewhere: "CC121 never touches volume" (one
+    #define) versus "an explicit CC at the same timestamp wins, a later CC121
+    still resets" (needs the event tick threaded into synth.c). Nothing in the
+    corpus separates them -- every CC121 in field/ and tests/ sits at tick 0.
+
+    Sine (bank 8 prog 80) for a clean RMS, one note per case, CC7 and CC11
+    parked at 127 well before each case so the case's own events are the only
+    ones at their tick:
+      A. CC7=40, note                     -- control: what 40 sounds like.
+      B. CC7=100, note                    -- control: what CC121's reset value
+                                             sounds like.
+      C. CC7=40 then CC121, same tick     -- warm-echo's shape. A or B?
+      D. CC121 then CC7=40, same tick     -- reverse order, must be A.
+      E. CC7=40, CC121 50 ms later        -- the discriminator.
+      F. CC7=40, CC121 500 ms later       -- same, far past any one buffer, so
+                                             a "later" that lands in the same
+                                             flush cannot explain E.
+      G. CC11=40 then CC121, same tick    -- does the rule generalize past
+                                             CC7? Expression shares CC7's
+                                             curve (S3.5), so A is its control.
+
+    Read it as: each case's RMS equals A's or B's. C=A is expected (it is what
+    warm-echo already measured). E/F=B means the timestamp rule; E/F=A means
+    the blanket one. G=C means the fix belongs in the reset, not in CC7.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 37_rac_volume_order.mid", "# onset\tcase\tevents"]
+    clock = t(0.5)
+
+    def case(name, events, build):
+        nonlocal clock
+        tr.cc(clock, 0, 0, 8); tr.cc(clock, 0, 32, 0); tr.prog(clock, 0, 80)
+        tr.cc(clock, 0, 7, 127); tr.cc(clock, 0, 11, 127)
+        base = clock + t(0.5)
+        build(base)
+        onset = clock + t(1.2)
+        tr.note(onset, t(0.45), 0, 60, 100)
+        man.append(f"{onset / TPS:.3f}\t{name}\t{events}")
+        clock += t(2.2)
+
+    case("A_cc7_40", "cc7=40", lambda b: tr.cc(b, 0, 7, 40))
+    case("B_cc7_100", "cc7=100", lambda b: tr.cc(b, 0, 7, 100))
+    case("C_same_tick", "cc7=40, cc121 @same tick",
+         lambda b: (tr.cc(b, 0, 7, 40), tr.cc(b, 0, 121, 0)))
+    case("D_same_tick_rev", "cc121, cc7=40 @same tick",
+         lambda b: (tr.cc(b, 0, 121, 0), tr.cc(b, 0, 7, 40)))
+    case("E_later_50ms", "cc7=40, cc121 +50ms",
+         lambda b: (tr.cc(b, 0, 7, 40), tr.cc(b + t(0.05), 0, 121, 0)))
+    case("F_later_500ms", "cc7=40, cc121 +500ms",
+         lambda b: (tr.cc(b, 0, 7, 40), tr.cc(b + t(0.5), 0, 121, 0)))
+    case("G_cc11_same_tick", "cc11=40, cc121 @same tick",
+         lambda b: (tr.cc(b, 0, 11, 40), tr.cc(b, 0, 121, 0)))
+    return _write_manifest("37_rac_volume_order.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -1763,7 +1833,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p23_rpn_tune, p24_gain_staging, p25_pan_law, p26_other_gains,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
-          p35_decay_keyfollow, p36_kit_key_fallback]
+          p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order]
 
 
 def check(path):
