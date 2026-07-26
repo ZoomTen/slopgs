@@ -2362,6 +2362,106 @@ def p42_multitrack_same_tick():
                            tracks=[t0, t1, t2, t3])
 
 
+def p43_level_vs_pitch():
+    """Does a patch's LEVEL depend on the key that was written, or on the pitch
+    that comes out? Nothing in the corpus separates those.
+
+    Every gain probe (24, 27, 28) holds the patch fixed at key 60 and varies a
+    controller. Every patch-identity probe (15, 34) holds the pitch at key 60
+    and varies the patch. The cell where both move at once is empty, and that
+    is where serum_opening's Type B gesture lives: its notes are written at
+    keys 3 and 15, pulled up 24 semitones by RPN2 and another 48 by a bend at
+    full range, and this project renders them with roughly the right spectral
+    SHAPE but about 16 dB too much level. Probes 30/31 come closest -- RPN2
+    coarse plus bend -- but they deliberately attack the +-4800 cent clamp from
+    ABOVE, keys 60 to 127. Nothing approaches it from below.
+
+    Two axes, crossed. Four patches, chosen because they are the candidates for
+    the Type B layer and are mutually 13 dB or more apart in timbre: 000:080
+    Square Lead, 001:080 Square Wave, 001:081 Saw Wave, 008:080 Sine Wave.
+    Four ways to arrive at two sounding pitches:
+
+      nat75    key 75, no tune, no bend                 -- sounds 75, natively
+      tuned75  key 51, RPN2 +24, no bend                -- sounds 75, one
+                                                           region lower
+      bent75   key 3, RPN2 +24, RPN0 48, bend at max    -- sounds 75, the
+                                                           Type B route, from
+                                                           the bottom region
+      nat27    key 27, no tune, no bend                 -- sounds 27, natively
+      tuned27  key 3, RPN2 +24, no bend                 -- sounds 27, isolating
+                                                           the tune half
+
+    The first three are the load-bearing ones: 622 Hz reached through three
+    DIFFERENT regions. Keys 75, 51 and 3 fall in three separate regions of all
+    four patches (000:080 splits at 38/52/63/77, 001:080 at 45/55/67/80,
+    001:081 at 40/51/63/76, 008:080 at 52/64/82), so if per-region attenuation
+    or key-follow is what sets level, these three separate on it while the
+    sounding pitch is held fixed.
+
+    nat27/tuned27 is a NULL control, deliberately: keys 3 and 27 land in the
+    SAME bottom region of all four patches, so the only difference is how the
+    pitch was reached. They must come out identical. If they don't, RPN2 itself
+    is doing something to level and the whole reading is off.
+
+    Read it two ways:
+      DOWN a patch's column: nat75 / tuned75 / bent75 equal means level follows
+      the sounding pitch and the Type B excess is not a pitch-dependent level
+      law. Spread means the WRITTEN key drives it -- region selection and
+      whatever per-region attenuation comes with it -- which is the shape of
+      answer that would explain Type B, and which FITTED.md already half-flags
+      in noting that 001:080 and 008:080 lack decay key-follow (probe 35 avoids
+      them for that reason). This project already renders a 4.5 dB spread on
+      000:080 between nat75 and bent75, so the axis is live either way; the
+      reference says whether that spread is right.
+      ACROSS the bent75 row: the relative level of the four candidate layers at
+      exactly Type B's pitch, which is the number needed to decide whether the
+      reference's Type B carries a quiet saw or a loud sine.
+
+    Bend is held STATIC at the extreme, not swept -- probe 33 already
+    characterises the ramp, and a static hold gives a clean RMS. RPN0 and RPN2
+    are explicitly restored to 2 and 0 before each case, and the bend recentred,
+    because both persist across a channel.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 43_level_vs_pitch.mid",
+           "# onset\tcase\tpatch\twritten_key\tcoarse\tbend_range\tbend\tsounding_key"]
+    clock = t(0.5)
+    DUR, GAP = t(0.6), t(1.5)
+    CENTRE, MAXBEND = 8192, 16383
+    PATCHES = [(0, 80, "squarelead(000:080)"), (1, 80, "squarewave(001:080)"),
+               (1, 81, "saw(001:081)"), (8, 80, "sine(008:080)")]
+    # (name, written key, RPN2 coarse semitones, RPN0 range, bend value)
+    CONFIGS = [("nat75", 75, 0, 2, CENTRE),
+               ("tuned75", 51, 24, 2, CENTRE),
+               ("bent75", 3, 24, 48, MAXBEND),
+               ("nat27", 27, 0, 2, CENTRE),
+               ("tuned27", 3, 24, 2, CENTRE)]
+
+    for msb, prog, pname in PATCHES:
+        for cname, key, coarse, rng, bend in CONFIGS:
+            # park every persistent register first, then set this case's
+            tr.rpn(clock, 0, 0, 0, 2)          # RPN0 = default 2 semitones
+            tr.rpn(clock, 0, 0, 2, 64)         # RPN2 = 0 semitones
+            tr.bend(clock, 0, CENTRE)
+            tr.cc(clock, 0, 7, 100)
+            tr.cc(clock, 0, 11, 127)
+            tr.cc(clock, 0, 10, 64)
+            tr.cc(clock, 0, 0, msb)
+            tr.cc(clock, 0, 32, 0)
+            tr.prog(clock, 0, prog)
+            setup = clock + t(0.2)
+            if coarse: tr.rpn(setup, 0, 0, 2, 64 + coarse)
+            if rng != 2: tr.rpn(setup, 0, 0, 0, rng)
+            if bend != CENTRE: tr.bend(setup, 0, bend)
+            onset = clock + t(0.5)
+            tr.note(onset, DUR, 0, key, 100)
+            man.append(f"{onset / TPS:.3f}\t{cname}\t{pname}\t{key}\t"
+                       f"{coarse:+d}\t{rng}\t{bend}\t{key + coarse + (rng if bend == MAXBEND else 0)}")
+            clock += GAP
+    return _write_manifest("43_level_vs_pitch.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2372,7 +2472,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
           p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
           p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
-          p41_sustain_decay_curve, p42_multitrack_same_tick]
+          p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch]
 
 
 def check(path):
