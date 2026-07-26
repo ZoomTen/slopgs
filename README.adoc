@@ -30,7 +30,7 @@ When submitting issues, use the `compare-*.html` tools to help.
 === Build
 
 . Run make on the project root.
-. Try exporting a track using `dist/msgs-render ... ?`
+. Try exporting a track using `dist/msgs-render dist/gm.dls your.mid 1 999999 your.wav`
 
 === A/B testing
 
