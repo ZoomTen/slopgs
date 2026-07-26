@@ -17,10 +17,7 @@
   table.stats th, table.stats td { border: 1px solid #444; padding: 3px 10px; text-align: left; }
   .extra-stats { color: #ccc; }
   .status { color: #ffbd7c; min-height: 1.2em; }
-  .playrow { display: flex; align-items: center; gap: 0.6em; margin: 0.35em 0; }
-  .playlabel { color: #aaa; width: 5.5em; flex: none; }
-  .playrow audio { height: 32px; max-width: 100%; }
-  .playrow button, .card > button { margin-right: 0.5em; }
+  .card > button { margin-right: 0.5em; }
   button { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 0.3em 0.8em; cursor: pointer; }
   button:hover { background: #444; }
   button:disabled { opacity: 0.5; cursor: default; }
@@ -32,7 +29,12 @@
   .zoomrow { flex-wrap: wrap; }
   /* Fixed viewport: the canvases never move. Scrolling and zooming change
      which slice of the signal gets transformed, and both are repainted. */
-  .spec-viewport { border: 1px solid #333; background: #000; overflow: hidden; }
+  .spec-viewport { border: 1px solid #333; background: #000; overflow: hidden; position: relative; }
+  /* Live playback position. A DOM overlay, not a canvas draw: it moves every
+     frame while audio runs, and a canvas repaint is width-many FFTs. The red
+     start-point line stays on the canvas so screenshots still carry it. */
+  .spec-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff;
+                 pointer-events: none; display: none; }
   /* draggable left/right to nudge this signal against the other */
   canvas.spectrogram { display: block; width: 100%; cursor: ew-resize; touch-action: none; }
   canvas.spectrogram + canvas.spectrogram { border-top: 1px solid #333; }

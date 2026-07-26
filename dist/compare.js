@@ -2,7 +2,14 @@
  * compare.js -- shared implementation for the three dist/compare-*.html pages
  * (probes, tests, field). Renders slopgs live via msgs.wasm + gm.dls (same ABI
  * sequence as bg-sound2.js, read but not modified) and compares each render
- * against a reference FLAC: playback, spectrograms, and analytical stats.
+ * against a reference FLAC: spectrograms, analytical stats, and playback.
+ *
+ * Playback is driven from the spectrogram rather than from its own player.
+ * Click anywhere in either canvas to drop a red playhead; "play reference" /
+ * "play slopgs" / "play mixed" all start from that column, on the aligned,
+ * nudged signals the spectrograms are drawn from. "Mixed" puts the reference
+ * in the left ear and slopgs in the right, so a divergence reads as the
+ * stereo image pulling to one side.
  *
  * Plain classic <script>, no build step, no imports, no dependencies.
  *
@@ -491,10 +498,11 @@ const SlopgsCompare = (() => {
   // -----------------------------------------------------------------------
   // playback
   //
-  // Only the slopgs side is played through WebAudio -- it exists solely as
-  // PCM this page just rendered, so there is nothing for a media element to
-  // load. The reference is a plain <audio controls> pointed straight at the
-  // FLAC (see makeCard), which is why there is no playback path for it here.
+  // Both sides go through WebAudio from the same decoded/rendered Float32
+  // buffers the spectrograms are drawn from -- no media element anywhere.
+  // That is the point: the transport is the spectrogram's own playhead, so
+  // what you hear starts at exactly the column you clicked, on either signal
+  // or on both at once ("mixed": reference left, slopgs right).
   // -----------------------------------------------------------------------
   let playCtx = null;
   function getPlayCtx() {
@@ -502,8 +510,9 @@ const SlopgsCompare = (() => {
     return playCtx;
   }
 
-  // One slopgs render sounds at a time: starting a second stops the first and
-  // fires its onStop so the other card's button drops back to "Play".
+  // One thing sounds at a time, page-wide: starting a second stops the first
+  // and fires its onStop so the card it belonged to can drop its "playing"
+  // marker.
   let currentPlay = null;
   function stopCurrent() {
     if (!currentPlay) return;
@@ -511,7 +520,7 @@ const SlopgsCompare = (() => {
     currentPlay = null;
     src.onended = null;
     try { src.stop(); } catch (_) { /* already ended */ }
-    onStop();
+    if (onStop) onStop();
   }
   function playStereo(left, right, sampleRate, onStop) {
     stopCurrent();
@@ -524,11 +533,24 @@ const SlopgsCompare = (() => {
     src.buffer = buf;
     src.connect(ctx.destination);
     src.onended = () => {
-      if (currentPlay && currentPlay.src === src) { currentPlay = null; onStop(); }
+      if (currentPlay && currentPlay.src === src) { currentPlay = null; if (onStop) onStop(); }
     };
     currentPlay = { src, onStop };
     src.start();
     return src;
+  }
+
+  // Plays two channels that start at independent sample offsets in their own
+  // signals -- which is what "from this point" means once the two signals have
+  // been nudged apart: the playhead is one column on screen, but that column
+  // is a different sample index in each signal. Clamped and length-matched so
+  // an offset past either end just yields a shorter (or empty) buffer.
+  function playFromOffsets(chL, atL, chR, atR, onStop) {
+    const l = Math.max(0, Math.min(chL.length, Math.round(atL)));
+    const r = Math.max(0, Math.min(chR.length, Math.round(atR)));
+    const n = Math.min(chL.length - l, chR.length - r);
+    if (n <= 0) return null;
+    return playStereo(chL.subarray(l, l + n), chR.subarray(r, r + n), SYNTH_RATE, onStop);
   }
 
   // The ABI has one global synth state (no session handle), so two renders
@@ -614,6 +636,15 @@ const SlopgsCompare = (() => {
     const align = alignByEnvelope(envRef, envSlop, ENV_HOP_MS, MAX_LAG_SECONDS);
     const lagSamples = Math.round((align.lagMs / 1000) * SYNTH_RATE);
     const { ref: monoRef, slop: monoSlop } = cropToLag(monoRefFull, monoSlopFull, lagSamples);
+    // Same crop on the stereo channels, so the spectrogram's playhead indexes
+    // the listenable signal too. Kept stereo rather than played back from the
+    // mono the spectrogram analyses: the pan probes (25_pan_law, 07_pan_volume)
+    // exist precisely to be heard in stereo, and a downmix would silence what
+    // they test.
+    const L = cropToLag(ref.left, slop.left, lagSamples);
+    const R = cropToLag(ref.right, slop.right, lagSamples);
+    const chan = { refL: L.ref, refR: R.ref, slopL: L.slop, slopR: R.slop,
+                   refM: monoRef, slopM: monoSlop };
 
     const peakRefDb = toDb(peakAbs(monoRef));
     const peakSlopDb = toDb(peakAbs(monoSlop));
@@ -638,7 +669,7 @@ const SlopgsCompare = (() => {
       + `detected lag: ${align.lagMs} ms`;
     resultsEl.appendChild(extra);
 
-    buildSpectrograms(resultsEl, monoRef, monoSlop, align.lagMs);
+    buildSpectrograms(resultsEl, monoRef, monoSlop, align.lagMs, chan);
   }
 
   // Reference on top, slopgs below. Neither canvas scrolls: they are a fixed
@@ -646,14 +677,15 @@ const SlopgsCompare = (() => {
   // transformed and repaints both. One scrollbar and one zoom factor feed both
   // canvases from the same (start, count), so the two views cannot drift apart
   // and every repaint shows real analysis rather than stretched pixels.
-  function buildSpectrograms(parent, monoRef, monoSlop, autoLagMs) {
+  function buildSpectrograms(parent, monoRef, monoSlop, autoLagMs, chan) {
     const total = Math.min(monoRef.length, monoSlop.length);
     const scale = computeSharedScale([monoRef, monoSlop]);
 
     const specWrap = el("div", { class: "specwrap" });
     const cRef = el("canvas", { class: "spectrogram" });
     const cSlop = el("canvas", { class: "spectrogram" });
-    const viewport = el("div", { class: "spec-viewport" }, [cRef, cSlop]);
+    const cursor = el("div", { class: "spec-cursor" });
+    const viewport = el("div", { class: "spec-viewport" }, [cRef, cSlop, cursor]);
     // A plain overflow strip whose inner spacer is `zoom` viewports wide. The
     // browser gives us a real scrollbar with real momentum/keyboard/trackpad
     // behaviour, and we read scrollLeft off it -- no scrollbar to reimplement.
@@ -673,6 +705,11 @@ const SlopgsCompare = (() => {
     // assumes one constant offset, so it cannot fix a sub-hop error or a
     // reference that drifts; dragging a canvas nudges that signal's window.
     let refOff = 0, slopOff = 0;
+    // Playhead, in shared-timeline samples (i.e. before either signal's own
+    // nudge). One column on screen is one `playhead` value but a different
+    // sample index per signal once refOff/slopOff differ, which is exactly
+    // how playback has to treat it -- see playFromOffsets. null = unset.
+    let playhead = null;
     // Visible frequency window, in Hz. Shared by both canvases -- unlike the
     // time nudge, which is deliberately per-signal, comparing two spectra only
     // means anything if they are on the same frequency axis.
@@ -684,10 +721,7 @@ const SlopgsCompare = (() => {
     function paint() {
       pending = false;
       const count = visibleSamples();
-      const maxStart = Math.max(0, total - count);
-      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
-      const frac = denom > 0 ? Math.min(1, Math.max(0, scrollbar.scrollLeft / denom)) : 0;
-      const start = Math.round(frac * maxStart);
+      const start = viewStart();
       const toMs = (s) => (s / SYNTH_RATE) * 1000;
       const view = { zoom, fLo, fHi, dynRangeDb: dynRange };
       const sRef = drawSpectrogramWindow(cRef, monoRef, start + refOff, count, scale, view);
@@ -708,6 +742,18 @@ const SlopgsCompare = (() => {
       drawOverlay(cSlop, "SLOPGS (native 22050Hz render)",
         [viewLine(slopOff, sSlop), `${lvl(sSlop)}   Δ vs ref: rms ${sign(dRms)}dB  peak ${sign(dPeak)}dB`]);
 
+      // The playhead sits at the same x on both canvases by construction: it
+      // is a shared-timeline sample and both canvases show `count` samples
+      // starting at `start` (plus each one's own nudge, which cancels here).
+      if (playhead !== null) drawPlayhead(((playhead - start) / count) * viewWidth());
+      playheadVal.textContent = playhead === null
+        ? "click the spectrogram to set a start point"
+        : `start ${(playhead / SYNTH_RATE).toFixed(3)}s`
+          + (refOff || slopOff
+            ? `  (ref ${((playhead + refOff) / SYNTH_RATE).toFixed(3)}s,`
+              + ` slopgs ${((playhead + slopOff) / SYNTH_RATE).toFixed(3)}s)`
+            : "");
+
       bandVal.textContent = `band ${band} — ref rms ${sRef.bandRmsDb.toFixed(1)}dB, `
         + `slopgs rms ${sSlop.bandRmsDb.toFixed(1)}dB, Δ ${sign(dRms)}dB `
         + `(peak Δ ${sign(dPeak)}dB)`;
@@ -720,6 +766,17 @@ const SlopgsCompare = (() => {
       nudgeVal.textContent = `nudge ${rel >= 0 ? "+" : ""}${rel.toFixed(1)} ms`
         + ` (auto ${autoLagMs} ms → total ${(autoLagMs + rel).toFixed(1)} ms)`;
       freqVal.textContent = `${fmtHz(fLo)} – ${fmtHz(fHi)}`;
+    }
+
+    // 2px red rule down both canvases. Drawn last, after the overlays, so it
+    // stays visible over the label block.
+    function drawPlayhead(x) {
+      if (x < -2 || x > viewWidth() + 2) return;
+      for (const c of [cRef, cSlop]) {
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#f00";
+        ctx.fillRect(Math.round(x) - 1, 0, 2, c.height);
+      }
     }
 
     // Frequency zoom about the centre of the visible band, clamped to the
@@ -751,7 +808,13 @@ const SlopgsCompare = (() => {
       // Hold the centre of the current view steady across the zoom change.
       const denomPrev = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
       const fracPrev = Math.min(1, Math.max(0, scrollbar.scrollLeft / denomPrev));
-      const centreFrac = prev <= 1 ? 0.5 : fracPrev * (1 - 1 / prev) + 0.5 / prev;
+      // Zoom about the red playhead once one is set -- that is the point you
+      // are inspecting, and holding it still is what makes zooming in on a
+      // suspect moment usable. Falls back to holding the view centre steady
+      // when no playhead has been dropped yet.
+      const centreFrac = playhead !== null
+        ? playhead / Math.max(1, total)
+        : prev <= 1 ? 0.5 : fracPrev * (1 - 1 / prev) + 0.5 / prev;
       spacer.style.width = `${(zoom * 100).toFixed(4)}%`;
       const denomNext = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
       const targetFrac = zoom <= 1 ? 0 : (centreFrac - 0.5 / zoom) / (1 - 1 / zoom);
@@ -762,8 +825,23 @@ const SlopgsCompare = (() => {
     // signal to resolve, only interpolation.
     function maxZoom() { return Math.max(1, total / viewWidth()); }
 
+    // Current visible window start, in shared-timeline samples. The single
+    // pixel<->sample origin: paint(), the click handler and the playback
+    // cursor all read it, so they cannot disagree about which column is when.
+    function viewStart() {
+      const count = visibleSamples();
+      const maxStart = Math.max(0, total - count);
+      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const frac = denom > 0 ? Math.min(1, Math.max(0, scrollbar.scrollLeft / denom)) : 0;
+      return Math.round(frac * maxStart);
+    }
+
     // Drag a canvas left/right to slide that signal against the other. Both
-    // are draggable: you nudge whichever one you are looking at.
+    // are draggable: you nudge whichever one you are looking at. A pointerup
+    // that never travelled more than DRAG_SLOP px is a click, not a drag, and
+    // sets the playhead instead -- one gesture handler, so the two can't fight
+    // over the same pointer sequence.
+    const DRAG_SLOP = 4;
     function attachDrag(canvas, get, set) {
       let from = 0, fromY = 0, base = 0, baseLo = 0, baseHi = 0, active = false;
       canvas.addEventListener("pointerdown", (ev) => {
@@ -790,6 +868,12 @@ const SlopgsCompare = (() => {
         if (!active) return;
         active = false;
         try { canvas.releasePointerCapture(ev.pointerId); } catch (_) { /* fine */ }
+        if (ev.type !== "pointerup") return;
+        if (Math.abs(ev.clientX - from) > DRAG_SLOP || Math.abs(ev.clientY - fromY) > DRAG_SLOP) return;
+        const x = ev.clientX - canvas.getBoundingClientRect().left;
+        const perPx = visibleSamples() / Math.max(1, canvas.clientWidth);
+        playhead = Math.max(0, Math.min(total, Math.round(viewStart() + x * perPx)));
+        schedulePaint();
       };
       canvas.addEventListener("pointerup", end);
       canvas.addEventListener("pointercancel", end);
@@ -829,9 +913,65 @@ const SlopgsCompare = (() => {
       bandVal,
     ]);
 
+    // Transport. There is no separate reference/slopgs player on the card any
+    // more: the spectrogram IS the transport, and every one of these starts at
+    // the red playhead (or at 0 if nothing has been clicked yet).
+    const playheadVal = el("span", { class: "rangeval" });
+    const playRow = el("div", { class: "zoomrow" }, [
+      el("span", { class: "zoomlabel", text: "play" }),
+      mkBtn("▶ reference", () => playAt("ref")),
+      mkBtn("▶ slopgs", () => playAt("slop")),
+      mkBtn("▶ mixed", () => playAt("mixed")),
+      mkBtn("■ stop", () => stopCurrent()),
+      playheadVal,
+    ]);
+
+    // Live playback cursor: a white bar tracking where the audio actually is,
+    // driven off the AudioContext clock (the only clock that knows) and
+    // positioned from the same (start, count) window paint() uses -- so it
+    // stays put over the right column while you scroll or zoom mid-playback.
+    // Hidden whenever nothing is sounding, or the position is off-screen.
+    let cursorRaf = 0, cursorFrom = 0, cursorT0 = 0;
+    function hideCursor() {
+      if (cursorRaf) cancelAnimationFrame(cursorRaf);
+      cursorRaf = 0;
+      cursor.style.display = "none";
+    }
+    function trackCursor() {
+      cursorRaf = requestAnimationFrame(trackCursor);
+      const at = cursorFrom + (getPlayCtx().currentTime - cursorT0) * SYNTH_RATE;
+      const x = ((at - viewStart()) / visibleSamples()) * viewport.clientWidth;
+      if (x < 0 || x > viewport.clientWidth) { cursor.style.display = "none"; return; }
+      cursor.style.display = "block";
+      cursor.style.left = `${x}px`;
+    }
+
+    // "mixed" is reference-left / slopgs-right on purpose: with the two in
+    // opposite ears a difference reads as the image pulling to one side, which
+    // is far easier to hear than the same difference summed to mono.
+    function playAt(which) {
+      const at = playhead === null ? 0 : playhead;
+      const go = (l, lAt, r, rAt) => playFromOffsets(l, lAt, r, rAt, hideCursor);
+      const src = which === "ref"
+        ? go(chan.refL, at + refOff, chan.refR, at + refOff)
+        : which === "slop"
+          ? go(chan.slopL, at + slopOff, chan.slopR, at + slopOff)
+          : go(chan.refM, at + refOff, chan.slopM, at + slopOff);
+      // Nothing started (playhead past the end of one signal) -- and nothing
+      // was stopped either, so leave any running cursor alone.
+      if (!src) return;
+      if (cursorRaf) cancelAnimationFrame(cursorRaf);
+      // Shared-timeline sample the cursor starts from -- `at`, not at+refOff:
+      // the cursor is drawn in view coordinates, which are shared-timeline.
+      cursorFrom = at;
+      cursorT0 = getPlayCtx().currentTime;
+      trackCursor();
+    }
+
     specWrap.appendChild(zoomRow);
     specWrap.appendChild(alignRow);
     specWrap.appendChild(freqRow);
+    specWrap.appendChild(playRow);
     specWrap.appendChild(viewport);
     specWrap.appendChild(scrollbar);
 
@@ -886,8 +1026,6 @@ const SlopgsCompare = (() => {
     for (const item of config.items) root.appendChild(makeCard(item));
   }
 
-  const PLAY_LABEL = "▶ Play slopgs";
-
   function makeCard(item) {
     const state = {}; // holds the memoized slopgs render for this item
     const card = el("div", { class: "card" });
@@ -900,46 +1038,9 @@ const SlopgsCompare = (() => {
     const status = el("p", { class: "status" });
     const results = el("div", { class: "results" });
 
-    // Reference: a stock media element straight at the FLAC. The browser owns
-    // transport, seeking and volume, and preload="none" keeps a 34-item page
-    // from fetching every reference on load.
-    const refRow = el("div", { class: "playrow" });
-    refRow.appendChild(el("span", { class: "playlabel", text: "reference" }));
-    const audio = el("audio", { controls: "", preload: "none", src: item.flacUrl });
-    audio.onerror = () => { status.textContent = missingMsg("reference FLAC", item.flacUrl); };
-    // Never let the reference and a slopgs render sound over each other.
-    audio.onplay = () => stopCurrent();
-    refRow.appendChild(audio);
-    card.appendChild(refRow);
-
-    // slopgs: rendered on first press (nothing exists to play until then),
-    // then the same button stops it.
-    const slopRow = el("div", { class: "playrow" });
-    slopRow.appendChild(el("span", { class: "playlabel", text: "slopgs" }));
-    const playBtn = el("button", { text: PLAY_LABEL });
-    let playing = false;
-    const reset = () => { playing = false; playBtn.textContent = PLAY_LABEL; };
-    playBtn.onclick = async () => {
-      if (playing) { stopCurrent(); return; } // stopCurrent() fires reset()
-      audio.pause();
-      playBtn.disabled = true;
-      playBtn.textContent = "rendering…";
-      try {
-        const slop = await getRender(item, state);
-        playBtn.textContent = "■ Stop";
-        playing = true;
-        playStereo(slop.left, slop.right, slop.sampleRate, reset);
-      } catch (err) {
-        status.textContent = missingMsg("MIDI or slopgs render failed for", item.midiUrl)
-          + ` (${err.message || err})`;
-        reset();
-      } finally {
-        playBtn.disabled = false;
-      }
-    };
-    slopRow.appendChild(playBtn);
-    card.appendChild(slopRow);
-
+    // No players here: nothing is playable until both signals exist and have
+    // been aligned, and once they have, the transport lives under the
+    // spectrogram (buildSpectrograms) where the playhead is.
     const cmpBtn = el("button", { text: "Load & compare" });
     cmpBtn.onclick = () => {
       cmpBtn.disabled = true;
