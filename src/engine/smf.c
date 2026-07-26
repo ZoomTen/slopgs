@@ -175,7 +175,32 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
  * stream / reach-to-end / stop-at-next-note: 42 is 8.98/5.68/2.70, 38 is
  * 10.20/9.01/8.89 (38's case G improves 9.46 -> 8.55).
  *
- * So the narrowest change that produces it: within one timestamp, each NOTE
+ * THIS IS AN EMPIRICAL FIT, NOT THE DRIVER'S MECHANISM. Read from
+ * artifacts/swmidi.sys, the driver is unambiguously reach-to-end:
+ *   - `[A:0x17fa2]` the KSMUSICFORMAT parser advances its 64-bit timestamp
+ *     per BLOCK (`add [ebp-0x18],eax / adc [ebp-0x14],edx`, 0x18073), never
+ *     between messages inside one block, so a tick's messages tie exactly.
+ *   - `[A:0x13667]` note-on/off queue into device+0x150 and `[A:0x132d2]`
+ *     Program Change schedules into device+0xc50+part*0x28, same timestamp.
+ *   - `[A:0x16bae]` insert walks PAST every equal-timestamp node -- FIFO.
+ *   - `[A:0x12bd6]` the drain, called once per audio block from the render
+ *     callback `[A:0x130af]` with now+nframes, pops every due event in a loop
+ *     (0x1302a -> 0x16cac -> jne 0x12c0b).
+ *   - `[A:0x12dbc]` each note-on reads its locale at its OWN event timestamp
+ *     via 0x16daa -> `[A:0x16c50]`, which walks the whole list and returns the
+ *     LAST node with ts <= req (default: object+0x18).
+ * Nothing there stops at a note. What the driver does NOT have is any
+ * serialisation between MIDI parsing and rendering -- they are separate KS pin
+ * entry points (dispatch table at 0x1cbd4) -- so a note-on can drain before
+ * the rest of its tick has been submitted. That is the likeliest source of
+ * what probes 38/42 measured, and the only explanation offered so far for
+ * probe 38's case F answering differently to byte-identical input in two
+ * captures. Treat what follows as fitted to the captures we have; if the
+ * references are re-recorded and 42's H/J stop reproducing, delete it and go
+ * back to reach-to-end.
+ *
+ * So the narrowest change that reproduces the captures: within one timestamp,
+ * each NOTE
  * event slides right over the run of Bank Select / Program Change events
  * immediately following it, preserving their order among themselves so each
  * Program Change still latches the bank byte that was live when it ran.
