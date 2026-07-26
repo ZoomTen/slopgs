@@ -1,0 +1,957 @@
+/*
+ * compare.js -- shared implementation for the three dist/compare-*.html pages
+ * (probes, tests, field). Renders slopgs live via msgs.wasm + gm.dls (same ABI
+ * sequence as bg-sound2.js, read but not modified) and compares each render
+ * against a reference FLAC: playback, spectrograms, and analytical stats.
+ *
+ * Plain classic <script>, no build step, no imports, no dependencies.
+ *
+ * Handles the three traps named in CLAUDE.adoc's "Measuring" section:
+ *   - rate:      decodeReferenceAt22050() forces decodeAudioData onto a
+ *                22050 Hz context so the platform resamples for us.
+ *   - alignment: alignByEnvelope() does RMS-envelope cross-correlation over
+ *                a coarse hop, searching a few seconds of lag.
+ *   - dither/level: normalizeRMS() scales both signals to a common RMS
+ *                before the spectral residual is computed.
+ */
+"use strict";
+
+const SlopgsCompare = (() => {
+  const SYNTH_RATE = 22050; // fixed by the ABI (int16 stereo @ 22050)
+  const RENDER_CHUNK_FRAMES = 22050; // 1s per chunk
+  const MAX_RENDER_SECONDS = 240; // cap so a runaway file can't hang the page
+  const ENV_HOP_MS = 50; // envelope hop for alignment cross-correlation
+  const MAX_LAG_SECONDS = 5; // alignment search window
+  const FFT_SIZE = 2048; // for averaged spectrum / spectral residual
+  const FFT_HOP = 1024;
+  // On-screen spectrogram: the analysis window is chosen per view (see
+  // pickFftSize), between these bounds -- small when zoomed in for time
+  // resolution, large when zoomed out for frequency resolution.
+  const SPEC_MIN_FFT = 256;
+  const SPEC_MAX_FFT = 2048;
+  const SPEC_SURVEY_FFT = 1024; // fixed size for the one-off dB-scale survey
+  const SPEC_DYNAMIC_RANGE_DB = 80; // default shading floor below peak; slider-driven
+  const SPEC_CANVAS_HEIGHT = 300;
+  const NYQUIST = SYNTH_RATE / 2; // 11025 Hz -- the whole visible spectrum
+  const MIN_FREQ_SPAN = 100; // narrowest frequency window, in Hz
+  const ZOOM_STEP = 2; // per +/- press and per ctrl+wheel notch
+
+  // -----------------------------------------------------------------------
+  // wasm driver -- same ABI call sequence as bg-sound2.js's loadSynth/_pump,
+  // but single-shot render-to-completion instead of a playback pump loop.
+  // -----------------------------------------------------------------------
+  let synthPromise = null;
+
+  function loadSynth() {
+    if (synthPromise) return synthPromise;
+    synthPromise = (async () => {
+      const resp = await fetch("msgs.wasm");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching msgs.wasm`);
+      const wasmBytes = await resp.arrayBuffer();
+      const { instance } = await WebAssembly.instantiate(wasmBytes, {});
+      const exp = instance.exports;
+      if (typeof exp.__wasm_call_ctors === "function") exp.__wasm_call_ctors();
+
+      const dlsResp = await fetch("gm.dls");
+      if (!dlsResp.ok) throw new Error(`HTTP ${dlsResp.status} fetching gm.dls`);
+      const dlsBytes = new Uint8Array(await dlsResp.arrayBuffer());
+
+      const dlsPtr = exp.msgs_alloc(dlsBytes.length);
+      new Uint8Array(exp.memory.buffer, dlsPtr, dlsBytes.length).set(dlsBytes);
+      const initRet = exp.msgs_init(dlsPtr, dlsBytes.length) | 0;
+      if (initRet !== 0) throw new Error(`msgs_init failed (code ${initRet})`);
+
+      // Reused scratch buffer for every render() call across every item --
+      // msgs_alloc never frees, so allocating fresh per item would grow
+      // wasm memory forever across a page session (see rt_alloc's ponytail
+      // note in src/wasm.c).
+      const outPtr = exp.msgs_alloc(RENDER_CHUNK_FRAMES * 4); // stereo int16
+      return { exp, outPtr };
+    })();
+    return synthPromise;
+  }
+
+  // Renders one MIDI file to completion. The ABI has no session handle (one
+  // global synth state) so items must be rendered one at a time -- callers
+  // must not call this concurrently for two items.
+  async function renderMidi(midiUrl) {
+    const resp = await fetch(midiUrl);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${midiUrl}`);
+    const smfBytes = new Uint8Array(await resp.arrayBuffer());
+
+    const { exp, outPtr } = await loadSynth();
+    exp.msgs_reset();
+    const ptr = exp.msgs_alloc(smfBytes.length);
+    new Uint8Array(exp.memory.buffer, ptr, smfBytes.length).set(smfBytes);
+    const loadRet = exp.msgs_load_smf(ptr, smfBytes.length) | 0;
+    if (loadRet !== 0) throw new Error(`msgs_load_smf failed (code ${loadRet}) for ${midiUrl}`);
+    exp.msgs_set_loop(0);
+
+    const maxFrames = MAX_RENDER_SECONDS * SYNTH_RATE;
+    const chunks = [];
+    let total = 0;
+    while (total < maxFrames) {
+      const n = exp.msgs_render(outPtr, RENDER_CHUNK_FRAMES) >>> 0;
+      if (n > 0) {
+        // Re-view memory.buffer every time: memory.grow() (possible inside
+        // msgs_render, e.g. voice/event growth) detaches prior views.
+        const pcm = new Int16Array(exp.memory.buffer, outPtr, n * 2);
+        chunks.push(pcm.slice()); // copy out before the next render() call reuses outPtr
+        total += n;
+      }
+      if (n === 0 || exp.msgs_is_finished()) break;
+    }
+
+    const left = new Float32Array(total);
+    const right = new Float32Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      const n = c.length / 2;
+      for (let i = 0; i < n; i++) {
+        left[off + i] = c[2 * i] / 32768;
+        right[off + i] = c[2 * i + 1] / 32768;
+      }
+      off += n;
+    }
+    return { left, right, sampleRate: SYNTH_RATE };
+  }
+
+  // -----------------------------------------------------------------------
+  // reference decode -- trap #1 (rate): force decodeAudioData onto a 22050Hz
+  // context so the platform resamples the 44.1kHz reference for us. This
+  // buffer is reused for both playback and analysis.
+  // ponytail: shared 22050Hz buffer for playback too (slightly lower
+  // fidelity than a native-rate decode); add a second native-rate decode
+  // for listening if that quality loss ever matters.
+  // -----------------------------------------------------------------------
+  async function decodeReferenceAt22050(flacUrl) {
+    const resp = await fetch(flacUrl);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${flacUrl}`);
+    const bytes = await resp.arrayBuffer();
+    const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const octx = new Ctx(2, 1, SYNTH_RATE);
+    let buf;
+    try {
+      buf = await octx.decodeAudioData(bytes);
+    } catch (err) {
+      throw new Error(`could not decode ${flacUrl} as audio (browser FLAC support required): ${err.message || err}`);
+    }
+    if (buf.sampleRate !== SYNTH_RATE) {
+      throw new Error(`decodeAudioData did not resample ${flacUrl} to ${SYNTH_RATE}Hz (got ${buf.sampleRate}Hz)`);
+    }
+    const left = buf.getChannelData(0).slice();
+    const right = buf.numberOfChannels > 1 ? buf.getChannelData(1).slice() : left.slice();
+    return { left, right, sampleRate: SYNTH_RATE };
+  }
+
+  function toMono(left, right) {
+    const n = left.length;
+    const m = new Float32Array(n);
+    for (let i = 0; i < n; i++) m[i] = (left[i] + right[i]) * 0.5;
+    return m;
+  }
+
+  // -----------------------------------------------------------------------
+  // analysis: envelope, alignment (trap #2), level normalization (trap #3),
+  // FFT / spectral residual, spectrogram.
+  // -----------------------------------------------------------------------
+  function computeEnvelope(mono, sampleRate, hopMs) {
+    const hop = Math.max(1, Math.round((sampleRate * hopMs) / 1000));
+    const n = Math.floor(mono.length / hop);
+    const env = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const start = i * hop;
+      for (let j = 0; j < hop; j++) { const v = mono[start + j]; sum += v * v; }
+      env[i] = Math.sqrt(sum / hop);
+    }
+    return env;
+  }
+
+  function pearsonAt(a, aStart, b, bStart, len) {
+    let sa = 0, sb = 0;
+    for (let i = 0; i < len; i++) { sa += a[aStart + i]; sb += b[bStart + i]; }
+    const ma = sa / len, mb = sb / len;
+    let cov = 0, va = 0, vb = 0;
+    for (let i = 0; i < len; i++) {
+      const da = a[aStart + i] - ma, db = b[bStart + i] - mb;
+      cov += da * db; va += da * da; vb += db * db;
+    }
+    const denom = Math.sqrt(va * vb);
+    return denom > 1e-12 ? cov / denom : 0;
+  }
+
+  // RMS-envelope cross-correlation over a coarse hop, searching
+  // +/-MAX_LAG_SECONDS of lag -- the lazy sufficient alignment per
+  // CLAUDE.adoc's tip (named alongside sample-domain FFT cross-cor).
+  // lag > 0 means the slopgs envelope is delayed relative to the reference.
+  function alignByEnvelope(envRef, envSlop, hopMs, maxLagSeconds) {
+    const maxLagHops = Math.round((maxLagSeconds * 1000) / hopMs);
+    let best = { lag: 0, r: -Infinity, len: 0 };
+    for (let lag = -maxLagHops; lag <= maxLagHops; lag++) {
+      const aStart = Math.max(0, lag), bStart = Math.max(0, -lag);
+      const len = Math.min(envRef.length - aStart, envSlop.length - bStart);
+      if (len < 10) continue;
+      const r = pearsonAt(envRef, aStart, envSlop, bStart, len);
+      if (r > best.r) best = { lag, r, len };
+    }
+    return { lagHops: best.lag, lagMs: best.lag * hopMs, r: best.r };
+  }
+
+  // Crops two full-resolution mono signals to their overlapping region at
+  // the given sample-domain lag (same convention as alignByEnvelope: lag>0
+  // means `slop` starts later than `ref`).
+  function cropToLag(ref, slop, lagSamples) {
+    const aStart = Math.max(0, lagSamples), bStart = Math.max(0, -lagSamples);
+    const len = Math.min(ref.length - aStart, slop.length - bStart);
+    return { ref: ref.subarray(aStart, aStart + len), slop: slop.subarray(bStart, bStart + len) };
+  }
+
+  function rms(x) {
+    let sum = 0;
+    for (let i = 0; i < x.length; i++) sum += x[i] * x[i];
+    return Math.sqrt(sum / Math.max(1, x.length));
+  }
+  function peakAbs(x) {
+    let m = 0;
+    for (let i = 0; i < x.length; i++) { const v = Math.abs(x[i]); if (v > m) m = v; }
+    return m;
+  }
+  function toDb(v) { return 20 * Math.log10(Math.max(v, 1e-12)); }
+
+  // Trap #3: normalize both signals to a common RMS before the residual is
+  // computed -- neutralizes the reference's dither noise floor / any gain
+  // difference. Peak/RMS dB reported on the page are measured BEFORE this
+  // normalization (they're meant to show the raw levels); only the spectral
+  // residual uses the normalized pair.
+  function normalizeRMS(ref, slop) {
+    const rRms = rms(ref), sRms = rms(slop);
+    const target = (rRms + sRms) / 2 || 1;
+    const refN = new Float32Array(ref.length);
+    const slopN = new Float32Array(slop.length);
+    const rScale = target / Math.max(rRms, 1e-9), sScale = target / Math.max(sRms, 1e-9);
+    for (let i = 0; i < ref.length; i++) refN[i] = ref[i] * rScale;
+    for (let i = 0; i < slop.length; i++) slopN[i] = slop[i] * sScale;
+    return { refN, slopN };
+  }
+
+  // In-place iterative radix-2 Cooley-Tukey. n must be a power of 2.
+  function fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = (-2 * Math.PI) / len;
+      const wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len) {
+        let curWr = 1, curWi = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const ur = re[i + k], ui = im[i + k];
+          const xr = re[i + k + len / 2], xi = im[i + k + len / 2];
+          const vr = xr * curWr - xi * curWi, vi = xr * curWi + xi * curWr;
+          re[i + k] = ur + vr; im[i + k] = ui + vi;
+          re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+          const nwr = curWr * wr - curWi * wi, nwi = curWr * wi + curWi * wr;
+          curWr = nwr; curWi = nwi;
+        }
+      }
+    }
+  }
+
+  function hannWindow(n) {
+    const w = new Float32Array(n);
+    for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1));
+    return w;
+  }
+
+  // Short-time magnitude spectra of `mono`, one Float32Array (length
+  // fftSize/2) per frame.
+  function stftMagnitudes(mono, fftSize, hop) {
+    const win = hannWindow(fftSize);
+    const frames = [];
+    const re = new Float32Array(fftSize), im = new Float32Array(fftSize);
+    for (let start = 0; start + fftSize <= mono.length; start += hop) {
+      for (let i = 0; i < fftSize; i++) { re[i] = mono[start + i] * win[i]; im[i] = 0; }
+      fft(re, im);
+      const mag = new Float32Array(fftSize / 2);
+      for (let i = 0; i < fftSize / 2; i++) mag[i] = Math.hypot(re[i], im[i]);
+      frames.push(mag);
+    }
+    return frames;
+  }
+
+  function averagedSpectrum(frames, bins) {
+    const avg = new Float32Array(bins);
+    if (frames.length === 0) return avg;
+    for (const f of frames) for (let i = 0; i < bins; i++) avg[i] += f[i];
+    for (let i = 0; i < bins; i++) avg[i] /= frames.length;
+    return avg;
+  }
+
+  // Spectral residual dB: L2 distance between the two (normalized-input)
+  // averaged magnitude spectra, relative to the reference spectrum's norm.
+  // Worse = less negative, per CLAUDE.adoc.
+  function spectralResidualDb(monoRefN, monoSlopN, sampleRate) {
+    const framesRef = stftMagnitudes(monoRefN, FFT_SIZE, FFT_HOP);
+    const framesSlop = stftMagnitudes(monoSlopN, FFT_SIZE, FFT_HOP);
+    const bins = FFT_SIZE / 2;
+    const specRef = averagedSpectrum(framesRef, bins);
+    const specSlop = averagedSpectrum(framesSlop, bins);
+    let diffSq = 0, refSq = 0;
+    for (let i = 0; i < bins; i++) {
+      const d = specRef[i] - specSlop[i];
+      diffSq += d * d; refSq += specRef[i] * specRef[i];
+    }
+    return toDb(Math.sqrt(diffSq) / Math.max(Math.sqrt(refSq), 1e-9));
+  }
+
+  // One FFT per on-screen pixel column, over the visible sample window only.
+  // This is what makes zoom mean something: the transform is recomputed for
+  // whatever slice of the signal is on screen, so zooming in resolves detail
+  // that a fixed pre-rendered image can only interpolate.
+  //
+  // The analysis window shrinks as you zoom in (pickFftSize) -- otherwise a
+  // fixed 1024-sample window would smear ~46ms across the whole viewport and
+  // zooming past that point would buy nothing but bigger blur.
+  function pickFftSize(visibleSamples, width) {
+    const targetWindow = (visibleSamples / Math.max(1, width)) * 4; // ~4 columns wide
+    let n = SPEC_MIN_FFT;
+    while (n < targetWindow && n < SPEC_MAX_FFT) n <<= 1;
+    return n;
+  }
+
+  // Fixed dB scale shared by both canvases and by every zoom level. Computed
+  // once from the full signals: if each view auto-gained itself, brightness
+  // would shift as you scrolled and the reference/slopgs pair would be
+  // shaded on two different scales -- which is precisely the comparison the
+  // page exists to support.
+  function computeSharedScale(signals) {
+    let maxDb = -Infinity;
+    for (const mono of signals) {
+      const hop = Math.max(SPEC_MIN_FFT, Math.floor(mono.length / 400)); // coarse survey
+      const frames = stftMagnitudes(mono, SPEC_SURVEY_FFT, hop);
+      for (const f of frames) for (let i = 0; i < f.length; i++) {
+        const d = toDb(f[i]);
+        if (d > maxDb) maxDb = d;
+      }
+    }
+    if (!isFinite(maxDb)) maxDb = 0;
+    return { maxDb }; // the shading floor comes from the contrast slider
+  }
+
+  // Renders mono[start .. start+count) into `canvas` at one column per pixel.
+  // ponytail: width FFTs per redraw, recomputed from scratch on every scroll
+  // step -- fine at ~900px and a 22050Hz mono signal, and it keeps the code a
+  // single pass with no cache to invalidate. Add a column cache keyed by
+  // (start, count) if a very long field recording ever feels sluggish.
+  // Returns the band statistics it measured while drawing; the caller needs
+  // both signals' numbers before it can print either one's delta, so text is
+  // overlaid afterwards by drawOverlay rather than here.
+  function drawSpectrogramWindow(canvas, mono, start, count, scale, meta) {
+    const width = canvas.width, height = canvas.height;
+    const fftSize = pickFftSize(count, width);
+    const bins = fftSize / 2;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(width, height);
+    const win = hannWindow(fftSize);
+    const re = new Float32Array(fftSize), im = new Float32Array(fftSize);
+    const mag = new Float32Array(bins);
+    // Contrast: how far below the pair's shared peak the shading bottoms out.
+    // Narrow it to pull faint detail out of the floor, widen it to keep only
+    // the loud structure.
+    const range = meta && meta.dynRangeDb ? meta.dynRangeDb : SPEC_DYNAMIC_RANGE_DB;
+    const floorDb = scale.maxDb - range;
+    const span = range || 1;
+    // Visible frequency window, shared by both canvases (see buildSpectrograms).
+    const fLo = meta && isFinite(meta.fLo) ? meta.fLo : 0;
+    const fHi = meta && isFinite(meta.fHi) ? meta.fHi : NYQUIST;
+    const fSpan = Math.max(1, fHi - fLo);
+    // Band-pass meter over exactly the visible band and the visible time span,
+    // accumulated from the transforms we are computing anyway.
+    const bLo = Math.max(0, Math.min(bins - 1, Math.floor((fLo / NYQUIST) * bins)));
+    const bHi = Math.max(bLo + 1, Math.min(bins, Math.ceil((fHi / NYQUIST) * bins)));
+    let bandSumSq = 0, bandN = 0, bandPeak = 0;
+
+    for (let c = 0; c < width; c++) {
+      // Centre each column's window on the time that column represents, so
+      // the image lines up with the waveform instead of lagging by a window.
+      const centre = start + Math.floor(((c + 0.5) * count) / width);
+      const from = centre - (fftSize >> 1);
+      for (let i = 0; i < fftSize; i++) {
+        const s = from + i;
+        re[i] = (s >= 0 && s < mono.length ? mono[s] : 0) * win[i]; // zero-pad the edges
+        im[i] = 0;
+      }
+      fft(re, im);
+      for (let i = 0; i < bins; i++) mag[i] = Math.hypot(re[i], im[i]);
+      for (let b = bLo; b < bHi; b++) {
+        const m = mag[b];
+        bandSumSq += m * m; bandN++;
+        if (m > bandPeak) bandPeak = m;
+      }
+      for (let row = 0; row < height; row++) {
+        // Canvas rows are top-down and high frequency is at the top, so row 0
+        // is fHi. Each row covers a frequency band; take the max over that
+        // band's bins rather than sampling one -- when a 2048-point window
+        // gives 1024 bins for 300 rows, picking every ~3rd bin drops narrow
+        // partials entirely, which is exactly what this page exists to show.
+        const fTop = fHi - (row * fSpan) / height;
+        const fBot = fHi - ((row + 1) * fSpan) / height;
+        let b0 = Math.floor((fBot / NYQUIST) * bins);
+        let b1 = Math.ceil((fTop / NYQUIST) * bins);
+        b0 = Math.max(0, Math.min(bins - 1, b0));
+        b1 = Math.max(b0 + 1, Math.min(bins, b1));
+        let m = 0;
+        for (let b = b0; b < b1; b++) if (mag[b] > m) m = mag[b];
+        const db = toDb(m);
+        const v = Math.max(0, Math.min(1, (db - floorDb) / span));
+        const gray = Math.round(v * 255);
+        const idx = (row * width + c) * 4;
+        img.data[idx] = gray; img.data[idx + 1] = gray; img.data[idx + 2] = gray; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // Frequency gridlines, labelled in Hz. Without an axis a zoomed-in band is
+    // unreadable -- "the bright streak is too loud" means nothing until you can
+    // see it sits at 3.2kHz, and a screenshot has to carry that on its face.
+    ctx.font = "11px monospace";
+    ctx.textBaseline = "middle";
+    for (const f of niceTicks(fLo, fHi, 6)) {
+      const y = Math.round(((fHi - f) * height) / fSpan) + 0.5;
+      if (y < 12 || y > height - 4) continue;
+      ctx.strokeStyle = "rgba(120,190,255,0.28)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+      const t = fmtHz(f);
+      const tw = ctx.measureText(t).width;
+      ctx.fillStyle = "rgba(0,0,0,0.66)";
+      ctx.fillRect(width - tw - 8, y - 7, tw + 6, 14);
+      ctx.fillStyle = "#9ecbff";
+      ctx.fillText(t, width - tw - 5, y);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    // Band levels are reported relative to the pair's shared peak, so 0 dB is
+    // the loudest point in either signal. Absolute FFT magnitudes would depend
+    // on window size and scale with zoom; this does not, and the ref/slopgs
+    // difference stays directly comparable across every view.
+    const bandRmsDb = toDb(Math.sqrt(bandSumSq / Math.max(1, bandN))) - scale.maxDb;
+    const bandPeakDb = toDb(bandPeak) - scale.maxDb;
+    return { fftSize, bandRmsDb, bandPeakDb, fLo, fHi };
+  }
+
+  // Text block, drawn after both canvases are analysed so each can quote the
+  // other. It goes ON the canvas, not in the DOM around it: a screenshot of
+  // the image is what actually gets shared, and it is only useful if it says
+  // which signal it is, what time and frequency range it covers, what manual
+  // offset produced it, and what the band measured.
+  function drawOverlay(canvas, label, lines) {
+    const ctx = canvas.getContext("2d");
+    ctx.font = "bold 14px sans-serif";
+    let w = ctx.measureText(label).width;
+    ctx.font = "12px monospace";
+    for (const l of lines) w = Math.max(w, ctx.measureText(l).width);
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(2, 2, w + 10, 20 + lines.length * 16);
+    ctx.font = "bold 14px sans-serif";
+    ctx.fillStyle = label.startsWith("SLOPGS") ? "#7CFC9A" : "#FFD27C";
+    ctx.fillText(label, 7, 16);
+    ctx.font = "12px monospace";
+    ctx.fillStyle = "#ddd";
+    lines.forEach((l, i) => ctx.fillText(l, 7, 32 + i * 16));
+  }
+
+  function fmtZoom(z) { return (z < 10 ? z.toFixed(1) : Math.round(z)) + "×"; }
+  function msToSamples(ms) { return Math.max(1, Math.round((ms / 1000) * SYNTH_RATE)); }
+  function fmtHz(f) {
+    return f >= 1000 ? `${(f / 1000).toFixed(f < 10000 ? 2 : 1)}kHz` : `${Math.round(f)}Hz`;
+  }
+
+  // Round tick values (1/2/5 x 10^n) inside [lo, hi] -- so a zoomed band is
+  // labelled at readable numbers instead of arbitrary fractions of the view.
+  function niceTicks(lo, hi, target) {
+    const raw = (hi - lo) / Math.max(1, target);
+    const mag = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-6))));
+    const norm = raw / mag;
+    const stepMul = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+    const step = stepMul * mag;
+    const out = [];
+    for (let f = Math.ceil(lo / step) * step; f <= hi; f += step) out.push(f);
+    return out;
+  }
+
+  // -----------------------------------------------------------------------
+  // playback
+  //
+  // Only the slopgs side is played through WebAudio -- it exists solely as
+  // PCM this page just rendered, so there is nothing for a media element to
+  // load. The reference is a plain <audio controls> pointed straight at the
+  // FLAC (see makeCard), which is why there is no playback path for it here.
+  // -----------------------------------------------------------------------
+  let playCtx = null;
+  function getPlayCtx() {
+    if (!playCtx) playCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return playCtx;
+  }
+
+  // One slopgs render sounds at a time: starting a second stops the first and
+  // fires its onStop so the other card's button drops back to "Play".
+  let currentPlay = null;
+  function stopCurrent() {
+    if (!currentPlay) return;
+    const { src, onStop } = currentPlay;
+    currentPlay = null;
+    src.onended = null;
+    try { src.stop(); } catch (_) { /* already ended */ }
+    onStop();
+  }
+  function playStereo(left, right, sampleRate, onStop) {
+    stopCurrent();
+    const ctx = getPlayCtx();
+    ctx.resume().catch(() => {});
+    const buf = ctx.createBuffer(2, left.length, sampleRate);
+    buf.getChannelData(0).set(left);
+    buf.getChannelData(1).set(right);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.onended = () => {
+      if (currentPlay && currentPlay.src === src) { currentPlay = null; onStop(); }
+    };
+    currentPlay = { src, onStop };
+    src.start();
+    return src;
+  }
+
+  // The ABI has one global synth state (no session handle), so two renders
+  // must never overlap -- every render goes through this chain. Each item's
+  // result is then cached on its own state object so pressing Play twice, or
+  // Play then Load & compare, renders once.
+  let renderChain = Promise.resolve();
+  function getRender(item, state) {
+    if (!state.slopPromise) {
+      const run = () => renderMidi(item.midiUrl);
+      const next = renderChain.then(run, run);
+      renderChain = next.catch(() => {});
+      state.slopPromise = next.catch((err) => { state.slopPromise = null; throw err; });
+    }
+    return state.slopPromise;
+  }
+
+  // -----------------------------------------------------------------------
+  // per-item pipeline + UI
+  // -----------------------------------------------------------------------
+  function el(tag, attrs, children) {
+    const e = document.createElement(tag);
+    if (attrs) for (const k in attrs) {
+      if (k === "text") e.textContent = attrs[k];
+      else if (k === "html") e.innerHTML = attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    }
+    if (children) for (const c of children) e.appendChild(c);
+    return e;
+  }
+
+  function buildInfoTable(extraRows) {
+    // extraRows: [[label, value], ...] -- used by the tests page to surface
+    // tests/README.adoc's per-item table (what it's derived from, what it
+    // tests, regression example, what to expect).
+    const table = el("table", { class: "info" });
+    for (const [k, v] of extraRows) {
+      const tr = el("tr", null, [el("th", { text: k }), el("td", { text: v })]);
+      table.appendChild(tr);
+    }
+    return table;
+  }
+
+  function missingMsg(kind, url) {
+    return `Missing ${kind}: expected at ${url}. This reference is not checked into the repo `
+      + `(see CLAUDE.adoc); generate it and reload this page to compare against it. `
+      + `The rest of the corpus is unaffected.`;
+  }
+
+  async function runItem(item, state, statusEl, resultsEl) {
+    resultsEl.innerHTML = "";
+    statusEl.textContent = "loading synth + gm.dls...";
+    try {
+      await loadSynth();
+    } catch (err) {
+      statusEl.textContent = `slopgs engine unavailable: ${err.message || err}`;
+      return;
+    }
+
+    // Fetch/decode/render each side independently so a missing reference or
+    // missing MIDI degrades just this item, not the page.
+    let ref, slop;
+    statusEl.textContent = "decoding reference...";
+    try {
+      ref = await decodeReferenceAt22050(item.flacUrl);
+    } catch (err) {
+      statusEl.textContent = missingMsg("reference FLAC", item.flacUrl) + ` (${err.message || err})`;
+      return;
+    }
+    statusEl.textContent = "rendering slopgs...";
+    try {
+      slop = await getRender(item, state);
+    } catch (err) {
+      statusEl.textContent = missingMsg("MIDI or slopgs render failed for", item.midiUrl) + ` (${err.message || err})`;
+      return;
+    }
+
+    statusEl.textContent = "aligning + analyzing...";
+    const monoRefFull = toMono(ref.left, ref.right);
+    const monoSlopFull = toMono(slop.left, slop.right);
+    const envRef = computeEnvelope(monoRefFull, SYNTH_RATE, ENV_HOP_MS);
+    const envSlop = computeEnvelope(monoSlopFull, SYNTH_RATE, ENV_HOP_MS);
+    const align = alignByEnvelope(envRef, envSlop, ENV_HOP_MS, MAX_LAG_SECONDS);
+    const lagSamples = Math.round((align.lagMs / 1000) * SYNTH_RATE);
+    const { ref: monoRef, slop: monoSlop } = cropToLag(monoRefFull, monoSlopFull, lagSamples);
+
+    const peakRefDb = toDb(peakAbs(monoRef));
+    const peakSlopDb = toDb(peakAbs(monoSlop));
+    const rmsRefDb = toDb(rms(monoRef));
+    const rmsSlopDb = toDb(rms(monoSlop));
+    const { refN, slopN } = normalizeRMS(monoRef, monoSlop);
+    const residualDb = spectralResidualDb(refN, slopN, SYNTH_RATE);
+
+    statusEl.textContent = `aligned: lag ${align.lagMs} ms, envelope r=${align.r.toFixed(3)} `
+      + `(level-normalized before residual)`;
+
+    resultsEl.innerHTML = "";
+    const statsTable = el("table", { class: "stats" }, [
+      el("tr", null, [el("th", { text: "" }), el("th", { text: "reference" }), el("th", { text: "slopgs" })]),
+      el("tr", null, [el("th", { text: "peak dB" }), el("td", { text: peakRefDb.toFixed(1) }), el("td", { text: peakSlopDb.toFixed(1) })]),
+      el("tr", null, [el("th", { text: "RMS dB" }), el("td", { text: rmsRefDb.toFixed(1) }), el("td", { text: rmsSlopDb.toFixed(1) })]),
+    ]);
+    resultsEl.appendChild(statsTable);
+    const extra = el("p", { class: "extra-stats" });
+    extra.textContent = `spectral residual (level-normalized): ${residualDb.toFixed(1)} dB `
+      + `(worse = less negative)   |   envelope correlation r: ${align.r.toFixed(3)}   |   `
+      + `detected lag: ${align.lagMs} ms`;
+    resultsEl.appendChild(extra);
+
+    buildSpectrograms(resultsEl, monoRef, monoSlop, align.lagMs);
+  }
+
+  // Reference on top, slopgs below. Neither canvas scrolls: they are a fixed
+  // viewport onto the signal, and scrolling/zooming moves the *window* being
+  // transformed and repaints both. One scrollbar and one zoom factor feed both
+  // canvases from the same (start, count), so the two views cannot drift apart
+  // and every repaint shows real analysis rather than stretched pixels.
+  function buildSpectrograms(parent, monoRef, monoSlop, autoLagMs) {
+    const total = Math.min(monoRef.length, monoSlop.length);
+    const scale = computeSharedScale([monoRef, monoSlop]);
+
+    const specWrap = el("div", { class: "specwrap" });
+    const cRef = el("canvas", { class: "spectrogram" });
+    const cSlop = el("canvas", { class: "spectrogram" });
+    const viewport = el("div", { class: "spec-viewport" }, [cRef, cSlop]);
+    // A plain overflow strip whose inner spacer is `zoom` viewports wide. The
+    // browser gives us a real scrollbar with real momentum/keyboard/trackpad
+    // behaviour, and we read scrollLeft off it -- no scrollbar to reimplement.
+    const spacer = el("div", { class: "spec-spacer" });
+    const scrollbar = el("div", { class: "spec-scrollbar" }, [spacer]);
+
+    const zoomVal = el("span", { class: "zoomval" });
+    const rangeVal = el("span", { class: "rangeval" });
+    const nudgeVal = el("span", { class: "rangeval" });
+    const freqVal = el("span", { class: "rangeval" });
+    const bandVal = el("span", { class: "rangeval" });
+    let dynRange = SPEC_DYNAMIC_RANGE_DB;
+    let zoom = 1; // 1 = whole item across the viewport
+    let pending = false;
+    // Manual alignment: a per-signal sample offset on top of the automatic
+    // envelope-correlation lag. alignByEnvelope resolves to a 50ms hop and
+    // assumes one constant offset, so it cannot fix a sub-hop error or a
+    // reference that drifts; dragging a canvas nudges that signal's window.
+    let refOff = 0, slopOff = 0;
+    // Visible frequency window, in Hz. Shared by both canvases -- unlike the
+    // time nudge, which is deliberately per-signal, comparing two spectra only
+    // means anything if they are on the same frequency axis.
+    let fLo = 0, fHi = NYQUIST;
+
+    function viewWidth() { return cRef.width || 1; }
+    function visibleSamples() { return Math.max(viewWidth(), Math.round(total / zoom)); }
+
+    function paint() {
+      pending = false;
+      const count = visibleSamples();
+      const maxStart = Math.max(0, total - count);
+      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const frac = denom > 0 ? Math.min(1, Math.max(0, scrollbar.scrollLeft / denom)) : 0;
+      const start = Math.round(frac * maxStart);
+      const toMs = (s) => (s / SYNTH_RATE) * 1000;
+      const view = { zoom, fLo, fHi, dynRangeDb: dynRange };
+      const sRef = drawSpectrogramWindow(cRef, monoRef, start + refOff, count, scale, view);
+      const sSlop = drawSpectrogramWindow(cSlop, monoSlop, start + slopOff, count, scale, view);
+
+      const band = `${fmtHz(fLo)}–${fmtHz(fHi)}`;
+      const viewLine = (off, st) =>
+        `${((start + off) / SYNTH_RATE).toFixed(3)}s–${((start + off + count) / SYNTH_RATE).toFixed(3)}s`
+        + `   ${band}   offset ${off >= 0 ? "+" : ""}${toMs(off).toFixed(1)}ms`
+        + `   window ${st.fftSize}   zoom ${fmtZoom(zoom)}   contrast ${dynRange}dB`;
+      const lvl = (st) => `band rms ${st.bandRmsDb.toFixed(1)}dB  peak ${st.bandPeakDb.toFixed(1)}dB (rel. pair peak)`;
+      const dRms = sSlop.bandRmsDb - sRef.bandRmsDb;
+      const dPeak = sSlop.bandPeakDb - sRef.bandPeakDb;
+      const sign = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
+
+      drawOverlay(cRef, "REFERENCE (44.1kHz source, resampled to 22050Hz)",
+        [viewLine(refOff, sRef), lvl(sRef)]);
+      drawOverlay(cSlop, "SLOPGS (native 22050Hz render)",
+        [viewLine(slopOff, sSlop), `${lvl(sSlop)}   Δ vs ref: rms ${sign(dRms)}dB  peak ${sign(dPeak)}dB`]);
+
+      bandVal.textContent = `band ${band} — ref rms ${sRef.bandRmsDb.toFixed(1)}dB, `
+        + `slopgs rms ${sSlop.bandRmsDb.toFixed(1)}dB, Δ ${sign(dRms)}dB `
+        + `(peak Δ ${sign(dPeak)}dB)`;
+      const t0 = start / SYNTH_RATE, t1 = (start + count) / SYNTH_RATE;
+      rangeVal.textContent = `${t0.toFixed(2)}s – ${t1.toFixed(2)}s of ${(total / SYNTH_RATE).toFixed(2)}s`;
+      zoomVal.textContent = fmtZoom(zoom);
+      // The number that matters for alignment is slopgs relative to reference;
+      // it is what you would feed back as a corrected lag.
+      const rel = toMs(slopOff - refOff);
+      nudgeVal.textContent = `nudge ${rel >= 0 ? "+" : ""}${rel.toFixed(1)} ms`
+        + ` (auto ${autoLagMs} ms → total ${(autoLagMs + rel).toFixed(1)} ms)`;
+      freqVal.textContent = `${fmtHz(fLo)} – ${fmtHz(fHi)}`;
+    }
+
+    // Frequency zoom about the centre of the visible band, clamped to the
+    // real spectrum: there is nothing above Nyquist to look at.
+    function setFreqZoom(factor) {
+      const mid = (fLo + fHi) / 2;
+      let half = ((fHi - fLo) / 2) * factor;
+      half = Math.max(MIN_FREQ_SPAN / 2, Math.min(NYQUIST / 2, half));
+      panFreq(mid - half, mid + half);
+    }
+    function panFreq(lo, hi) {
+      const s = hi - lo;
+      if (lo < 0) { lo = 0; hi = s; }
+      if (hi > NYQUIST) { hi = NYQUIST; lo = NYQUIST - s; }
+      fLo = Math.max(0, lo); fHi = Math.min(NYQUIST, hi);
+      schedulePaint();
+    }
+    // Coalesce to one repaint per frame: a scroll gesture fires far more
+    // events than there are frames, and each repaint is width-many FFTs.
+    function schedulePaint() {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(paint);
+    }
+
+    function setZoom(z) {
+      const prev = zoom;
+      zoom = Math.max(1, Math.min(maxZoom(), z));
+      // Hold the centre of the current view steady across the zoom change.
+      const denomPrev = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const fracPrev = Math.min(1, Math.max(0, scrollbar.scrollLeft / denomPrev));
+      const centreFrac = prev <= 1 ? 0.5 : fracPrev * (1 - 1 / prev) + 0.5 / prev;
+      spacer.style.width = `${(zoom * 100).toFixed(4)}%`;
+      const denomNext = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const targetFrac = zoom <= 1 ? 0 : (centreFrac - 0.5 / zoom) / (1 - 1 / zoom);
+      scrollbar.scrollLeft = Math.min(1, Math.max(0, targetFrac)) * denomNext;
+      schedulePaint();
+    }
+    // Never zoom past one sample per pixel -- beyond that there is no more
+    // signal to resolve, only interpolation.
+    function maxZoom() { return Math.max(1, total / viewWidth()); }
+
+    // Drag a canvas left/right to slide that signal against the other. Both
+    // are draggable: you nudge whichever one you are looking at.
+    function attachDrag(canvas, get, set) {
+      let from = 0, fromY = 0, base = 0, baseLo = 0, baseHi = 0, active = false;
+      canvas.addEventListener("pointerdown", (ev) => {
+        active = true; from = ev.clientX; fromY = ev.clientY; base = get();
+        baseLo = fLo; baseHi = fHi;
+        try { canvas.setPointerCapture(ev.pointerId); } catch (_) { /* no capture */ }
+        ev.preventDefault();
+      });
+      canvas.addEventListener("pointermove", (ev) => {
+        if (!active) return;
+        // Horizontal: convert CSS pixels of travel into samples at the current
+        // zoom, so a drag moves the image exactly as far as the pointer went.
+        // This one is per-signal -- it IS the manual alignment.
+        const perPx = visibleSamples() / Math.max(1, canvas.clientWidth);
+        set(Math.round(base - (ev.clientX - from) * perPx));
+        // Vertical: pan the frequency window, and do it for both canvases.
+        // Dragging down reveals higher frequencies, since high is at the top.
+        const hzPerPx = (baseHi - baseLo) / Math.max(1, canvas.clientHeight);
+        const dHz = (ev.clientY - fromY) * hzPerPx;
+        panFreq(baseLo + dHz, baseHi + dHz);
+        schedulePaint();
+      });
+      const end = (ev) => {
+        if (!active) return;
+        active = false;
+        try { canvas.releasePointerCapture(ev.pointerId); } catch (_) { /* fine */ }
+      };
+      canvas.addEventListener("pointerup", end);
+      canvas.addEventListener("pointercancel", end);
+    }
+    attachDrag(cRef, () => refOff, (v) => { refOff = v; });
+    attachDrag(cSlop, () => slopOff, (v) => { slopOff = v; });
+
+    const zoomRow = el("div", { class: "zoomrow" }, [
+      el("span", { class: "zoomlabel", text: "zoom" }),
+      mkBtn("−", () => setZoom(zoom / ZOOM_STEP)),
+      mkBtn("+", () => setZoom(zoom * ZOOM_STEP)),
+      mkBtn("Fit", () => setZoom(1)),
+      zoomVal,
+      rangeVal,
+    ]);
+    const alignRow = el("div", { class: "zoomrow" }, [
+      el("span", { class: "zoomlabel", text: "align" }),
+      mkBtn("◀ 1ms", () => { slopOff -= msToSamples(1); schedulePaint(); }),
+      mkBtn("1ms ▶", () => { slopOff += msToSamples(1); schedulePaint(); }),
+      mkBtn("Reset", () => { refOff = 0; slopOff = 0; schedulePaint(); }),
+      nudgeVal,
+    ]);
+
+    const contrast = el("input", {
+      type: "range", min: "20", max: "120", step: "5",
+      value: String(SPEC_DYNAMIC_RANGE_DB), class: "contrast",
+    });
+    contrast.oninput = () => { dynRange = Number(contrast.value); schedulePaint(); };
+    const freqRow = el("div", { class: "zoomrow" }, [
+      el("span", { class: "zoomlabel", text: "freq" }),
+      mkBtn("−", () => setFreqZoom(2)),   // wider band = zoomed out
+      mkBtn("+", () => setFreqZoom(0.5)),
+      mkBtn("Full", () => panFreq(0, NYQUIST)),
+      freqVal,
+      el("span", { class: "zoomlabel", text: "contrast" }),
+      contrast,
+      bandVal,
+    ]);
+
+    specWrap.appendChild(zoomRow);
+    specWrap.appendChild(alignRow);
+    specWrap.appendChild(freqRow);
+    specWrap.appendChild(viewport);
+    specWrap.appendChild(scrollbar);
+
+    scrollbar.addEventListener("scroll", schedulePaint);
+    // Ctrl/Cmd+wheel zooms time, the usual image-viewer gesture; Shift+wheel
+    // zooms frequency. A plain wheel is left alone so the page still scrolls.
+    viewport.addEventListener("wheel", (ev) => {
+      if (ev.shiftKey) {
+        ev.preventDefault();
+        setFreqZoom(ev.deltaY < 0 ? 0.5 : 2);
+        return;
+      }
+      if (!ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      setZoom(ev.deltaY < 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP);
+    }, { passive: false });
+
+    // Insert before sizing: the canvas backing store is set from the laid-out
+    // viewport width, which is 0 until the element is in the document.
+    parent.appendChild(specWrap);
+    const w = Math.max(320, Math.round(viewport.clientWidth || 900));
+    for (const c of [cRef, cSlop]) {
+      c.width = w;
+      c.height = SPEC_CANVAS_HEIGHT;
+      c.style.width = "100%";
+      c.style.height = SPEC_CANVAS_HEIGHT + "px";
+    }
+    spacer.style.width = "100%";
+    paint();
+    return specWrap;
+  }
+
+  function mkBtn(text, onclick) {
+    const b = el("button", { text });
+    b.onclick = onclick;
+    return b;
+  }
+
+  function renderPage(config) {
+    const root = document.getElementById("items");
+    const notice = document.getElementById("notice");
+    if (notice) {
+      notice.textContent = "Rate: references are decoded via decodeAudioData on a 22050Hz "
+        + "OfflineAudioContext, so the platform resamples them to match the synth's native "
+        + "22050Hz output (verified against decodedBuffer.sampleRate). Alignment: start delay is "
+        + "removed by RMS-envelope cross-correlation over a 50ms hop, searching +/-5s of lag "
+        + "(detected lag is shown per item). Level: both signals are normalized to a common RMS "
+        + "before the spectral residual is computed, to neutralize reference dithering/gain. "
+        + "Reference FLAC decoding requires browser-native FLAC support (Chrome/Firefox); it will "
+        + "fail to decode in browsers without it.";
+    }
+    for (const item of config.items) root.appendChild(makeCard(item));
+  }
+
+  const PLAY_LABEL = "▶ Play slopgs";
+
+  function makeCard(item) {
+    const state = {}; // holds the memoized slopgs render for this item
+    const card = el("div", { class: "card" });
+    card.appendChild(el("h3", { text: item.title }));
+    if (item.extraRows) card.appendChild(buildInfoTable(item.extraRows));
+    const paths = el("p", { class: "paths" });
+    paths.textContent = `midi: ${item.midiUrl}   flac: ${item.flacUrl}`;
+    card.appendChild(paths);
+
+    const status = el("p", { class: "status" });
+    const results = el("div", { class: "results" });
+
+    // Reference: a stock media element straight at the FLAC. The browser owns
+    // transport, seeking and volume, and preload="none" keeps a 34-item page
+    // from fetching every reference on load.
+    const refRow = el("div", { class: "playrow" });
+    refRow.appendChild(el("span", { class: "playlabel", text: "reference" }));
+    const audio = el("audio", { controls: "", preload: "none", src: item.flacUrl });
+    audio.onerror = () => { status.textContent = missingMsg("reference FLAC", item.flacUrl); };
+    // Never let the reference and a slopgs render sound over each other.
+    audio.onplay = () => stopCurrent();
+    refRow.appendChild(audio);
+    card.appendChild(refRow);
+
+    // slopgs: rendered on first press (nothing exists to play until then),
+    // then the same button stops it.
+    const slopRow = el("div", { class: "playrow" });
+    slopRow.appendChild(el("span", { class: "playlabel", text: "slopgs" }));
+    const playBtn = el("button", { text: PLAY_LABEL });
+    let playing = false;
+    const reset = () => { playing = false; playBtn.textContent = PLAY_LABEL; };
+    playBtn.onclick = async () => {
+      if (playing) { stopCurrent(); return; } // stopCurrent() fires reset()
+      audio.pause();
+      playBtn.disabled = true;
+      playBtn.textContent = "rendering…";
+      try {
+        const slop = await getRender(item, state);
+        playBtn.textContent = "■ Stop";
+        playing = true;
+        playStereo(slop.left, slop.right, slop.sampleRate, reset);
+      } catch (err) {
+        status.textContent = missingMsg("MIDI or slopgs render failed for", item.midiUrl)
+          + ` (${err.message || err})`;
+        reset();
+      } finally {
+        playBtn.disabled = false;
+      }
+    };
+    slopRow.appendChild(playBtn);
+    card.appendChild(slopRow);
+
+    const cmpBtn = el("button", { text: "Load & compare" });
+    cmpBtn.onclick = () => {
+      cmpBtn.disabled = true;
+      runItem(item, state, status, results).catch((err) => {
+        status.textContent = `unexpected error: ${err.message || err}`;
+      }).finally(() => { cmpBtn.disabled = false; });
+    };
+    card.appendChild(cmpBtn);
+    card.appendChild(status);
+    card.appendChild(results);
+    return card;
+  }
+
+  return { renderPage };
+})();

@@ -78,7 +78,8 @@ What should be in here:
 . Built native `msgs-render` binary
 . `gm.dls`, expect the user to supply one.
 . The driver `bg-sound2` JS file
-. Any applicable test page.
+. Comparison/test pages.
+* `compare.js` containing spectrogram code.
 
 The user is assumed to run a web server from the repo root.
 
