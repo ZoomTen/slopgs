@@ -1825,6 +1825,192 @@ def p37_rac_volume_order():
     return _write_manifest("37_rac_volume_order.mid", tr, man)
 
 
+def p38_same_tick_locale():
+    """Which locale does a note-on take when several Bank Select + Program
+    Change pairs land on ONE channel at ONE tick?
+
+    field/serum_opening.mid does this 64 times, Kot_and_A64-GENERAL_SERUM 1603
+    times, CrystalOscillator 947: three tracks share a channel, each sends its
+    own CC0/CC32/PC and then its own note, all on the same tick, to layer three
+    patches. No probe or test in the corpus sends more than one Program Change
+    per channel per tick, so nothing measures what the driver does with it.
+
+    Two rules fit everything measured so far and disagree here:
+      stream order -- each note-on takes the locale latched by the most recent
+                      Program Change BEFORE it in the byte stream. What
+                      smf.c's stable (abs_tick, seq) sort produces today.
+      look-ahead   -- SPEC.md S4.2.1/S4.7: the Bank/Program queue is
+                      timestamp-keyed and a read ahead of the periodic flush
+                      sees the LAST value scheduled at that timestamp, so every
+                      note-on at the tick takes the last PC of the group.
+
+    On serum_opening's 10.100s section the two answers are 24 dB apart in the
+    2-11kHz bands, and each is badly wrong where the other is right, so the
+    file itself cannot settle it -- hence this probe.
+
+    Patches are picked for maximum spectral distance: 001:080 (GS Square Wave,
+    harmonics to Nyquist) vs 008:080 (GS Sine Wave, fundamental only) vs
+    000:079 (Ocarina, dull and breathy). Roughly 40 dB apart above 2 kHz, so
+    one band-energy read per case answers it. No bend and no tune: the pitch
+    aliasing serum_opening also exercises is a separate question.
+
+      A/B/C  one patch each, nothing else at the tick -- the three controls
+             every other case is read against.
+      D      both PC groups, THEN the note. Both rules say sine; if this reads
+             square the second group is not landing at all and E/F/G/H mean
+             nothing.
+      E      square group, note, sine group -- all one tick.
+             stream -> square, look-ahead -> sine.  THE DISCRIMINATOR.
+      F      E mirrored (sine group, note, square group), so the answer cannot
+             be "the brighter one wins" or a level artifact.
+      G      serum_opening's actual shape: three groups, each with its own
+             note, on three DIFFERENT keys so nothing chokes anything.
+             stream -> square/sine/ocarina, look-ahead -> ocarina x3.
+      H      G on ONE key. Two questions at once, deliberately: it is the exact
+             shape of serum_opening's key-3 gesture. Under same-key retrigger
+             choke only the last note survives; without it all three sum. Read
+             H against G's total, then against C.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 38_same_tick_locale.mid",
+           "# onset\tcase\tkey\texpect_stream_order\texpect_look_ahead\tevents"]
+    clock = t(0.5)
+    SQ, SI, OC = (1, 80, "square"), (8, 80, "sine"), (0, 79, "ocarina")
+    DUR, GAP = t(0.6), t(1.5)
+
+    def sel(tick, bp):
+        """One track's CC0/CC32/PC group, in the order a sequencer emits it."""
+        tr.cc(tick, 0, 0, bp[0])
+        tr.cc(tick, 0, 32, 0)
+        tr.prog(tick, 0, bp[1])
+
+    def case(name, events, build):
+        """build(tick, note) -- note(key, stream, lookahead) records one onset.
+        Every event a case emits sits on the single tick `clock`."""
+        nonlocal clock
+        def note(key, stream, lookahead):
+            tr.note(clock, DUR, 0, key, 100)
+            man.append(f"{clock / TPS:.3f}\t{name}\t{key}\t{stream}\t{lookahead}\t{events}")
+        build(clock, note)
+        clock += GAP
+
+    case("A_ctl_square", "cc0=1 pc80, on60",
+         lambda k, note: (sel(k, SQ), note(60, "square", "square")))
+    case("B_ctl_sine", "cc0=8 pc80, on60",
+         lambda k, note: (sel(k, SI), note(60, "sine", "sine")))
+    case("C_ctl_ocarina", "cc0=0 pc79, on60",
+         lambda k, note: (sel(k, OC), note(60, "ocarina", "ocarina")))
+    case("D_note_after_both", "cc0=1 pc80, cc0=8 pc80, on60",
+         lambda k, note: (sel(k, SQ), sel(k, SI), note(60, "sine", "sine")))
+    case("E_note_between", "cc0=1 pc80, on60, cc0=8 pc80",
+         lambda k, note: (sel(k, SQ), note(60, "square", "sine"), sel(k, SI)))
+    case("F_note_between_rev", "cc0=8 pc80, on60, cc0=1 pc80",
+         lambda k, note: (sel(k, SI), note(60, "sine", "square"), sel(k, SQ)))
+    case("G_three_keys", "cc0=1 pc80 on48, cc0=8 pc80 on60, cc0=0 pc79 on72",
+         lambda k, note: (sel(k, SQ), note(48, "square", "ocarina"),
+                          sel(k, SI), note(60, "sine", "ocarina"),
+                          sel(k, OC), note(72, "ocarina", "ocarina")))
+    case("H_three_same_key", "cc0=1 pc80 on60, cc0=8 pc80 on60, cc0=0 pc79 on60",
+         lambda k, note: (sel(k, SQ), note(60, "square+sine+ocarina if no choke, else ocarina", "ocarina"),
+                          sel(k, SI), note(60, "(same onset)", "(same onset)"),
+                          sel(k, OC), note(60, "(same onset)", "(same onset)")))
+    return _write_manifest("38_same_tick_locale.mid", tr, man)
+def p40_same_tick_bank():
+    """Probe 38's leftover: when several Bank Select MSBs land on ONE channel at
+    ONE tick, which one does the note-on's locale end up carrying?
+
+    Probe 38 settled the PROGRAM half -- 7 of its 8 cases say a note-on takes
+    the LAST Program Change at its tick, not the one before it in the stream
+    (case G, serum_opening's own shape, collapses to ocarina x3 and sits 19 dB
+    from what stream order renders). Its case F did not fit: F and E have the
+    same program in both groups and differ only in bank order, `1->8` versus
+    `8->1`, and the reference came out bank 8 BOTH times (3.75 dB from the
+    008:080 control, 28.6 from 001:080). No order-sensitive rule produces that.
+    Bank 1 is definitely honoured -- 38's case A matches 001:080 at 4.36 dB
+    against 27.24 for 000:080 -- so it is not bank 1 being dropped.
+
+    Everything here is program 80, so the program half is held fixed and only
+    the bank moves. Three banks of program 80 exist in gm.dls and are mutually
+    27 dB or more apart: 000:080 Square Lead, 001:080 Square Wave (both bright,
+    but not each other), 008:080 Sine Wave (fundamental only). The manifest
+    carries one column per candidate rule, so the reference render reads
+    straight off as a truth table:
+
+      stream    each note-on takes the locale latched by the most recent PC
+                before it in the byte stream. What smf.c does today.
+      last_pc   look-ahead: the note takes the last PC of the tick, each PC
+                having latched whatever bank byte was live when it ran.
+                Probe 38's 7-of-8 answer.
+      high      order-independent: the highest bank MSB that reached a PC at
+                that tick wins. The only simple rule that also fits 38's F.
+
+      A/B/C  one bank each -- the three controls.
+      D/E    both PC groups then the note, in both bank orders. E is the
+             discriminator: stream and last_pc say 001:080, high says 008:080.
+      F/G    note between the two groups, both orders. These re-measure 38's
+             E and F in a fresh capture; F separates stream from last_pc.
+      H/I    same as D/E but the second bank is 0, so "high" is separated from
+             the other two in the other direction (bank 0 arriving last).
+      J/K    two Bank Selects, ONE Program Change, note last. No PC queue tie
+             at all -- this isolates the bank byte itself. K is the one that
+             matters: stream and last_pc both say 001:080, high says 008:080.
+      L/M    a Bank Select AFTER the note with NO program change following it.
+             Every rule above says the note keeps the first group's bank. If
+             the reference disagrees, the bank is being read live at voice
+             render time and all three rules are wrong.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 40_same_tick_bank.mid",
+           "# onset\tcase\tevents\texpect_stream\texpect_last_pc\texpect_high"]
+    clock = t(0.5)
+    DUR, GAP = t(0.6), t(1.5)
+    NAME = {0: "squarelead(000:080)", 1: "squarewave(001:080)", 8: "sine(008:080)"}
+
+    def bank(tick, msb):
+        tr.cc(tick, 0, 0, msb)
+        tr.cc(tick, 0, 32, 0)
+
+    def sel(tick, msb):
+        """One track's CC0/CC32/PC group, in the order a sequencer emits it."""
+        bank(tick, msb)
+        tr.prog(tick, 0, 80)
+
+    def case(name, events, build, stream, last_pc, high):
+        nonlocal clock
+        build(clock, lambda k: tr.note(k, DUR, 0, 60, 100))
+        man.append(f"{clock / TPS:.3f}\t{name}\t{events}\t"
+                   f"{NAME[stream]}\t{NAME[last_pc]}\t{NAME[high]}")
+        clock += GAP
+
+    case("A_ctl_b0", "b0 pc80, on60",
+         lambda k, note: (sel(k, 0), note(k)), 0, 0, 0)
+    case("B_ctl_b1", "b1 pc80, on60",
+         lambda k, note: (sel(k, 1), note(k)), 1, 1, 1)
+    case("C_ctl_b8", "b8 pc80, on60",
+         lambda k, note: (sel(k, 8), note(k)), 8, 8, 8)
+    case("D_18_note_last", "b1 pc80, b8 pc80, on60",
+         lambda k, note: (sel(k, 1), sel(k, 8), note(k)), 8, 8, 8)
+    case("E_81_note_last", "b8 pc80, b1 pc80, on60",
+         lambda k, note: (sel(k, 8), sel(k, 1), note(k)), 1, 1, 8)
+    case("F_18_note_mid", "b1 pc80, on60, b8 pc80",
+         lambda k, note: (sel(k, 1), note(k), sel(k, 8)), 1, 8, 8)
+    case("G_81_note_mid", "b8 pc80, on60, b1 pc80",
+         lambda k, note: (sel(k, 8), note(k), sel(k, 1)), 8, 1, 8)
+    case("H_10_note_last", "b1 pc80, b0 pc80, on60",
+         lambda k, note: (sel(k, 1), sel(k, 0), note(k)), 0, 0, 1)
+    case("I_80_note_last", "b8 pc80, b0 pc80, on60",
+         lambda k, note: (sel(k, 8), sel(k, 0), note(k)), 0, 0, 8)
+    case("J_18_one_pc", "b1, b8, pc80, on60",
+         lambda k, note: (bank(k, 1), sel(k, 8), note(k)), 8, 8, 8)
+    case("K_81_one_pc", "b8, b1, pc80, on60",
+         lambda k, note: (bank(k, 8), sel(k, 1), note(k)), 1, 1, 8)
+    case("L_1_then_b8_no_pc", "b1 pc80, on60, b8 (no pc)",
+         lambda k, note: (sel(k, 1), note(k), bank(k, 8)), 1, 1, 1)
+    case("M_8_then_b1_no_pc", "b8 pc80, on60, b1 (no pc)",
+         lambda k, note: (sel(k, 8), note(k), bank(k, 1)), 8, 8, 8)
+    return _write_manifest("40_same_tick_bank.mid", tr, man)
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -1833,7 +2019,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p23_rpn_tune, p24_gain_staging, p25_pan_law, p26_other_gains,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
-          p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order]
+          p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
+          p38_same_tick_locale, p40_same_tick_bank]
 
 
 def check(path):

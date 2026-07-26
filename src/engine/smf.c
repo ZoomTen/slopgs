@@ -136,6 +136,76 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
     e->sample_time = 0;
 }
 
+/* SPEC.md S4.2.1/S4.7: the Bank/Program pair is the one scheduled-controller
+ * queue whose value a note-on reads back, and the read is a LOOK-AHEAD -- at
+ * one timestamp the note takes the LAST Program Change of that timestamp, not
+ * the one that preceded it in the byte stream. Measured, `[M: probe 40]`:
+ * 13 of 13 cases, every one within 1.9 dB of its control against 28-49 dB of
+ * separation between the three controls (000:080 / 001:080 / 008:080, all
+ * program 80 so only the bank moves). The two cases that separate this from
+ * plain stream order are F (`b1 pc80, on60, b8 pc80` -> 008:080) and G
+ * (`b8 pc80, on60, b1 pc80` -> 001:080); stream order scores 11/13 and an
+ * order-independent "highest bank wins" reading 8/13. Probe 38 says the same
+ * for the program half, 7 of its 8 cases, including its case G -- three
+ * layered locales at one tick on three keys, serum_opening's own shape, which
+ * collapses to the last group's patch on all three notes and sits 19 dB from
+ * what stream order renders. (38's case F disagrees with 40's case G on
+ * byte-identical input; 1 outlier in 21 observations across the two captures,
+ * unexplained, recorded in SPEC_GAPS.md.)
+ *
+ * Probe 40's K settles that this is the PROGRAM CHANGE queue and not the bank
+ * byte: two Bank Selects with ONE Program Change and no queue tie at all reads
+ * the last bank, in stream order. L/M settle that a Bank Select with no
+ * Program Change after it never reaches the note, so there is no live bank
+ * read at voice-render time either.
+ *
+ * So the narrowest change that produces it: within one timestamp, move Bank
+ * Select and Program Change ahead of the NOTE events, stably, preserving
+ * their order among themselves so each Program Change still latches the bank
+ * byte that was live when it ran. Nothing else moves -- not SysEx, not tempo,
+ * not the other five S4.2.1 queues. Hoisting those too was measured and is
+ * wrong twice over: it puts controllers ahead of a tick-0 GS Reset (wiping it)
+ * and probe 37 already pinned same-tick CC7/CC121 behaviour a blanket hoist
+ * would disturb.
+ *
+ * A/B guard for measurement only, same role as synth.c's SYNTH_SCHEDULE_LOCALE:
+ * 0 restores plain stream order. Not exposed by the Makefile. */
+#ifndef SMF_BANKPROG_LOOKAHEAD
+#define SMF_BANKPROG_LOOKAHEAD 1
+#endif
+
+static int is_note_event(const Event *e) {
+    return e->kind == 0 && ((e->status & 0xF0) == 0x80 || (e->status & 0xF0) == 0x90);
+}
+
+static int is_bankprog_event(const Event *e) {
+    if (e->kind != 0) return 0;
+    if ((e->status & 0xF0) == 0xC0) return 1;
+    return (e->status & 0xF0) == 0xB0 && (e->d1 == 0 || e->d1 == 32);
+}
+
+/* One stable pass per equal-tick run: each Bank Select / Program Change slides
+ * left over the note events it is sitting behind, and stops at anything else
+ * (SysEx, tempo, any other CC, pitch bend). `ins` is where the next one lands. */
+static void hoist_bankprog(Event *arr, uint32_t n) {
+    uint32_t i = 0;
+    while (i < n) {
+        uint32_t end = i;
+        while (end < n && arr[end].abs_tick == arr[i].abs_tick) end++;
+        uint32_t ins = i;
+        for (uint32_t k = i; k < end; k++) {
+            if (is_bankprog_event(&arr[k])) {
+                Event tmp = arr[k];
+                for (uint32_t j = k; j > ins; j--) arr[j] = arr[j - 1];
+                arr[ins++] = tmp;
+            } else if (!is_note_event(&arr[k])) {
+                ins = k + 1;
+            }
+        }
+        i = end;
+    }
+}
+
 static int event_less(const Event *a, const Event *b) {
     if (a->abs_tick != b->abs_tick) return a->abs_tick < b->abs_tick;
     return a->seq < b->seq;
@@ -216,6 +286,9 @@ int smf_load(const uint8_t *data, uint32_t len) {
     }
 
     merge_sort_events(arr, total);
+#if SMF_BANKPROG_LOOKAHEAD
+    hoist_bankprog(arr, total);
+#endif
 
     /* Tempo map pass: convert abs_tick -> sample_time. */
     int smpte = (division & 0x8000) != 0;
