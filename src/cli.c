@@ -24,6 +24,7 @@
 #include "engine/synth.h"
 #include "engine/render.h"
 #include "engine/smf.h"
+#include "engine/voice.h"
 
 /* ---------------------------------------------------------------------- */
 /* allocator: malloc, never freed -- gm.dls's sample data is referenced in
@@ -151,8 +152,29 @@ static int selftest(const char *dls_path, const char *smf_path) {
     for (uint32_t i = 0; i < n * 2; i++) { long long s = buf[i]; e3 += s < 0 ? -s : s; }
     if (n == 0) { fprintf(stderr, "FAIL: rewound song rendered no frames\n"); fail = 1; }
 
-    printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames\n",
-           fail ? "FAIL" : "PASS", frames[0], frames[1], n);
+    /* Pool saturation: the reserve top-up's Branch B fast-releases active
+     * voices, and a marked voice keeps rendering for its full ~70ms release
+     * before it can be recycled -- so if the top-up ever runs faster than
+     * that drain time it marks another batch before the last one freed
+     * anything and walks the whole pool into silence. That is exactly the
+     * defect TOPUP_INTERVAL_FRAMES (voice.c) exists to prevent, and it is
+     * invisible to the probe corpus (100ms event spacing) but audible on
+     * dense field MIDIs. SPEC.md S5.5 [M]: 80 held note-ons must leave 48
+     * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed. */
+    synth_reset();
+    for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
+    for (int k = 0; k < 40; k++) smf_render(buf, CHUNK); /* ~7.4s, no note-off */
+    int surviving = 0;
+    for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
+    if (surviving != 48) {
+        fprintf(stderr, "FAIL: 80 held note-ons left %d voices sounding, expected 48"
+                        " (SPEC.md S5.5 [M]) -- reserve top-up cadence?\n", surviving);
+        fail = 1;
+    }
+
+    printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames;"
+           " %d/48 voices survive saturation\n",
+           fail ? "FAIL" : "PASS", frames[0], frames[1], n, surviving);
     (void)e3;
     return fail;
 }

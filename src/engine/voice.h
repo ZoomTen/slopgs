@@ -131,16 +131,17 @@ extern uint32_t g_voice_age_counter;
 void voice_pool_reset(void);
 void voice_note_on(int channel, int note, int velocity);
 
-/* SPEC.md S5.4 [A] mechanism / [O] cadence choice (see voice.c's own comment
- * above this function's definition): tops the reserve tier back up to
- * TOPUP_RESERVE_COUNT free voices, first by retagging already-free primary
- * nodes (Branch A), then -- only if primary is ALSO empty -- by proactively
- * fast-releasing (never synchronously freeing) up to that many active
- * voices (Branch B). Called once per render.c render_frames() call by
- * default (see render.c's TOPUP_PER_SUBCHUNK), this project's own `[O]`
- * stand-in for the real driver's once-per-event-dispatch-call cadence (no
- * true periodic tick exists in this architecture). */
-void voice_topup_reserve(void);
+/* SPEC.md S5.4 [A] mechanism / [O] cadence: advances the top-up's own tick
+ * clock by `frames` rendered samples and runs one top-up every
+ * TOPUP_INTERVAL_FRAMES, standing in for the real driver's per-service-tick
+ * (0x13054 -> 0x12bd6 -> 0x12b6a) cadence. The top-up tops the reserve tier
+ * back up to TOPUP_RESERVE_COUNT free voices, first by retagging
+ * already-free primary nodes (Branch A), then -- only if primary is ALSO
+ * empty -- by proactively fast-releasing (never synchronously freeing) up to
+ * that many active voices (Branch B). See voice.c's own comment above the
+ * definition for why the cadence must be a wall-clock period and not
+ * "once per render_frames() call". */
+void voice_topup_tick(uint32_t frames);
 void voice_note_off(int channel, int note);
 void voice_all_sound_off(int channel);   /* CC120: bypasses sustain hold */
 void voice_all_notes_off(int channel);   /* CC123: honours sustain hold */

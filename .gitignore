@@ -7,3 +7,4 @@ artifacts/probe-results/*.flac
 dist/gm.dls
 dist/msgs.wasm
 dist/msgs-render
+.venv

@@ -42,6 +42,28 @@ that one is `008:080`.
 All MIDIs must be generated in `probes/`. All reference renderings must be in
 `probe-results`. Prompt the user to make some if they don't exist.
 
+`score.py`:: CLI port of `dist/compare.js`'s two headline numbers --
+envelope correlation `r` and level-normalized spectral residual dB -- for
+every MIDI that has a reference FLAC, across `field/`, `tests/` and
+`probes/` (`probe-results/NN.flac` is matched to `probes/NN_name.mid`).
++
+This is the corpus gate: run it before and after a change and check the
+targeted item improves while the mean does not regress. Needs the venv
+(`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`) and
+`ffmpeg`; ~25s for the full 47-item corpus.
++
+[source,console]
+----
+$ .venv/bin/python artifacts/score.py                 # everything
+$ .venv/bin/python artifacts/score.py 20 HueArme-Weekend   # named items
+$ MSGS_RENDER=/path/to/other-build .venv/bin/python artifacts/score.py   # A/B a build
+----
++
+A third column, `dead`, reports milliseconds of digital silence in the
+render that the reference does not have. Read it on `field/` items only:
+a sparse probe's reference never drops below the threshold (dither), so its
+genuine inter-case gaps all count.
+
 === `src/`
 
 The source code for the engine.

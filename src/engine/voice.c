@@ -43,7 +43,10 @@ uint32_t g_voice_age_counter;
 #define NUM_RESERVE TOPUP_RESERVE_COUNT
 #define NUM_PRIMARY (NUM_VOICES - NUM_RESERVE)
 
+static uint32_t g_topup_accum = 0; /* top-up tick clock, see voice_topup_tick */
+
 void voice_pool_reset(void) {
+    g_topup_accum = 0;
     for (int i = 0; i < NUM_VOICES; i++) {
         Voice *v = &g_voices[i];
         v->active = 0;
@@ -664,25 +667,38 @@ static void start_release(Voice *v, int fast) {
  * marked voice keeps rendering (and keeps being "active") until its own
  * envelope finishes draining.
  *
- * CADENCE `[O]`: called by render.c's render_frames(), once per call by
- * default (TOPUP_PER_SUBCHUNK==0) -- see render.c's own comment above that
- * macro. SPEC.md S5.4 is explicit that the real TopUpReserve runs "exactly
- * once per call" to the event dispatcher (0x12bd6), whose sole caller is the
- * per-tick service routine (0x13054); this architecture has no true
- * periodic tick, but smf_render (smf.c) drains every due MIDI event in a
- * batch and then calls render_frames() once for exactly the gap up to the
- * next due event, so one render_frames() call is the closest available
- * analogue of one dispatcher call -- not a literal recovery of the real
- * 0x13054 timer period, which SPEC.md itself marks [O]. (A prior version of
- * this project instead called this once per LFO_UPDATE_FRAMES sub-chunk,
- * ~2.9ms; that fired Branch B roughly an order of magnitude more often than
- * this cadence and measurably over-faded voices relative to the reference
- * on the corpus gate -- kept available via TOPUP_PER_SUBCHUNK=1 for A/B
- * comparison only.) Known, accepted gap: two note-on events at the exact
- * same sample_time (a simultaneous chord) are dispatched back-to-back with
- * no render_frames call between them, so Branch B gets no extra chance to
- * fire "between" them -- not exercised by probe 21 (notes 100ms apart). */
-void voice_topup_reserve(void) {
+ * CADENCE `[F:fitted]`: a fixed wall-clock period, TOPUP_INTERVAL_FRAMES.
+ * SPEC.md S5.4 is explicit that the real TopUpReserve runs "exactly once per
+ * call" to the event dispatcher (0x12bd6), whose sole caller is the
+ * per-BUFFER service routine (0x13054) -- i.e. once per audio service tick,
+ * a wall-clock period. Earlier versions of this project instead tied the
+ * cadence to render.c call structure (once per render_frames() call, or once
+ * per LFO_UPDATE_FRAMES sub-chunk). Both are event-density-dependent, not
+ * time-dependent: smf.c splits a render_frames() call at every dispatched
+ * MIDI event, so on a dense sequence the top-up ran up to once per FRAME.
+ * That is fatal, because Branch B is a feedback loop -- a marked voice keeps
+ * rendering for its full ~70ms fast release before it can be reaped and
+ * recycled, so any cadence faster than that drain time marks another
+ * TOPUP_RESERVE_COUNT voices before the previous batch has freed anything,
+ * and the whole pool is committed to release within a handful of calls.
+ * Measured on field/HueArme-Weekend.mid: ~800 top-up calls/second at t=23s,
+ * Branch B firing 33 times in 100ms, active voice count reaching ZERO --
+ * two audible total-silence dropouts (t=23.09-23.15s and t=23.44-23.51s)
+ * that the reference does not have.
+ *
+ * SPEC.md S5.5's own `[M]` measurement bounds the period from the other
+ * side: probes 20/21 (80 note-ons, no note-off) cut exactly 32 voices = 26
+ * forced by pigeonhole + 6, i.e. Branch B contributes exactly ONE batch of
+ * TOPUP_RESERVE_COUNT over an entire saturated 8-second run. That only holds
+ * if a top-up cannot fire again until the batch it marked has drained and
+ * been recycled -- so the period is at least the ~70ms fast-release time.
+ * The real 0x13054 timer period is not recovered anywhere in SPEC.md ([O]),
+ * so this is fitted, not derived; the knob below is deliberate. */
+#ifndef TOPUP_INTERVAL_FRAMES
+#define TOPUP_INTERVAL_FRAMES 2048 /* ~92.9ms @ 22050Hz */
+#endif
+
+static void topup_reserve(void) {
     int reserve_free = 0;
     for (int i = 0; i < NUM_VOICES; i++) {
         if (!g_voices[i].active && g_voices[i].in_reserve) reserve_free++;
@@ -704,6 +720,14 @@ void voice_topup_reserve(void) {
         start_release(victim, 1);
         need--;
     }
+}
+
+void voice_topup_tick(uint32_t frames) {
+    g_topup_accum += frames;
+    if (g_topup_accum < TOPUP_INTERVAL_FRAMES) return;
+    g_topup_accum %= TOPUP_INTERVAL_FRAMES; /* no catch-up burst: one top-up
+        per tick however coarsely render.c happens to slice its chunks. */
+    topup_reserve();
 }
 
 void voice_note_on(int channel, int note, int velocity) {

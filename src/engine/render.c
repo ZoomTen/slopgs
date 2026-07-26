@@ -68,29 +68,6 @@
  * as before, just with finer-grained inputs. */
 #define LFO_UPDATE_FRAMES 64
 
-/* voice_topup_reserve() call cadence, SPEC.md S5.4 `[O]`: the spec is
- * explicit that the real TopUpReserve runs "exactly once per call" to the
- * event dispatcher (0x12bd6), whose sole caller is the per-tick service
- * routine -- NOT once per LFO_UPDATE_FRAMES sub-chunk. This project's
- * nearest analogue to "one dispatcher call" is one render_frames()
- * invocation: smf_render (smf.c) drains every MIDI event due at the current
- * sample position in a batch, then calls render_frames() once for exactly
- * the gap up to the next due event -- so a render_frames() call is this
- * engine's counterpart of one 0x13054 tick's post-dispatch span. Default
- * (TOPUP_PER_SUBCHUNK==0): call voice_topup_reserve() once per
- * render_frames() call, before the sub-chunk loop, mirroring "before any
- * queued event in that call's batch is processed" as closely as this
- * architecture allows (the previous, now-superseded choice fired it every
- * LFO_UPDATE_FRAMES sub-chunk instead, roughly an order of magnitude more
- * often than a real per-tick cadence, and measurably over-faded voices
- * relative to the reference on the corpus gate). Kept as a compile-time
- * knob (not a recovered SPEC value either way) so the two cadences can be
- * A/B'd: build with -DTOPUP_PER_SUBCHUNK=1 to restore the old sub-chunk
- * cadence for comparison. */
-#ifndef TOPUP_PER_SUBCHUNK
-#define TOPUP_PER_SUBCHUNK 0
-#endif
-
 static int16_t sat_add_i16(int32_t a, int32_t b) {
     int32_t s = a + b;
     if (s > 32767) return 32767;
@@ -172,19 +149,16 @@ void render_frames(int16_t *out, uint32_t frames) {
      * modulation updates for its LFO to actually oscillate. */
     for (uint32_t i = 0; i < frames * 2; i++) out[i] = 0;
     uint32_t done = 0;
-#if !TOPUP_PER_SUBCHUNK
-    voice_topup_reserve(); /* [O] cadence choice -- SPEC.md S5.4: once per
-        render_frames() call (this engine's nearest analogue to "once per
-        event-dispatcher call"), see the TOPUP_PER_SUBCHUNK comment above and
-        voice.c's comment above voice_topup_reserve() / voice.h. */
-#endif
     while (done < frames) {
         uint32_t chunk = frames - done;
         if (chunk > LFO_UPDATE_FRAMES) chunk = LFO_UPDATE_FRAMES;
-#if TOPUP_PER_SUBCHUNK
-        voice_topup_reserve(); /* [O] A/B comparison cadence, see above -- NOT
-            the default; superseded by the once-per-call default above. */
-#endif
+        /* SPEC.md S5.4: the reserve top-up runs once per audio service tick
+           -- a wall-clock period, NOT once per call into this function.
+           smf.c splits render_frames() at every dispatched MIDI event, so a
+           per-call cadence runs at MIDI event density (measured: ~800/s on a
+           dense field MIDI) and cascades Branch B into total silence. The
+           tick clock lives in voice.c; feed it elapsed frames. */
+        voice_topup_tick(chunk);
         voices_update_modulation();
         for (int vi = 0; vi < NUM_VOICES; vi++) {
             Voice *v = &g_voices[vi];

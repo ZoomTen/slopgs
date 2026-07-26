@@ -1713,7 +1713,15 @@ stays 1,159,168 (untruncated) throughout.
 
 ---
 
-## Entry 11: voice-stealing reserve top-up cadence and reserve size (`TOPUP_RESERVE_COUNT`, `TOPUP_PER_SUBCHUNK` in src/engine/voice.c and src/engine/render.c) -- SHIPPED
+## Entry 11: voice-stealing reserve top-up cadence and reserve size (`TOPUP_RESERVE_COUNT`, `TOPUP_PER_SUBCHUNK` in src/engine/voice.c and src/engine/render.c) -- CADENCE HALF SUPERSEDED BY ENTRY 14
+
+> **SUPERSEDED 2026-07-26 (cadence only).** Both cadences A/B'd in this entry
+> were tied to `render.c` call structure rather than wall-clock time, so both
+> ran at MIDI *event density*; on a dense field MIDI that is ~800 top-up
+> calls/second and it cascades Branch B into total silence. Entry 14 replaces
+> them with a real tick clock (`TOPUP_INTERVAL_FRAMES`) and `TOPUP_PER_SUBCHUNK`
+> is deleted. The reserve-size half of this entry (`TOPUP_RESERVE_COUNT` = 6)
+> is unchanged and still current. Read the rest of this entry as history.
 
 **Status: mechanism `[A]`, cadence and reserve size `[F:fitted, SHIPPED]`.**
 This entry covers the fitted PARAMETERS of a SPEC.md S5.2-S5.5-documented
@@ -2036,3 +2044,149 @@ regression, against the shipped one-pole baseline, on both the pre- and
 post-Entry-10/11 baselines. Re-render `field/Kot_and_A64-GENERAL_SERUM.mid`
 and confirm total exact-zero-sample count rises from 12,097 (one-pole) to
 16,349 (linear ramp).
+
+---
+
+## Entry 14: reserve top-up tick period (`TOPUP_INTERVAL_FRAMES` in src/engine/voice.c) -- SHIPPED
+
+**Status: mechanism `[A]` (SPEC.md S5.4), period `[F:fitted, SHIPPED]`.**
+Supersedes the cadence half of Entry 11. The reserve size
+(`TOPUP_RESERVE_COUNT` = 6) is untouched and still Entry 11's.
+
+### 0. Why this was refit at all
+
+A listener reported voices cutting out in `field/HueArme-Weekend.mid` around
+23 s. Instrumenting `voice_topup_reserve()` on that file showed Branch B
+firing **33 times in 100 ms** with the active-voice count reaching **zero** --
+two total-silence dropouts (t=23.09-23.15 s, t=23.44-23.51 s) that the
+reference does not have, each a clean ~60 ms exponential decay to digital
+zero, i.e. the whole 54-voice pool committed to the 70 ms fast release at
+once.
+
+Root cause was the cadence, not the mechanism. SPEC.md S5.4 says the real
+`TopUpReserve` (`0x12b6a`) runs once per event-dispatcher call (`0x12bd6`),
+whose sole caller is the per-**buffer** service routine (`0x13054`) -- i.e.
+once per audio service tick, a **wall-clock period**. Entry 11 tried two
+cadences and shipped "once per `render_frames()` call"; both it and the
+rejected per-sub-chunk alternative are tied to `render.c` call structure, and
+`smf.c` splits a `render_frames()` call at *every* dispatched MIDI event. So
+the shipped cadence ran at MIDI event density: ~800 calls/second on
+HueArme-Weekend at t=23 s, versus ~10/second on the probes (whose events are
+100 ms apart). That is exactly why the 32-probe corpus Entry 11 fit against
+could not see the defect.
+
+Branch B is a feedback loop: a marked voice keeps rendering for its full
+~70 ms fast release before it can be reaped and recycled, so any cadence
+faster than that drain time marks another `TOPUP_RESERVE_COUNT` voices before
+the previous batch has freed anything, and the pool is fully committed within
+a handful of calls.
+
+### 1. Value chosen
+
+`src/engine/voice.c`:
+
+```c
+#ifndef TOPUP_INTERVAL_FRAMES
+#define TOPUP_INTERVAL_FRAMES 2048 /* ~92.9ms @ 22050Hz */
+#endif
+```
+
+`voice_topup_tick(frames)` accumulates rendered frames and runs one top-up per
+period; `render.c` feeds it each sub-chunk length, so the period is
+independent of how `smf.c` happens to slice its chunks.
+`TOPUP_PER_SUBCHUNK` is deleted -- both of its settings were the same
+mistake, so there is nothing left to A/B against.
+
+### 2. Lower bound, from SPEC.md's own measurement
+
+SPEC.md S5.5 `[M]`: 80 note-ons with no note-off leave 48 sounding, 32 cut =
+26 forced by pigeonhole + **6**. Branch B therefore contributes exactly ONE
+batch of `TOPUP_RESERVE_COUNT` over an entire saturated 8-second run, which
+holds only if a top-up cannot fire again until the batch it marked has
+drained and been recycled. That puts the real period at **>= the ~70 ms
+fast-release time** (SPEC.md S5.6's measured 70.0 ms). 2048 frames
+(~92.9 ms) sits just above that floor.
+
+The two metrics constrain it differently, and the structural one is the
+sharper of the two:
+
+| period | frames | `20`/`21` survivors (want 48) | HueArme-Weekend residual |
+|---|---|---|---|
+| 2.9 ms | 64 | **1** (the old sub-chunk cadence) | -- |
+| 23.2 ms | 512 | **43** | -19.15 |
+| 46.4 ms | 1024 | 48 | -19.15 |
+| 92.9 ms | 2048 | 48 (shipped) | -19.16 |
+| 185.8 ms | 4096 | 48 | -19.18 |
+
+The audio residual is flat above 512 frames -- all four agree to within
+0.03 dB and 0.002 r, so it cannot pick a value. The survivor count can: it
+puts the floor between 512 and 1024 frames (23-46 ms), consistent with the
+>= 70 ms argument above being a slight over-estimate of the drain-plus-reap
+time. 2048 sits comfortably above the measured floor without being so long
+that the top-up stops tracking a real service tick. The period is therefore
+**bounded below but only loosely constrained above** -- what matters is that
+it is a wall-clock period longer than the fast-release drain, not its exact
+value. Recorded as fitted, not recovered.
+
+### 3. Metric and measurements
+
+Metric: `artifacts/score.py` (added with this entry) -- a numpy CLI port of
+`dist/compare.js`'s two headline numbers, same constants (50 ms envelope hop,
++/-5 s lag search, 2048/1024 FFT, mean-RMS normalization before the
+residual), covering `field/`, `tests/` and `artifacts/probes/` in one run
+(~25 s for all 47 items). Verified against the browser page on
+HueArme-Weekend: script r=0.602 / residual -17.38 dB vs. the page's 0.610 /
+-17.3 dB. Reference FLACs are resampled to 22050 Hz by ffmpeg rather than by
+`OfflineAudioContext`, so figures track compare.js closely but are not
+bit-identical to it. Not comparable to Entry 11's
+`compare_spectral_22050.overall_db` probe numbers.
+
+Full 13-item field+tests corpus, before -> after:
+
+| item | r before | r after | residual before | residual after |
+|---|---|---|---|---|
+| CrystalOscillator | 0.779 | **0.862** | -23.68 | **-25.01** |
+| HueArme-Weekend | 0.602 | **0.772** | -17.38 | **-19.16** |
+| Kot_and_A64-GENERAL_SERUM | 0.866 | 0.868 | -19.37 | -19.38 |
+| Strobe-faffaeefafaefae | 0.560 | 0.560 | -18.61 | -18.61 |
+| corridor | 0.854 | 0.854 | -20.74 | -20.74 |
+| eek_the | 0.857 | 0.857 | -22.05 | -22.05 |
+| flourish | 0.582 | 0.582 | -18.98 | -18.98 |
+| onestop | 0.834 | 0.834 | -26.06 | -26.06 |
+| town | 0.788 | 0.788 | -21.84 | -21.84 |
+| lazers | 0.988 | 0.988 | -17.57 | -17.57 |
+| radio | 0.909 | 0.909 | -14.37 | -14.37 |
+| warm-echo | 0.835 | 0.835 | -25.29 | -25.29 |
+| wild-sweep | 0.691 | 0.691 | -18.81 | -18.81 |
+| **MEAN** | 0.780 | **0.800** | -20.37 | **-20.61** |
+
+Nothing regressed. The 10 unchanged items are bit-identical -- they never
+saturate the pool, so Branch B never fires in them at all.
+
+Invented digital silence (render at its own -60 dB where the reference is
+not): HueArme-Weekend 880 ms -> 210 ms, CrystalOscillator 1580 ms -> 150 ms.
+The remainder in both is lead-in and tail silence, not mid-song: a run-length
+scan of the fixed HueArme-Weekend render finds exactly two silent runs, 960 ms
+at t=0 and 20 ms at the very end.
+
+Structural check, `probes/20_voice_count.mid` and `probes/21_steal_policy.mid`
+(80 note-ons, no note-off): both now settle at exactly **48 surviving / 32
+cut**, matching SPEC.md S5.5's `[M]` figure. This closes the "47 surviving /
+33 cut" residual SPEC_GAPS.md #7 had recorded as open -- the off-by-one was
+the too-fast cadence marking one extra voice, not a pool-size error.
+
+### 4. Where a future RE pass should look
+
+SPEC.md S5.4/S5.5's mechanism is `[A]`; the *period* is the `0x13054` service
+routine's own timer, which SPEC.md marks `[O]` (S6.7: "block-cadenced, exact
+cadence caller-supplied and unrecovered"). Recovering `0x13054`'s caller --
+the WDM port-class buffer/notification period MSGS registers -- would retire
+this fit. That period is also the natural home of Entry 9's and Entry 4's
+unrecovered `ramp_period`, so one recovery closes three fits.
+
+### Falsifiability
+
+Rebuild with `-DTOPUP_INTERVAL_FRAMES=64` (the old sub-chunk cadence) and
+re-render `field/HueArme-Weekend.mid`: the two total-silence dropouts at
+t=23.09-23.15 s and t=23.44-23.51 s must reappear, `score.py`'s r must fall
+back to ~0.60, and `probes/20_voice_count.mid` must stop settling at 48.

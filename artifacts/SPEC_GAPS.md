@@ -13,7 +13,7 @@ things nobody knows, they are things we chose not to build.
 |---|---|---|---|
 | 19 | S6.6 / S6.4.1: gain and **phase step** are each held in a ramp accumulator, re-derived from a caller-supplied **linear step** every `ramp_period` samples, held constant between refreshes | **PARTLY BUILT.** A phase-step ramp ships (glide 17.7 ms vs the reference's ~16.4 ms, linear in Hz). A second attempt to make it interpolate across the full message interval was **rejected 2026-07-26**: it fixed ISOLATE-2a but cost `05_pitchbend` 1.1-1.2 dB, because probe 05's reference glides *then holds flat* and one fixed-duration ramp cannot fit both. `render.c`'s gain smoother is still a one-pole, i.e. still the wrong shape. | Bend staircase (probe 31, r=0.84 at 23 ms); +11.1 dB excess near-Nyquist energy in fast-bend windows (HueArme isolate); squares instead of arcs on content that composes against the ramp |
 | 14 | S1.2 / S4.2.1 / S4.7.3: controller writes go into per-controller **timestamp-keyed queues**, becoming current on periodic promotion or earlier via a **look-ahead read** | **PARTLY BUILT.** The Bank/Program locale is now latched at Program Change (`scheduled_locale`), which is the one queue whose current value is derived rather than raw. The other five are argued inert for our synchronous, sorted `smf.c` dispatch loop -- an argument from code review, never measured. | SPEC.md states the failure mode outright: "will diverge on any file that changes a controller and triggers a note within the same processing buffer". HueArme and CrystalOscillator do this at 118k and 161k CC11 events |
-| 7 | S5.2-S5.5: 48 primary + 6 reserve pool, `TopUpReserve` (`0x12b6a`) once per dispatcher call; Branch B calls **`ScheduleFastRelease`** (`0x19aa4`, rate-clamped release) on up to 6 active voices | **RESOLVED 2026-07-26.** 48+6 two-tier pool, `voice_topup_reserve()` with Branch A/B, Branch B issuing a fast *release* rather than a cut, and the two steal comparators split apart again. Probe 21 -7.805 -> **-9.031 dB**, `20_voice_count` -7.113 -> -7.946. Residual: 47 surviving / 33 cut vs SPEC's `[M]` 48/32. | Probe 21: the reference's oldest partials **fade** where ours terminate as flat vertical hard cuts, starting ~57 notes into the descending run |
+| 7 | S5.2-S5.5: 48 primary + 6 reserve pool, `TopUpReserve` (`0x12b6a`) once per dispatcher call; Branch B calls **`ScheduleFastRelease`** (`0x19aa4`, rate-clamped release) on up to 6 active voices | **RESOLVED 2026-07-26.** 48+6 two-tier pool, `voice_topup_reserve()` with Branch A/B, Branch B issuing a fast *release* rather than a cut, and the two steal comparators split apart again. Probe 21 -7.805 -> **-9.031 dB**, `20_voice_count` -7.113 -> -7.946. **Cadence corrected 2026-07-26 (later, same day)** -- see the cadence note below; the 47/33 residual this row previously recorded is now **48/32, exactly matching SPEC's `[M]`**. | Probe 21: the reference's oldest partials **fade** where ours terminate as flat vertical hard cuts, starting ~57 notes into the descending run |
 
 **Update 2026-07-26:** #7 is now built and #20 (EG2) resolved separately; #19
 and #14 are partly built with their remaining halves measured-and-rejected, not
@@ -275,6 +275,67 @@ presumably trying to describe.
 > `[M]` figure (80 simultaneous note-ons should leave 48 sounding and cut
 > 32), this build measures 47 surviving / 33 cut -- off by one, unchanged by
 > the cadence fix. Recorded as open.
+>
+> ---
+>
+> **CADENCE CORRECTED 2026-07-26 (later the same day), after a listener
+> reported voices cutting out in `field/HueArme-Weekend.mid` around 23 s.**
+> Both cadences A/B'd above were wrong in the same way, and the probe corpus
+> could not see it: **both were tied to render.c's call structure, not to
+> wall-clock time.** `smf.c` splits a `render_frames()` call at *every*
+> dispatched MIDI event, so "once per `render_frames()` call" runs at MIDI
+> **event density**, not at a fixed period. Instrumented on
+> HueArme-Weekend: ~800 top-up calls/second at t=23 s (the probes, whose
+> events are 100 ms apart, run it ~10/second -- which is why they never
+> exposed it).
+>
+> That is fatal because Branch B is a feedback loop. A marked voice keeps
+> rendering for its full ~70 ms fast release before it can be reaped and
+> recycled, so any cadence faster than that drain time marks another 6
+> voices before the previous batch has freed anything. Measured: Branch B
+> fired **33 times in 100 ms** and the active-voice count reached **zero** --
+> two total-silence dropouts (t=23.09-23.15 s and t=23.44-23.51 s) that the
+> reference does not have.
+>
+> SPEC.md S5.5's own `[M]` figure bounds the period from the other side and
+> was the missed clue: 32 cut = 26 pigeonhole + **6**, i.e. Branch B
+> contributes exactly ONE batch over an entire saturated 8-second run. That
+> only holds if a top-up cannot fire again until the batch it marked has
+> drained and been recycled -- so the real period is at least the ~70 ms
+> fast-release time.
+>
+> Fixed by making the cadence a real tick clock: `voice_topup_tick(frames)`
+> (voice.c) accumulates rendered frames and runs one top-up every
+> `TOPUP_INTERVAL_FRAMES` (default 2048, ~92.9 ms @ 22050 Hz).
+> `TOPUP_PER_SUBCHUNK` is deleted -- both of its cadences were the same
+> mistake, so there is nothing left to A/B against.
+>
+> Measured with `artifacts/score.py` (CLI port of `dist/compare.js`'s
+> envelope-r and level-normalized spectral residual), 13-item field+tests
+> corpus:
+>
+> | item | r before | r after | residual before | residual after |
+> |---|---|---|---|---|
+> | HueArme-Weekend | 0.602 | **0.772** | -17.38 | **-19.16** |
+> | CrystalOscillator | 0.779 | **0.862** | -23.68 | **-25.01** |
+> | Kot_and_A64-GENERAL_SERUM | 0.866 | 0.868 | -19.37 | -19.38 |
+> | corpus MEAN | 0.780 | **0.800** | -20.37 | **-20.61** |
+>
+> The other 10 items are bit-identical before and after -- they never
+> saturate the pool, so the top-up's Branch B never fires in them at all.
+> Invented digital silence (render at its own -60 dB where the reference is
+> not) falls 880 ms -> 210 ms on HueArme-Weekend and 1580 ms -> 150 ms on
+> CrystalOscillator; the remainder in both is lead-in/tail, not mid-song.
+> Interval swept over 64/512/1024/2048/4096 frames: the spectral residual is
+> flat above 512 frames (0.03 dB spread) and cannot pick a value, but the
+> probe-20/21 survivor count can -- 64 frames leaves 1 voice, 512 leaves 43,
+> 1024 and above leave 48. Floor is therefore between 512 and 1024 frames
+> (23-46 ms); 2048 sits above it. Full fit record in `FITTED.md` Entry 14.
+>
+> **The 47/33 residual recorded above is CLOSED by this fix:** probes
+> `20_voice_count` and `21_steal_policy` now both settle at exactly **48
+> surviving / 32 cut**, matching SPEC.md S5.5's `[M]` figure. The off-by-one
+> was the too-fast cadence marking one extra voice, not a pool-size error.
 >
 > The original entry follows as history.
 
