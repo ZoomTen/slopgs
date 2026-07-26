@@ -12,8 +12,8 @@
  *   msgs-render <dls> <smf|""> <loops> <max_frames> <out_wav>
  *
  * <out_wav> receives a canonical 44-byte-header WAV file wrapping
- * interleaved stereo signed-16-bit-LE PCM at the synth's fixed 22050 Hz
- * render rate. One JSON line goes to stdout.
+ * interleaved stereo signed-16-bit-LE PCM at the synth's fixed RENDER_RATE
+ * (voice.h). One JSON line goes to stdout.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,12 +68,12 @@ static unsigned char *read_file(const char *path, uint32_t *len_out) {
     return buf;
 }
 
-/* Canonical 44-byte PCM WAV header, stereo 16-bit @ 22050 Hz. Written once
+/* Canonical 44-byte PCM WAV header, stereo 16-bit @ RENDER_RATE. Written once
  * as a zero-size placeholder before streaming render output, then rewritten
  * in place once `frames` is known -- the render loop below doesn't know the
  * total length until the synth reports it finished. */
 static void write_wav_header(FILE *f, unsigned long frames) {
-    uint32_t sample_rate = 22050, byte_rate = 22050 * 4;
+    uint32_t sample_rate = RENDER_RATE, byte_rate = RENDER_RATE * 4;
     uint32_t data_bytes = (uint32_t)frames * 4;
     uint32_t riff_size = 36 + data_bytes;
     uint32_t fmt_size = 16;
@@ -150,7 +150,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
             }
             frames[pass] += n;
             if (n == 0 || smf_is_finished()) break;
-            if (frames[pass] > 22050UL * 600UL) break; /* 10 min cap */
+            if (frames[pass] > (unsigned long)RENDER_RATE * 600UL) break; /* 10 min cap */
         }
         if (!smf_is_finished()) {
             fprintf(stderr, "FAIL pass %d: song never latched finished\n", pass + 1);
@@ -191,7 +191,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed. */
     synth_reset();
     for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
-    for (int k = 0; k < 40; k++) smf_render(buf, CHUNK); /* ~7.4s, no note-off */
+    for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) smf_render(buf, CHUNK); /* ~7.4s */
     int surviving = 0;
     for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
     if (surviving != 48) {

@@ -365,7 +365,7 @@ int smf_load(const uint8_t *data, uint32_t len) {
             time_accum += (double)delta_ticks * seconds_per_tick;
         }
         last_tick = e->abs_tick;
-        double st = time_accum * 22050.0 + 0.5;
+        double st = time_accum * (double)RENDER_RATE + 0.5;
         e->sample_time = (st < 0.0) ? 0 : (uint32_t)st;
         if (e->kind == 2) cur_tempo = e->tempo_usec;
     }

@@ -38,16 +38,24 @@
  * truncates every output sample in that window to exact 0 (measured:
  * 162/244-sample all-zero runs, chopping an otherwise-correct, smoothly
  * decaying sustained chord into fragments -- reference audio (not retained) has
- * none). GAIN_SMOOTH_ALPHA = 1 - exp(-1/(0.012 * RENDER_RATE)): a 12ms
+ * none). GAIN_SMOOTH_ALPHA = 1 - exp(-1/(0.012 * BASE_RATE)): a 12ms
  * one-pole time constant, long enough to absorb any single ~7-11ms blip
  * without ever reaching the far end of it, short enough not to measurably
  * soften real note-level dynamics (attack/decay/release already have their
  * own, separately-modeled multi-ms-to-multi-second time constants).
  * Verified: eliminates the 162/244-sample zero runs in the GENERAL_SERUM
  * channels 1-2 excerpt without moving the 18-probe corpus mean by any
- * measurable amount (see report). See FITTED.md Entry 4. */
+ * measurable amount (see report). See FITTED.md Entry 4.
+ *
+ * ponytail: rate-scaled by division, not recomputed -- alpha ~= 1/(tau*R) for
+ * small alpha, so this is exact to 0.14% at factor 2 (tau 11.972 -> 11.983ms),
+ * inside the 0.23% the literal already sits off its own stated formula (exact
+ * at BASE_RATE would be 0.003772156967). Dividing also keeps factor 1
+ * bit-identical to the build this constant was verified in, which recomputing
+ * would not. Recompute as 1 - exp(-1/(0.012 * RENDER_RATE)) if tau is ever
+ * re-fit against a reference. */
 #ifndef GAIN_SMOOTH_ALPHA
-#define GAIN_SMOOTH_ALPHA 0.003780968318281238
+#define GAIN_SMOOTH_ALPHA (0.003780968318281238 / RESAMPLE_FACTOR)
 #endif
 
 /* Sub-block modulation granularity, SPEC.md LFO section `[M: probe 06]`:
@@ -66,7 +74,7 @@
  * one call of length N*k except that modulation now refreshes between
  * them, so gain smoothing and the GAIN_CEILING clamp keep working exactly
  * as before, just with finer-grained inputs. */
-#define LFO_UPDATE_FRAMES 64
+#define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
 
 static int16_t sat_add_i16(int32_t a, int32_t b) {
     int32_t s = a + b;

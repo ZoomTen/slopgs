@@ -343,8 +343,10 @@ static double exp_coef_scaled(double seconds, double mult) {
  * recomputed once per sub-chunk, so stepping it faster would cost work without
  * changing any rendered sample. SPEC.md S6.6 explicitly marks the envelope
  * generator's own cadence `[O]` and warns against inferring it from the
- * mixer's ramp_period, so this is a documented choice, not a recovered one. */
-#define EG2_BLOCK_FRAMES 64
+ * mixer's ramp_period, so this is a documented choice, not a recovered one.
+ * MUST stay equal to render.c's LFO_UPDATE_FRAMES: same base, same scaling,
+ * but two separate defines -- change one and change the other. */
+#define EG2_BLOCK_FRAMES (64 * RESAMPLE_FACTOR)
 #define EG2_BLOCK_RATE ((double)RENDER_RATE / (double)EG2_BLOCK_FRAMES)
 
 /* EG2 segment shape. EG1's segments are exponential in AMPLITUDE because that
@@ -590,7 +592,7 @@ static int32_t voice_lfo_cents(Voice *v) {
  * pairing a rise and a fall at equal note age would settle it; until then
  * this constant is being asked to fit one number for what may be two. */
 #ifndef RAMP_HORIZON_FRAMES
-#define RAMP_HORIZON_FRAMES 320
+#define RAMP_HORIZON_FRAMES (320 * RESAMPLE_FACTOR)
 #endif
 
 /* Size the held slope to land on the target `frames` from now, and arm the
@@ -920,7 +922,7 @@ static void start_release(Voice *v, int fast) {
  * The real 0x13054 timer period is not recovered anywhere in SPEC.md ([O]),
  * so this is fitted, not derived; the knob below is deliberate. */
 #ifndef TOPUP_INTERVAL_FRAMES
-#define TOPUP_INTERVAL_FRAMES 2048 /* ~92.9ms @ 22050Hz */
+#define TOPUP_INTERVAL_FRAMES (2048 * RESAMPLE_FACTOR) /* ~92.9ms */
 #endif
 
 static void topup_reserve(void) {

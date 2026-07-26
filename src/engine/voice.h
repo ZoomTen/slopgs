@@ -7,14 +7,45 @@
 #include <stdint.h>
 #include "dls.h"
 
-#define RENDER_RATE 22050 /* SPEC.md S1.3/S6.1: single fixed rate, not a range */
+/* BASE_RATE is the driver's own rate (SPEC.md S1.3/S6.1: single fixed rate,
+ * not a range), and is the rate every fitted constant in this engine was
+ * measured against. RESAMPLE_FACTOR is how many times finer we render than
+ * that; every rate-derived constant scales by it, so changing the engine's
+ * rate is this one define and nothing else. Overridable so a rate A/B is one
+ * -D rather than an edit. Ships at 1: oversampling is a deliberate deviation
+ * from the driver (see the invariant below), not a free quality win. */
+#define BASE_RATE 22050
+#ifndef RESAMPLE_FACTOR
+#define RESAMPLE_FACTOR 1
+#endif
+#define RENDER_RATE (BASE_RATE * RESAMPLE_FACTOR)
 
-/* INVARIANT: 22050 Hz (or an integer multiple). NEVER set to the
- * device/AudioContext rate when that is not a 22050 multiple -- synthesis-
+/* RESAMPLE_FACTOR is an INTEGER multiplier, never a rate ratio. Writing
+ * ((double)48000/(double)BASE_RATE) here does not give you a 48kHz engine, it
+ * gives you a silently detuned one: RENDER_RATE becomes a double, every
+ * *_FRAMES macro truncates on assignment, and voice_update_pitch's phase-step
+ * division stops being integer division (abandoning the floor semantics
+ * c27d12e pinned down). -Wall -Wextra warns on none of it. The `%` below is
+ * the guard -- a double operand is a hard compile error, not a warning.
+ *
+ * For a 48kHz *device*, resample at the output stage; nothing in here moves.
+ * 48000 is not a multiple of BASE_RATE at any factor (gcd 150, so the ratio
+ * is 320/147 from 22050 and still x/147 from any multiple of it), so there is
+ * no factor that turns the output resample into a clean one. */
+_Static_assert(RENDER_RATE % BASE_RATE == 0 && RENDER_RATE >= BASE_RATE,
+    "RESAMPLE_FACTOR must be a positive integer (internal-rate invariant)");
+
+/* INVARIANT: an integer multiple of BASE_RATE. NEVER set to the
+ * device/AudioContext rate when that is not a BASE_RATE multiple -- synthesis-
  * rate aliasing (probe 02 keys 125-127, the faffaee reference) is real,
  * audible, spec-relevant output; a non-multiple render rate smears the
- * fold into noise. Render at 22050 and resample at the output stage. See
- * SPEC.md verification-ceiling / internal-rate invariant. */
+ * fold into noise. Render at BASE_RATE and resample at the output stage. See
+ * SPEC.md verification-ceiling / internal-rate invariant.
+ *
+ * Raising RESAMPLE_FACTOR is itself a fidelity LOSS, not a gain: at factor 2
+ * the Nyquist moves to 22050 and the 11025Hz fold probe 02 exists to capture
+ * stops happening at all. The references have it; an oversampled render will
+ * not. */
 
 #define NUM_VOICES 54 /* 48 primary + 6 reserve, SPEC.md S5.2 -- implemented
                          here as one flat pool; see SPEC_GAPS.md for the
