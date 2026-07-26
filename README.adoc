@@ -144,7 +144,8 @@ Technology kind of scares me.
 === Why did you employ the resource-munchers?
 
 After seeing what it can do, I'm sadly addicted to these things.
-Most people in my general vicinity very much understands
+Most people in my general vicinity very much understands why LLM sees so much
+usage now, but I still can't help but to feel conflicted.
 
 It helped speed up a disassembly effort and created the literal emulator of my dreams.
 This time, it helped another one of my dreams come true.
