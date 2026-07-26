@@ -1,0 +1,236 @@
+kind	CC0	CC32	program	name
+melodic	0	0	0	Piano 1
+melodic	8	0	0	Piano 1
+melodic	16	0	0	Piano 1d
+melodic	0	0	1	Piano 2
+melodic	8	0	1	Piano 2
+melodic	0	0	2	Piano 3
+melodic	8	0	2	Piano 3
+melodic	0	0	3	Honky-tonk
+melodic	8	0	3	Honky-tonk
+melodic	0	0	4	E.Piano 1
+melodic	8	0	4	Detuned EP 1
+melodic	16	0	4	E.Piano 1v
+melodic	24	0	4	60's E.Piano
+melodic	0	0	5	E.Piano 2
+melodic	8	0	5	Detuned EP 2
+melodic	16	0	5	E.Piano 2v
+melodic	0	0	6	Harpsichord
+melodic	8	0	6	Coupled Hps.
+melodic	16	0	6	Harpsichord
+melodic	24	0	6	Harpsi.o
+melodic	0	0	7	Clav.
+melodic	0	0	8	Celesta
+melodic	0	0	9	Glockenspiel
+melodic	0	0	10	Music Box
+melodic	0	0	11	Vibraphone
+melodic	8	0	11	Vibraphone
+melodic	0	0	12	Marimba
+melodic	8	0	12	Marimba
+melodic	0	0	13	Xylophone
+melodic	0	0	14	Tubular-bell
+melodic	8	0	14	Church Bell
+melodic	9	0	14	Carillon
+melodic	0	0	15	Santur
+melodic	0	0	16	Organ 1
+melodic	8	0	16	Detuned Or.1
+melodic	16	0	16	60's Organ 1
+melodic	32	0	16	Organ 4
+melodic	0	0	17	Organ 2
+melodic	8	0	17	Detuned Or.2
+melodic	32	0	17	Organ 5
+melodic	0	0	18	Organ 3
+melodic	0	0	19	Church Org.1
+melodic	8	0	19	Church Org.2
+melodic	16	0	19	Church Org.3
+melodic	0	0	20	Reed Organ
+melodic	0	0	21	Accordion Fr
+melodic	8	0	21	Accordion It
+melodic	0	0	22	Harmonica
+melodic	0	0	23	Bandoneon
+melodic	0	0	24	Nylon-str.Gt
+melodic	8	0	24	Ukulele
+melodic	16	0	24	Nylon Gt.o
+melodic	32	0	24	Nylon Gt.2
+melodic	0	0	25	Steel-str.Gt
+melodic	8	0	25	12-str.Gt
+melodic	16	0	25	Mandolin
+melodic	0	0	26	Jazz Gt.
+melodic	8	0	26	Hawaiian Gt.
+melodic	0	0	27	Clean Gt.
+melodic	8	0	27	Chorus Gt.
+melodic	0	0	28	Muted Gt.
+melodic	8	0	28	Funk Gt.
+melodic	16	0	28	Funk Gt.2
+melodic	0	0	29	Overdrive Gt
+melodic	0	0	30	DistortionGt
+melodic	8	0	30	Feedback Gt.
+melodic	0	0	31	Gt.Harmonics
+melodic	8	0	31	Gt. Feedback
+melodic	0	0	32	Acoustic Bs.
+melodic	0	0	33	Fingered Bs.
+melodic	0	0	34	Picked Bs.
+melodic	0	0	35	Fretless Bs.
+melodic	0	0	36	Slap Bass 1
+melodic	0	0	37	Slap Bass 2
+melodic	0	0	38	Synth Bass 1
+melodic	1	0	38	SynthBass101
+melodic	8	0	38	Synth Bass 3
+melodic	0	0	39	Synth Bass 2
+melodic	8	0	39	Synth Bass 4
+melodic	16	0	39	Rubber Bass
+melodic	0	0	40	Violin
+melodic	8	0	40	Slow Violin
+melodic	0	0	41	Viola
+melodic	0	0	42	Cello
+melodic	0	0	43	Contrabass
+melodic	0	0	44	Tremolo Str
+melodic	0	0	45	PizzicatoStr
+melodic	0	0	46	Harp
+melodic	0	0	47	Timpani
+melodic	0	0	48	Strings
+melodic	8	0	48	Orchestra
+melodic	0	0	49	Slow Strings
+melodic	0	0	50	Syn.Strings1
+melodic	8	0	50	Syn.Strings3
+melodic	0	0	51	Syn.Strings2
+melodic	0	0	52	Choir Aahs
+melodic	32	0	52	Choir Aahs 2
+melodic	0	0	53	Voice Oohs
+melodic	0	0	54	SynVox
+melodic	0	0	55	OrchestraHit
+melodic	0	0	56	Trumpet
+melodic	0	0	57	Trombone
+melodic	1	0	57	Trombone 2
+melodic	0	0	58	Tuba
+melodic	0	0	59	MutedTrumpet
+melodic	0	0	60	French Horns
+melodic	1	0	60	Fr.Horn 2
+melodic	0	0	61	Brass 1
+melodic	8	0	61	Brass 2
+melodic	0	0	62	Synth Brass1
+melodic	8	0	62	Synth Brass3
+melodic	16	0	62	AnalogBrass1
+melodic	0	0	63	Synth Brass2
+melodic	8	0	63	Synth Brass4
+melodic	16	0	63	AnalogBrass2
+melodic	0	0	64	Soprano Sax
+melodic	0	0	65	Alto Sax
+melodic	0	0	66	Tenor Sax
+melodic	0	0	67	Baritone Sax
+melodic	0	0	68	Oboe
+melodic	0	0	69	English Horn
+melodic	0	0	70	Bassoon
+melodic	0	0	71	Clarinet
+melodic	0	0	72	Piccolo
+melodic	0	0	73	Flute
+melodic	0	0	74	Recorder
+melodic	0	0	75	Pan Flute
+melodic	0	0	76	Bottle Blow
+melodic	0	0	77	Shakuhachi
+melodic	0	0	78	Whistle
+melodic	0	0	79	Ocarina
+melodic	0	0	80	Square Wave
+melodic	1	0	80	Square
+melodic	8	0	80	Sine Wave
+melodic	0	0	81	Saw Wave
+melodic	1	0	81	Saw
+melodic	8	0	81	Doctor Solo
+melodic	0	0	82	Syn.Calliope
+melodic	0	0	83	Chiffer Lead
+melodic	0	0	84	Charang
+melodic	0	0	85	Solo Vox
+melodic	0	0	86	5th Saw Wave
+melodic	0	0	87	Bass & Lead
+melodic	0	0	88	Fantasia
+melodic	0	0	89	Warm Pad
+melodic	0	0	90	Polysynth
+melodic	0	0	91	Space Voice
+melodic	0	0	92	Bowed Glass
+melodic	0	0	93	Metal Pad
+melodic	0	0	94	Halo Pad
+melodic	0	0	95	Sweep Pad
+melodic	0	0	96	Ice Rain
+melodic	0	0	97	Soundtrack
+melodic	0	0	98	Crystal
+melodic	1	0	98	Syn Mallet
+melodic	0	0	99	Atmosphere
+melodic	0	0	100	Brightness
+melodic	0	0	101	Goblin
+melodic	0	0	102	Echo Drops
+melodic	1	0	102	Echo Bell
+melodic	2	0	102	Echo Pan
+melodic	0	0	103	Star Theme
+melodic	0	0	104	Sitar
+melodic	1	0	104	Sitar 2
+melodic	0	0	105	Banjo
+melodic	0	0	106	Shamisen
+melodic	0	0	107	Koto
+melodic	8	0	107	Taisho Koto
+melodic	0	0	108	Kalimba
+melodic	0	0	109	Bagpipe
+melodic	0	0	110	Fiddle
+melodic	0	0	111	Shanai
+melodic	0	0	112	Tinkle Bell
+melodic	0	0	113	Agogo
+melodic	0	0	114	Steel Drums
+melodic	0	0	115	Woodblock
+melodic	8	0	115	Castanets
+melodic	0	0	116	Taiko
+melodic	8	0	116	Concert BD
+melodic	0	0	117	Melo. Tom 1
+melodic	8	0	117	Melo. Tom 2
+melodic	0	0	118	Synth Drum
+melodic	8	0	118	808 Tom
+melodic	9	0	118	Elec Perc.
+melodic	0	0	119	Reverse Cym.
+melodic	0	0	120	Gt.FretNoise
+melodic	1	0	120	Gt.Cut Noise
+melodic	2	0	120	String Slap
+melodic	0	0	121	Breath Noise
+melodic	1	0	121	Fl.Key Click
+melodic	0	0	122	Seashore
+melodic	1	0	122	Rain
+melodic	2	0	122	Thunder
+melodic	3	0	122	Wind
+melodic	4	0	122	Stream
+melodic	5	0	122	Bubble
+melodic	0	0	123	Bird
+melodic	1	0	123	Dog
+melodic	2	0	123	Horse-Gallop
+melodic	3	0	123	Bird 2
+melodic	0	0	124	Telephone 1
+melodic	1	0	124	Telephone 2
+melodic	2	0	124	DoorCreaking
+melodic	3	0	124	Door
+melodic	4	0	124	Scratch
+melodic	5	0	124	Wind Chimes
+melodic	0	0	125	Helicopter
+melodic	1	0	125	Car-Engine
+melodic	2	0	125	Car-Stop
+melodic	3	0	125	Car-Pass
+melodic	4	0	125	Car-Crash
+melodic	5	0	125	Siren
+melodic	6	0	125	Train
+melodic	7	0	125	Jetplane
+melodic	8	0	125	Starship
+melodic	9	0	125	Burst Noise
+melodic	0	0	126	Applause
+melodic	1	0	126	Laughing
+melodic	2	0	126	Screaming
+melodic	3	0	126	Punch
+melodic	4	0	126	Heart Beat
+melodic	5	0	126	Footsteps
+melodic	0	0	127	Gun Shot
+melodic	1	0	127	Machine Gun
+melodic	2	0	127	Lasergun
+melodic	3	0	127	Explosion
+drumkit	0	0	0	Standard
+drumkit	0	0	8	Room
+drumkit	0	0	16	Power
+drumkit	0	0	24	Electronic
+drumkit	0	0	25	TR-808
+drumkit	0	0	32	Jazz
+drumkit	0	0	40	Brush
+drumkit	0	0	48	Orchestra
+drumkit	0	0	56	SFX

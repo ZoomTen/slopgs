@@ -1,0 +1,116 @@
+= slopgs
+:sectnums:
+
+A [.underline]#vibe-reimplementation# of `swmidi.sys`, a.k.a.
+_Microsoft GS Wavetable Synth_ (MSGS). There is very likely
+something like this by now—if it's the case, I'm not surprised.
+I'm just throwing my hat in the ring here.
+
+Do note, that this is *not* a decompilation. Its goal is not
+to compile a software driver 1:1, but to provide **a portable
+implementation** of The Canonical MIDI Sound™.
+
+Now, I can't claim to:
+
+* have reverse-engineered it; the LLM did.
+* have coded it; the LLM also did.
+* call it "mine"; _I_ did very little work here.
+
+...so I don't think I can put a `LICENSE` on this. But I _can_ claim to:
+
+* have directed it.
+* have curated the results.
+* have written this `README`, at least. I have a https://en.wikipedia.org/wiki/Compose_key[Compose key].
+
+So can I say I _discovered_ it? I don't know. But what I
+_do_ know is that **I've wished for this thing for
+a while now**. And now, I have it. And you can have
+it as well.
+
+At least it can play GENERAL SERUM almost accurately...
+
+== What's reimplemented
+
+`swmidi.sys` off Windows XP Service Pack 3: ``5.1.2600.5512
+(xpsp.080413-2108)``
+
+If possible, I might get a comparison with the version of
+the driver that shipped with Windows 98 and Windows 10.
+They'll be compile-time conditionals.
+
+== Why...
+
+=== Why did you do this?
+
+I had a weekend to spare. Facing this brave new world,
+I've experimented with LLMs—or maybe, just _a specific_ LLM.
+
+It had already done:
+
+* https://github.com/zoomten/shi-kong-xing-shou[a disassembly]... well, added rockets to it, anyway.
+* an entire GB emulator with everything that I ever wanted
+
+and I thought it would be funny to implement something
+that Matt Montag mentioned in an e-mail to me once:
+
+[quote, Matt]
+____
+\...it would be neat to someday add a full emulation of MSGS as a synth engine..
+____
+
+[quote, me]
+____
+Haha, yeah. I think an MSGS clone synth that works everywhere would be amazing.
+____
+
+It is current year, and it's now here.
+
+Technology kind of scares me.
+
+=== Why did you employ the resource munchers?
+
+After seeing what it can do, I'm sadly addicted to these things.
+Most people in my general vicinity very much understands
+
+It helped speed up a disassembly effort and created the literal emulator of my dreams.
+This time, it helped another one of my dreams come true.
+
+It actually kind of scares me.
+
+== How did you do this?
+Initially I gave it:
+
+. The actual thing, `swmidi.sys`.
+. The `gm.dls` the thing was designed with.
+. My page on MSGS, Furmilion's MSGS research, and the BotB page on MIDI.
+. My MIDI page, in which to replace.
+. A plan, which said:
+.. Disassemble `swmidi.sys` and make a `SPEC.md`.
+.. From this `SPEC.md`, dispatch an agent that implements this as a C synthesizer, and give it a wasm build.
+.. Replace `bg-sound.js` on my page with an alternative minimal one that loads in this wasmized MSGS.
+
+There were some probe midis it gave me. Some small sidequests to determine
+what the resampler is: `kmixer`, `portcls`, `ks`, `sysaudio`, which in the
+end didn't really matter so long as the synth rendered to native 22050 Hz...
+
+I left the plan cycle on overnight and the first version was done. The sound
+was initially shaky. I didn't record it in version control immediately,
+but every note didn't stop. But it is *recognizable* as MSGS-derived.
+
+There was so much it can only infer from code, but the road to making it MSGS rests on the listening side, and me pointing out where it can be improved.
+
+From there it was a fine-tuning game. I feel like one of those ROM hackers
+faffing about emulator accuracy and rejecting "inaccurate emulators" from
+the outset regardless of whether or not said accuracy is even relevant.
+
+By the way: *all emulators are fantasy consoles!* How "fantasy" they are
+differs to a degree :)
+
+=== What I'm testing it on so far
+
+* My own boring midis
+* Kot & A64 - GENERAL SERUM
+* Strobe - faffaeefafaefae
+* HueArme - Weekend
+* furmillion's unfinished Crystal Oscillator
+* flourish, town, onestop

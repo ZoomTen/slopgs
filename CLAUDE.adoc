@@ -1,0 +1,160 @@
+:sectnums: 
+
+== What slopgs is
+
+This is a (clean-room) re-implementation of `swmidi.sys` (MSGS), specifically the
+version shipped with Windows XP Service Pack 3.
+
+The aim is to make a clone that *sounds identical* to the synth in question in
+behavior including all of its quirks and characteristics.
+
+== Where to go
+
+=== `artifacts/`
+
+Generated and non-generated analysis material. Don't treat this as residue,
+but as your primary experimental workspace.
+
+`SPEC.md`:: Directly analyzed from the driver this is sourced from. Use this as a proxy for checking the behavior of the original `swmidi.sys`.
++
+Behavioral claims in there were implied by:
++
+* `[A]` instruction-level analysis
+* `[D]` gm.dls analysis
+* `[M]` measured references
+* `[I]` inferred
+* `[O]` open, to be resolved
+* `[F]` empirical fit, also to be resolved
+
+`SPEC_GAPS.md`:: Meant to document apparent discrepancies
+between what was implied by the driver code vs. what is actually
+observed.
++
+Be wary, though, that some items may be the result of not actually
+implementing a certain feature of the `SPEC.md`.
+
+`make_probes.py`:: Script to generate MIDIs that aim to test a
+specific aspect of the engine.
++
+You can add probes here to "cleanly" and deterministically test a specific engine behavior. Some tests may be useful if you use the GS Sine Wave patch:
+that one is `008:080`.
++
+All MIDIs must be generated in `probes/`. All reference renderings must be in
+`probe-results`. Prompt the user to make some if they don't exist.
+
+=== `src/`
+
+The source code for the engine.
+
+This contains the actual synthesizer, the Standard MIDI File reader and
+sequencer, as well as the necessary interfaces.
+
+The intended initial platforms are:
+
+. WebAssembly, for use as a browser player.
+. A standalone command line utility, for use a general purpose player and renderer. (This is also the primary platform used for automated testing.)
+
+=== `tests/`
+
+MIDIs specifically built to test one aspect of the engine. They are each accompanied by one FLAC
+reference rendering.
+
+They may be derived from copyrighted work, but they exist strictly
+to test one specific aspect of the synthesizer that generated test
+probes might not adequately resolve.
+
+=== `field/`
+
+If present, it contains real world copyrighted
+MIDIs and a FLAC rendering. If a user forgets
+to make a reference recording for a MIDI they
+asked, you must remind the user to do so.
+
+=== `dist/`
+
+What should be in here:
+
+. Built `msgs.wasm` binary
+. Built native `msgs-render` binary
+. `gm.dls`, expect the user to supply one.
+. The driver `bg-sound2` JS file
+. Any applicable test page.
+
+The user is assumed to run a web server from the repo root.
+
+== What "identical" means
+
+Not only must a listener can't tell the difference between `slopgs`
+and the real MSGS at a casual listen, but it must also be measurably at least
+near identical, especially on very specific synthesizer behavior.
+
+=== Measuring
+
+First:
+
+. Ensure the rendered corpus has the same rate as the reference.
+. Crop the reference and the rendered corpus so that they align. The misalignment
+is usually because the starting delay is different.
+
+[TIP]
+--
+Some tools that have been used for automated alignment include RMS envelope cross-cor, sample-domain FFT cross-cor,
+etc.
+--
+
+There are two ways to measure "identical". Both are complementary. If you can't conclude
+from one, try the other.
+
+CAUTION: The reference may have dithering, so please normalize for that first!
+
+Analytical:: This practically means comparing peak/RMS/spectral dB per-probe. It also means finding envelope correlation `r` against a specific track to ensure peak "closeness" to the reference track.
++
+Worse = residual dB less negative. Ship after:
++
+. Targeted probe improves
+. Corpus-wide mean not regressing
+
+
+Visual:: This practically means: building a spectrogram out of the reference and the rendered version.
++
+Make sure you clearly label which one is slopgb, and which one is the reference.
+You may also need to make it big enough for better analysis.
+
+=== Confirming
+
+A listener should listen to the probes and confirm
+slopgb sounds "basically the same". Wild deviations usually
+jump out every once in a while, and you must encourage
+the listener to point out:
+
+. At which time the deviation occured.
+. Which measure this corresponds to, if possible.
++
+If you
+aren't able to get that from the listener, you should
+attempt to infer that from the given timestamp.
+. Which instrument the deviation happened in.
++
+This may help you isolate the affected track.
+
+If the listener is able to isolate the track and
+affected portion, treat it as a test corpus and
+perform analysis on it.
+
+== How to act
+
+From the `fable-mode`:
+
+[quote]
+--
+. *Stage map first*. Numbered stages, expected output each, one verifiable artifact per stage. Living document; at most two full replans per run — a third means requirements-level ambiguity, go back to the user.
+
+. *Delegate by name where possible.* Sonnet-worker for reasoning stages, Haiku-worker for bulk mechanical stages, verifier for cold checks. Workers get: task, exact output path, context, named pass condition. Workers don't spawn workers. Cap concurrency.
+
+. *Verify with a check that can fail.* A test that runs, a file in the expected shape, a source actually fetched, an output diffed against spec. "Looks right" is not a check. Name the exact command/file/comparison or mark the stage unverified. A fix at stage N re-runs the checks it invalidated.
+
+. *Self-critique before delivery.* Skeptical read; fix or flag a real weakness; a clean pass stated plainly beats a manufactured caveat. Beyond capability → name what was attempted and where it failed.
+--
+
+For the self-critique stage, you may spawn a worker for
+this so it doesn't have the context that you have.

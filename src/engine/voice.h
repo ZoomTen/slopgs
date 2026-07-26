@@ -1,0 +1,190 @@
+/* voice.h -- voice pool, allocation, stealing, key-group choke, per-voice
+ * parameters, envelopes. SPEC.md Part 5 (pool/steal/choke) + Part 3
+ * (per-voice parameter computation: pitch, envelopes, volume law, pan). */
+#ifndef VOICE_H
+#define VOICE_H
+
+#include <stdint.h>
+#include "dls.h"
+
+#define RENDER_RATE 22050 /* SPEC.md S1.3/S6.1: single fixed rate, not a range */
+
+/* INVARIANT: 22050 Hz (or an integer multiple). NEVER set to the
+ * device/AudioContext rate when that is not a 22050 multiple -- synthesis-
+ * rate aliasing (probe 02 keys 125-127, the faffaee reference) is real,
+ * audible, spec-relevant output; a non-multiple render rate smears the
+ * fold into noise. Render at 22050 and resample at the output stage. See
+ * SPEC.md verification-ceiling / internal-rate invariant. */
+
+#define NUM_VOICES 54 /* 48 primary + 6 reserve, SPEC.md S5.2 -- implemented
+                         here as one flat pool; see SPEC_GAPS.md for the
+                         48/6-split reserve-topup mechanic this simplifies
+                         away. */
+
+typedef enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_IDLE } EnvStage;
+
+typedef struct Voice {
+    int active;         /* producing sound */
+    int channel;
+    int note;
+    uint32_t locale;    /* resolved instrument locale, for key-group scope match */
+    uint8_t key_group;
+    Wave *wave;
+    Artic *artic;
+
+    uint32_t phase_pos;   /* Q12: bits31:12 index, bits11:0 fraction */
+    uint32_t phase_step;  /* Q12 per-output-sample increment -- the CURRENTLY-
+                             APPLIED value, ramped towards phase_step_target
+                             one sample at a time by render.c's render_voice
+                             (see PITCH_RAMP_RATE_FRAC_PER_MS in voice.c);
+                             never written directly outside voice_note_on's
+                             initial snap and that ramp step, SPEC.md S6.6 */
+    uint32_t phase_step_target;  /* live target voice_update_pitch recomputes
+                             every block (bend/LFO/EG2); phase_step glides
+                             toward this instead of jumping, mirroring
+                             voice.h's gain_l/gain_l_target split */
+    int32_t  phase_step_ramp_step; /* fixed per-sample delta towards
+                             phase_step_target, latched once when the target
+                             changes (see voice_update_pitch); 0 once reached */
+    uint32_t base_ratio_q12; /* note-on base pitch ratio, clamped once at note-on
+                               (incl. latched RPN1/RPN2); live bend/LFO multiply
+                               this OUTSIDE the clamp -- `[M: probe 30]` */
+    int32_t base_cents;   /* fine_tune + (note-unity_note)*100: fixed for the
+                              voice's life; live modulation (bend/LFO/EG2) is
+                              added on top each block by voice_update_pitch */
+    int32_t loop_start_s, loop_len_s; /* samples; loop_len_s==0 => one-shot */
+    int32_t sample_end_s;             /* one-shot end / loop end, samples */
+
+    double gain_l, gain_r; /* CURRENTLY-APPLIED gain, smoothed towards the
+                               target every output sample by render.c (see
+                               GAIN_SMOOTH_ALPHA there) -- never written
+                               directly outside voice_note_on's initial snap */
+    double gain_l_target, gain_r_target; /* live target gain, recomputed
+                               every block by voice_update_gain from
+                               atten_const_hdb plus current channel vol/
+                               expr/pan/master vol */
+    int32_t atten_const_hdb; /* velocity attenuation + region/wsmp attenuation:
+                                 fixed for the voice's life (SPEC.md S3.5/
+                                 S3.10); everything CC-driven is NOT baked in
+                                 here, see voice_update_gain */
+
+    EnvStage env_stage;
+    double env_level;         /* 0..1 amplitude envelope multiplier */
+    double env_attack_step;   /* linear increment per sample during attack */
+    double env_decay_coef;    /* multiplicative approach-to-sustain coefficient */
+    double env_release_coef;  /* multiplicative approach-to-zero coefficient */
+    double env_sustain_level; /* 0..1 */
+
+    /* EG2, the PITCH envelope. SPEC.md S2.4.3 documents `(usSource=5 EG2,
+     * usDestination=0x0003 PITCH)` as a real, dispatched connection
+     * `[A:0x15838]`, and S2.4.4 confirms EG2 to any OTHER destination is
+     * ignored -- so pitch is the one EG2 modulation this driver implements.
+     * Same four-segment shape as EG1; stepped at the modulation sub-chunk
+     * cadence rather than per sample (see voice_step_eg2). */
+    EnvStage eg2_stage;
+    double eg2_level;          /* 0..1 */
+    double eg2_attack_step;    /* linear increment per modulation block */
+    double eg2_decay_coef;     /* multiplicative approach-to-sustain, per block */
+    double eg2_release_coef;   /* multiplicative approach-to-zero, per block */
+    double eg2_sustain_level;  /* 0..1 */
+    double eg2_depth_cents;    /* connection scale; 0 = no EG2->pitch (the default) */
+
+    int held;             /* note not yet released (CC64/CC120/CC123 semantics) */
+    int sustain_deferred;  /* CC64 held down at note-off time */
+    uint32_t age;          /* allocation sequence number, for oldest-first steal */
+
+    int in_reserve;             /* SPEC.md S5.2/S5.3/S5.4 [A]: 1 while this
+                                    voice is a FREE (inactive) node currently
+                                    tagged as belonging to the reserve tier;
+                                    meaningless while active==1. Recycling
+                                    always clears it back to 0 (primary) --
+                                    S5.3 "both target primary only, never
+                                    reserve". See voice_topup_reserve (voice.c). */
+    int fast_release_committed; /* SPEC.md S5.6 +0x138 [A]: 1 once this voice
+                                    has been committed to a fast release by
+                                    ANY of the three fast-release callers
+                                    (key-group choke, same-note retrigger, or
+                                    the reserve top-up's Branch B). Sole
+                                    purpose: gate eligibility in
+                                    find_steal_candidate_symmetric so the same
+                                    voice isn't re-marked by a later top-up
+                                    call while still draining. Cleared at note
+                                    setup (voice_note_on). */
+
+    /* Pitch LFO (vibrato), SPEC.md LFO section `[M: probe 06]`. lfo_freq_hz/
+     * lfo_delay_s are cached once at note-on from this voice's own artic
+     * (region-specific, so different instruments vibrato at different
+     * rates -- a per-instrument derivation, not a global constant).
+     * lfo_phase is 0..1 cycles into g_table_sine, held fixed within one
+     * render.c sub-chunk and advanced between sub-chunks by
+     * voices_advance_lfo() so a held note actually oscillates instead of
+     * freezing at one offset for an entire long chunk. */
+    double lfo_phase;
+    double lfo_freq_hz;
+    double lfo_delay_s;
+    double lfo_elapsed_s; /* seconds since note-on; phase stays 0 until this exceeds lfo_delay_s */
+} Voice;
+
+extern Voice g_voices[NUM_VOICES];
+extern uint32_t g_voice_age_counter;
+
+void voice_pool_reset(void);
+void voice_note_on(int channel, int note, int velocity);
+
+/* SPEC.md S5.4 [A] mechanism / [O] cadence choice (see voice.c's own comment
+ * above this function's definition): tops the reserve tier back up to
+ * TOPUP_RESERVE_COUNT free voices, first by retagging already-free primary
+ * nodes (Branch A), then -- only if primary is ALSO empty -- by proactively
+ * fast-releasing (never synchronously freeing) up to that many active
+ * voices (Branch B). Called once per render.c render_frames() call by
+ * default (see render.c's TOPUP_PER_SUBCHUNK), this project's own `[O]`
+ * stand-in for the real driver's once-per-event-dispatch-call cadence (no
+ * true periodic tick exists in this architecture). */
+void voice_topup_reserve(void);
+void voice_note_off(int channel, int note);
+void voice_all_sound_off(int channel);   /* CC120: bypasses sustain hold */
+void voice_all_notes_off(int channel);   /* CC123: honours sustain hold */
+void voice_sustain_lift(int channel);    /* CC64 released: release deferred voices */
+
+/* Advances voice v's amplitude envelope by exactly one output sample
+ * (1/22050 s) and returns the resulting 0..1 level. Deactivates the voice
+ * (v->active = 0) once a release segment has fully decayed. Called from
+ * render.c's per-sample mixer loop -- render.c owns sample fetch,
+ * interpolation, and saturating accumulation; voice.c owns the envelope
+ * state machine itself. */
+double voice_step_envelope(Voice *v);
+
+/* 1 if any voice is currently producing sound, else 0 (used by smf.c to
+ * decide when playback has fully finished, including release tails). */
+int voice_any_active(void);
+
+/* Recomputes v->phase_step from v->base_cents plus every live per-block
+ * pitch modulation source (currently: pitch bend, SPEC.md S4.4; LFO and EG2
+ * are wired in as zero-contributing hooks for the next steps). This is the
+ * ONLY place phase_step is computed -- voice_note_on calls it too, so
+ * note-on and per-block recompute can never drift apart. */
+void voice_update_pitch(Voice *v);
+
+/* Calls voice_update_pitch for every active voice. Called once per render
+ * block (render_frames) so pitch modulation that changes between blocks --
+ * e.g. a pitch-bend message dispatched by the sequencer between chunks --
+ * reaches notes that are already sounding, not just newly-triggered ones. */
+void voices_update_modulation(void);
+
+/* Advances every active voice's pitch-LFO phase by `freq_hz * frames/RENDER_RATE`
+ * cycles (wrapped to [0,1)), gated on each voice's own lfo_delay_s so the
+ * oscillator's phase=0 start lines up with the end of the start-delay, not
+ * note-on. Called by render.c once per sub-chunk (SPEC.md LFO section
+ * `[M: probe 06]`) so a held note's vibrato actually oscillates instead of
+ * freezing at one per-block value for a long event-free chunk. */
+void voices_advance_lfo(uint32_t frames);
+
+/* Recomputes v->gain_l/v->gain_r from v->atten_const_hdb (the fixed velocity+
+ * region attenuation baked in at note-on) plus every live gain source: g_
+ * master_vol_hdb and the owning channel's current volume(CC7)/expression
+ * (CC11)/pan(CC10), SPEC.md S3.5 (squared volume law via g_table_vel), S3.10
+ * (attenuation sum), S3.6 (pan law). This is the ONLY place gain_l/gain_r are
+ * computed -- voice_note_on calls it too, mirroring voice_update_pitch. */
+void voice_update_gain(Voice *v);
+
+#endif /* VOICE_H */

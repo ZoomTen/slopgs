@@ -1,0 +1,231 @@
+/* cli.c -- the native interface: a standalone command-line renderer.
+ *
+ * Same role as wasm.c, different platform. wasm.c exports the ABI and bumps
+ * over linear memory; this file provides main() and a malloc-backed rt_alloc,
+ * and drives the synth core directly rather than through the uint32-offset
+ * ABI (a host pointer does not fit in a uint32 on a 64-bit build).
+ *
+ * Argv and stdout shape inherited from the legacy Node-based harness runner
+ * (minus its leading <wasm> argument); this program produces the same JSON
+ * format to stdout, suitable for parsing by analysis scripts:
+ *
+ *   msgs-render <dls> <smf|""> <loops> <max_frames> <out_pcm>
+ *
+ * <out_pcm> receives raw interleaved stereo signed-16-bit-LE PCM at the
+ * synth's fixed 22050 Hz render rate. One JSON line goes to stdout.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "engine/rt.h"
+#include "engine/tables.h"
+#include "engine/dls.h"
+#include "engine/synth.h"
+#include "engine/render.h"
+#include "engine/smf.h"
+
+/* ---------------------------------------------------------------------- */
+/* allocator: malloc, never freed -- gm.dls's sample data is referenced in
+ * place (SPEC.md S1.5.5) and must outlive every render call, and the process
+ * renders exactly once and exits. */
+
+static uint32_t g_total = 0;
+
+void *rt_alloc(uint32_t nbytes) {
+    nbytes = (nbytes + 7u) & ~7u;
+    void *p = calloc(1, nbytes ? nbytes : 8);
+    if (!p) {
+        fprintf(stderr, "msgs-render: out of memory (%u bytes)\n", nbytes);
+        exit(3);
+    }
+    g_total += nbytes;
+    return p;
+}
+
+uint32_t rt_mem_size(void) {
+    return g_total;
+}
+
+/* ---------------------------------------------------------------------- */
+
+static unsigned char *read_file(const char *path, uint32_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); return NULL; }
+    rewind(f);
+    unsigned char *buf = (unsigned char *)malloc((size_t)n ? (size_t)n : 1);
+    if (!buf) { fclose(f); return NULL; }
+    if (n > 0 && fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        fclose(f); free(buf); return NULL;
+    }
+    fclose(f);
+    *len_out = (uint32_t)n;
+    return buf;
+}
+
+/* Inherited single-line JSON format from the legacy Node-based harness runner. */
+static void emit(int abi, int init_ret, int load_ret, unsigned long frames,
+                 int truncated, const char *error) {
+    printf("{\"abi_version\":%d,\"init_ret\":%d,\"load_ret\":", abi, init_ret);
+    if (load_ret == 0x7fffffff) printf("null"); else printf("%d", load_ret);
+    printf(",\"frames\":%lu,\"truncated\":%s,\"error\":",
+           frames, truncated ? "true" : "false");
+    if (error) printf("\"%s\"", error); else printf("null");
+    printf("}\n");
+}
+
+#define CHUNK 4096
+
+/* ---------------------------------------------------------------------- */
+/* --selftest: the replay/reload check.
+ *
+ * msgs_is_finished() is a latch. Before smf_rewind() existed, nothing ever
+ * cleared it, so the *second* song a host loaded reported "finished" on its
+ * first render call and played as silence -- the bug this guards. Renders a
+ * song to completion, then loads it again and asserts the sequencer really
+ * did go back to the top and produce the same audio.
+ */
+static int selftest(const char *dls_path, const char *smf_path) {
+    uint32_t dls_len = 0, smf_len = 0;
+    unsigned char *dls = read_file(dls_path, &dls_len);
+    unsigned char *smf = read_file(smf_path, &smf_len);
+    if (!dls || !smf) { fprintf(stderr, "selftest: could not read inputs\n"); return 1; }
+
+    tables_build();
+    if (dls_load(dls, dls_len) != 0) { fprintf(stderr, "selftest: dls_load failed\n"); return 1; }
+
+    static int16_t buf[CHUNK * 2];
+    int fail = 0;
+
+    /* Two identical passes. Pass 2 differs only in that the synth has already
+     * run a song to the end and latched finished. */
+    unsigned long frames[2] = {0, 0};
+    long long energy[2] = {0, 0};
+    for (int pass = 0; pass < 2; pass++) {
+        synth_reset();
+        if (smf_load(smf, smf_len) != 0) { fprintf(stderr, "selftest: smf_load failed\n"); return 1; }
+        smf_set_loop(0);
+
+        if (smf_is_finished()) {
+            fprintf(stderr, "FAIL pass %d: finished latch still set right after smf_load\n", pass + 1);
+            fail = 1;
+        }
+        for (;;) {
+            uint32_t n = smf_render(buf, CHUNK);
+            for (uint32_t i = 0; i < n * 2; i++) {
+                long long s = buf[i];
+                energy[pass] += s < 0 ? -s : s;
+            }
+            frames[pass] += n;
+            if (n == 0 || smf_is_finished()) break;
+            if (frames[pass] > 22050UL * 600UL) break; /* 10 min cap */
+        }
+        if (!smf_is_finished()) {
+            fprintf(stderr, "FAIL pass %d: song never latched finished\n", pass + 1);
+            fail = 1;
+        }
+        if (energy[pass] == 0) {
+            fprintf(stderr, "FAIL pass %d: rendered pure silence\n", pass + 1);
+            fail = 1;
+        }
+    }
+
+    if (frames[0] != frames[1] || energy[0] != energy[1]) {
+        fprintf(stderr, "FAIL: replay differs from first play -- frames %lu vs %lu, energy %lld vs %lld\n",
+                frames[0], frames[1], energy[0], energy[1]);
+        fail = 1;
+    }
+
+    /* Same latch, the other way a host clears it: rewinding in place rather
+     * than reloading (what msgs_reset does for a looping <bg-sound>). */
+    smf_rewind();
+    if (smf_is_finished()) {
+        fprintf(stderr, "FAIL: finished latch still set after smf_rewind\n");
+        fail = 1;
+    }
+    uint32_t n = smf_render(buf, CHUNK);
+    long long e3 = 0;
+    for (uint32_t i = 0; i < n * 2; i++) { long long s = buf[i]; e3 += s < 0 ? -s : s; }
+    if (n == 0) { fprintf(stderr, "FAIL: rewound song rendered no frames\n"); fail = 1; }
+
+    printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames\n",
+           fail ? "FAIL" : "PASS", frames[0], frames[1], n);
+    (void)e3;
+    return fail;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 4 && strcmp(argv[1], "--selftest") == 0) {
+        return selftest(argv[2], argv[3]);
+    }
+    if (argc != 6) {
+        fprintf(stderr, "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_pcm>\n"
+                        "       %s --selftest <dls> <smf>\n", argv[0], argv[0]);
+        return 1;
+    }
+    const char *dls_path = argv[1];
+    const char *smf_path = argv[2];
+    long loops = strtol(argv[3], NULL, 10);
+    unsigned long max_frames = strtoul(argv[4], NULL, 10);
+    const char *out_path = argv[5];
+
+    tables_build();
+    synth_reset();
+    smf_set_loop(0);
+
+    int init_ret = 0;
+    if (dls_path[0]) {
+        uint32_t dls_len = 0;
+        unsigned char *dls = read_file(dls_path, &dls_len);
+        if (!dls) {
+            emit(1, -1, 0x7fffffff, 0, 0, "could not read dls");
+            return 2;
+        }
+        init_ret = dls_load(dls, dls_len); /* referenced in place: never freed */
+    }
+
+    int load_ret = 0x7fffffff; /* sentinel -> JSON null, as node_runner emits */
+    if (smf_path[0]) {
+        uint32_t smf_len = 0;
+        unsigned char *smf = read_file(smf_path, &smf_len);
+        if (!smf) {
+            emit(1, init_ret, 0x7fffffff, 0, 0, "could not read smf");
+            return 2;
+        }
+        synth_reset();
+        load_ret = smf_load(smf, smf_len);
+    }
+
+    smf_set_loop((int32_t)loops);
+
+    FILE *out = fopen(out_path, "wb");
+    if (!out) {
+        emit(1, init_ret, load_ret, 0, 0, "could not open out_pcm");
+        return 2;
+    }
+
+    static int16_t buf[CHUNK * 2]; /* stereo interleaved */
+    unsigned long total = 0;
+    int truncated = 0;
+    for (;;) {
+        uint32_t n = smf_render(buf, CHUNK);
+        if (n > 0) {
+            if (fwrite(buf, 4, n, out) != n) {
+                fclose(out);
+                emit(1, init_ret, load_ret, total, truncated, "short write to out_pcm");
+                return 2;
+            }
+            total += n;
+        }
+        if (n == 0) break;
+        if (smf_is_finished()) break;
+        if (total >= max_frames) { truncated = 1; break; }
+    }
+    fclose(out);
+
+    emit(1, init_ret, load_ret, total, truncated, NULL);
+    return 0;
+}

@@ -1,0 +1,30 @@
+# Tests
+
+|===
+|what|from|tests what?|regression example|what to expect
+
+|warm-echo
+|flourish.mid
+|instrument release factor
+|instruments sounding too long
+|instruments releasing matches
+
+|wild-sweep
+|Weekend by HueArme
+|pitch-bend range and interpolation
+|jumps too sudden, pitch bend range sounding too low
+|smooth curve between pitch bends
+
+|lazers
+|GENERAL SERUM by Kot & Abstract 64
+|pitch-bend interpolation
+|immediate pitch movement, step-shaped
+|gradual pitch movement
+
+|radio
+|GENERAL SERUM by Kot & Abstract 64
+|aliasing and pitch range
+|(spectrogram mismatch)
+|spectrogram matches, iunno what else to say.
+
+|===

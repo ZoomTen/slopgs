@@ -1,0 +1,9 @@
+field/*.mid
+field/*.flac
+__pycache__
+artifacts/probes/*.tsv
+artifacts/probe-results/*.flac
+!artifacts/probes/gm_dls_inventory.tsv
+dist/gm.dls
+dist/msgs.wasm
+dist/msgs-render
