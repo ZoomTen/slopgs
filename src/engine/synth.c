@@ -108,8 +108,17 @@ uint32_t synth_channel_locale(int ch) {
 int32_t synth_pitch_bend_cents(int ch) {
     Channel *c = &g_channels[ch];
     int32_t raw = (int32_t)c->pitch_bend - 8192;
-    /* (raw/8192) * rangeCents, C-style truncation toward zero (SPEC.md S4.4). */
-    return (int32_t)(((int64_t)raw * c->pb_range_cents) / 8192);
+    /* (raw * rangeCents) >> 13, FLOOR -- not C truncation toward zero.
+     * SPEC.md S4.4 says "C-style truncation toward zero"; the driver disagrees
+     * `[A:0x16d60]`:
+     *     16d73  sub  eax,0x2000              ; value - 8192
+     *     16d78  imul eax,DWORD PTR [esi+0x20] ; * range in cents (default 0xc8)
+     *     16d7c  sar  eax,0xd                 ; ARITHMETIC shift = floor
+     * `sar` floors; `/` rounds toward zero. They differ by one cent on every
+     * downward bend that is not an exact multiple of 8192, which is most of
+     * them. 32-bit `imul` there vs. int64 here is not a difference: |raw| <=
+     * 8192 and range <= 4800 peaks at 39.3M, well inside int32. */
+    return (int32_t)(((int64_t)raw * c->pb_range_cents) >> 13);
 }
 
 static void recompute_rpn1(Channel *c) {
