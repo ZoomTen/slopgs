@@ -2347,3 +2347,115 @@ Rebuild with `decay_tc_keyfollow` returning `tc` unchanged and re-render
 from ~-13 dB/s back to ~-4.6 dB/s, `score.py`'s corpus mean must fall from
 -28.18 dB to -24.55 dB, and the render must lengthen from 79.13 s to 80.25 s
 against a 79.22 s reference.
+
+---
+
+## Entry 16: release finish detection on the AUDIBLE level (`AUDIBLE_FLOOR` in src/engine/voice.c) -- SHIPPED, `[I]` reading of `+0x13c`
+
+**Status: `[I]`, not a curve fit.** SPEC.md S5.7 reads `+0x13c` -- the field
+the finish check `[A:0x19733]` compares against its -80 dB constant, and the
+field both steal comparators tie-break on -- as "the voice's *live* envelope
+level" in a log-domain format, explicitly `[I]`. This entry ships the reading
+where the note's own attenuation sum (S3.5/S3.10: velocity + region
+attenuation + CC7 + CC11 + Master Volume + pan) is *inside* that dB
+accumulator, which is the reading that makes S5.7's "lower `+0x13c` wins"
+tie-break mean "the quietest voice dies first" rather than "the voice whose
+normalized EG happens to sit lowest". The value itself is not tuned: the
+whole plateau 3e-5 .. 1e-3 gives the identical render on the passage below.
+
+### 1. What shipped
+
+`voice_step_envelope`'s ENV_RELEASE case reaps on *either* floor:
+
+```c
+if (v->env_level < 0.0005 ||                                   /* unchanged */
+    v->env_level * max(v->gain_l, v->gain_r) < AUDIBLE_FLOOR)  /* new */
+```
+
+`AUDIBLE_FLOOR` = 1e-4, i.e. -74 dB below a full-scale voice given
+`GAIN_CEILING` ~0.5. The old bare-EG floor is kept as-is, so no voice is ever
+reaped *later* than before -- this can only shorten a slot's occupancy.
+
+### 2. How it was found
+
+`field/HueArme-Weekend.mid` at t=23.9 s (reported by ear/spectrogram: "the
+noise part is missing", magenta box, both log and linear views). Measured:
+400-1000 Hz sat **7-9 dB** below the reference for ~120 ms, while the
+neighbouring windows and the song-wide figure both sit within ~1 dB.
+
+Per-channel solo renders localized it to channels 1 and 2 (both program 122,
+Seashore -- the passage's noise wash): each contributes 31-32 dB soloed, yet
+*dropping both from the full mix changed the mix by 0.1 dB*. They were being
+allocated and then evicted. An instrumented build confirmed it at the frame:
+
+```
+23.923 STEAL for ch13 n73 <- victim ch0 n48 held1 age4398
+23.923 STEAL for ch13 n77 <- victim ch1 n48 held1 age4399
+```
+
+-- note-on's own forced steal (S5.7's asymmetric `0x124a8` comparator,
+oldest-held-first), firing because both free lists were empty. The pool dump
+at that instant: 54/54 active, only 17 held, **37 in release, 20 of those
+already below -40 dB audible**. The pool was full of voices that could not be
+heard. Peak demand in that passage is ~71 voices against a 54-voice pool
+(S5.2), so ~20 wasted slots is exactly the difference between stealing and
+not stealing.
+
+Ruled out first: release *duration* is not the problem. Probe 01's program
+122 note (t=305.1 s, locally aligned, r=0.995) decays note-off -> -66 dB in
+1.6 s in **both** engines, tracking the reference within a constant ~3 dB
+level offset the whole way down. The tails are authentic; what was wrong was
+counting an inaudible tail as an occupied slot.
+
+### 3. Measurement
+
+400-1000 Hz, ref window 23.28-23.47 s (`field/HueArme-Weekend.flac`, slopgs
++0.6156 s):
+
+| build | 400-1000 Hz vs reference |
+|---|---|
+| before | 27.7 dB (ref 38.3) |
+| after | 35.2 dB |
+| 256-voice pool, no other change (diagnostic only) | 35.2 dB |
+
+Matching the unlimited-pool render exactly is the point: after this change
+the passage no longer steals at all, which is what the reference shows.
+
+Per-band delta vs reference over that window, before -> after:
+400-600 -9.2 -> -5.0, 600-800 -9.3 -> -3.6, 800-1000 -7.2 -> -0.4 dB.
+
+### 4. Corpus effect
+
+`artifacts/score.py`, mean spectral residual **-28.18 -> -28.85 dB**, mean
+envelope `r` 0.909 unchanged. `HueArme-Weekend` -19.27 -> -19.45. Both
+figures are 47-item runs, taken before `probe-results/36.flac` existed; on
+the 48-item corpus the same pair reads **-27.94 -> -28.64 dB**, `r` 0.904 ->
+0.909. (The 47-item "after" also carries the S3.1.3 key-range fix in
+`dls.c`, which is a separate `[A]` conformance fix, not a fit -- it moved
+exactly one corpus item, `HueArme-Weekend` -19.27 -> -19.26, before probe 36
+joined.)
+
+Improved most: `12_gs_sysex` -42.92 -> -46.32, `14_running_status` -39.25 ->
+-43.12, `23_rpn_tune` -41.47 -> -45.23, `07_pan_volume` -43.21 -> -45.12,
+`17_master_volume` -40.68 -> -42.67, `04_envelope` -37.47 -> -37.99.
+
+Regressed: `01_programs` -29.47 -> -29.10, `05_pitchbend` -28.44 -> -27.78,
+`19_prior_art` -25.44 -> -25.36, `wild-sweep` r 0.690 -> 0.680. `dead` ms
+fell or held everywhere it moved (`11_drums` 13160 -> 12635, `flourish` 385
+-> 310).
+
+### 5. Where a future RE pass should look
+
+`0x194da` (the only non-zeroing writer to `+0x13c`) and `0x19733` (the floor
+compare): recovering what `0x194da` actually accumulates -- normalized EG, or
+EG plus the note's attenuation sum -- retires this `[I]` outright. SPEC.md
+S6.4.5 "Open items" #16 (the `<<8>>5` attenuation-to-register scaling) is the
+same unrecovered path.
+
+### 6. The check that fails if this breaks
+
+`-DAUDIBLE_FLOOR=0.0` restores the old behaviour exactly. Rebuild that way
+and re-render `field/HueArme-Weekend.mid`: 400-1000 Hz over 23.916-24.056 s
+(render timeline) must fall from 35.2 dB back to 27.7 dB, and `score.py`'s
+corpus mean from -28.85 dB to -28.18 dB. `make test` must keep printing
+`48/48 voices survive saturation` (SPEC.md S5.5 `[M]`) at every floor value.
