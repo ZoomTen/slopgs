@@ -471,6 +471,47 @@ const SlopgsCompare = (() => {
     return { fftSize, bandRmsDb, bandPeakDb, fLo, fHi, log };
   }
 
+  // Same viewport draw contract as drawSpectrogramWindow (canvas, mono,
+  // start, count, scale, meta) -> stats, so paint() can swap the two without
+  // touching the shared zoom/scroll/playhead machinery built around them. No
+  // frequency axis here -- min/max sample per pixel column instead of an FFT
+  // per column.
+  function drawWaveformWindow(canvas, mono, start, count, scale) {
+    const width = canvas.width, height = canvas.height;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, width, height);
+    const mid = height / 2;
+    let sumSq = 0, n = 0, peak = 0;
+    ctx.strokeStyle = "#7db8ff";
+    ctx.beginPath();
+    for (let c = 0; c < width; c++) {
+      const from = start + Math.floor((c * count) / width);
+      const to = Math.max(from + 1, start + Math.floor(((c + 1) * count) / width));
+      let mn = 0, mx = 0;
+      for (let s = Math.max(0, from); s < Math.min(mono.length, to); s++) {
+        const v = mono[s];
+        if (v < mn) mn = v; if (v > mx) mx = v;
+        sumSq += v * v; n++;
+        const av = Math.abs(v); if (av > peak) peak = av;
+      }
+      const y0 = mid - mx * mid, y1 = mid - mn * mid;
+      ctx.moveTo(c + 0.5, y0); ctx.lineTo(c + 0.5, Math.max(y1, y0 + 1));
+    }
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.beginPath(); ctx.moveTo(0, mid + 0.5); ctx.lineTo(width, mid + 0.5); ctx.stroke();
+    // Same "relative to the pair's shared peak" convention as the
+    // spectrogram's band stats (scale.maxDb comes from the same
+    // computeSharedScale call) -- the absolute number reads oddly since
+    // that peak is an FFT-bin magnitude, not a sample amplitude, but the
+    // ref/slop delta the overlay prints is unaffected: both canvases share
+    // the one `scale`, so the offset cancels out of the difference.
+    const bandRmsDb = toDb(Math.sqrt(sumSq / Math.max(1, n))) - scale.maxDb;
+    const bandPeakDb = toDb(peak) - scale.maxDb;
+    return { fftSize: 0, bandRmsDb, bandPeakDb, fLo: 0, fHi: NYQUIST, log: false };
+  }
+
   // Text block, drawn after both canvases are analysed so each can quote the
   // other. It goes ON the canvas, not in the DOM around it: a screenshot of
   // the image is what actually gets shared, and it is only useful if it says
@@ -747,6 +788,10 @@ const SlopgsCompare = (() => {
     // Linear or log-ish vertical axis. Shared by both canvases for the same
     // reason the band is: two spectra on different axes compare to nothing.
     let logFreq = false;
+    // "spectrogram" or "waveform". Same zoom/scroll/playhead/drag machinery
+    // drives both -- only the per-column draw call and the overlay text
+    // change; see drawWaveformWindow's contract note.
+    let mode = "spectrogram";
 
     function viewWidth() { return cRef.width || 1; }
     function visibleSamples() { return Math.max(viewWidth(), Math.round(total / zoom)); }
@@ -757,15 +802,19 @@ const SlopgsCompare = (() => {
       const start = viewStart();
       const toMs = (s) => (s / SYNTH_RATE) * 1000;
       const view = { zoom, fLo, fHi, logFreq, dynRangeDb: dynRange };
-      const sRef = drawSpectrogramWindow(cRef, monoRef, start + refOff, count, scale, view);
-      const sSlop = drawSpectrogramWindow(cSlop, monoSlop, start + slopOff, count, scale, view);
+      const draw = mode === "waveform" ? drawWaveformWindow : drawSpectrogramWindow;
+      const sRef = draw(cRef, monoRef, start + refOff, count, scale, view);
+      const sSlop = draw(cSlop, monoSlop, start + slopOff, count, scale, view);
 
-      const band = `${fmtHz(fLo)}–${fmtHz(fHi)}${logFreq ? " log" : ""}`;
+      const band = mode === "waveform" ? "waveform" : `${fmtHz(fLo)}–${fmtHz(fHi)}${logFreq ? " log" : ""}`;
       const viewLine = (off, st) =>
         `${((start + off) / SYNTH_RATE).toFixed(3)}s–${((start + off + count) / SYNTH_RATE).toFixed(3)}s`
         + `   ${band}   offset ${off >= 0 ? "+" : ""}${toMs(off).toFixed(1)}ms`
-        + `   window ${st.fftSize}   zoom ${fmtZoom(zoom)}   contrast ${dynRange}dB`;
-      const lvl = (st) => `band rms ${st.bandRmsDb.toFixed(1)}dB  peak ${st.bandPeakDb.toFixed(1)}dB (rel. pair peak)`;
+        + (mode === "waveform"
+          ? `   zoom ${fmtZoom(zoom)}`
+          : `   window ${st.fftSize}   zoom ${fmtZoom(zoom)}   contrast ${dynRange}dB`);
+      const lvl = (st) => `${mode === "waveform" ? "" : "band "}rms ${st.bandRmsDb.toFixed(1)}dB`
+        + `  peak ${st.bandPeakDb.toFixed(1)}dB (rel. pair peak)`;
       const dRms = sSlop.bandRmsDb - sRef.bandRmsDb;
       const dPeak = sSlop.bandPeakDb - sRef.bandPeakDb;
       const sign = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
@@ -931,6 +980,23 @@ const SlopgsCompare = (() => {
       scaleBtn.textContent = logFreq ? "log" : "linear";
       schedulePaint();
     });
+    const freqOutBtn = mkBtn("−", () => setFreqZoom(2)); // wider band = zoomed out
+    const freqInBtn = mkBtn("+", () => setFreqZoom(0.5));
+    const freqFullBtn = mkBtn("Full", () => panFreq(0, NYQUIST));
+    // Frequency axis and contrast are spectrogram-only; the waveform draw
+    // ignores fLo/fHi/dynRange entirely, so grey those controls out rather
+    // than leave them live and pointing at nothing.
+    const viewBtn = mkBtn(mode, () => {
+      mode = mode === "waveform" ? "spectrogram" : "waveform";
+      viewBtn.textContent = mode;
+      const disabled = mode === "waveform";
+      contrast.disabled = disabled;
+      scaleBtn.disabled = disabled;
+      freqOutBtn.disabled = disabled;
+      freqInBtn.disabled = disabled;
+      freqFullBtn.disabled = disabled;
+      schedulePaint();
+    });
     // Row one is what you are looking at, row two is what you do to it. The
     // per-group readouts the canvas overlay already prints (band, contrast,
     // window) are not repeated here.
@@ -941,13 +1007,9 @@ const SlopgsCompare = (() => {
         mkBtn("Fit", () => setZoom(1)),
         zoomVal,
       ]),
-      grp("freq", [
-        mkBtn("−", () => setFreqZoom(2)),   // wider band = zoomed out
-        mkBtn("+", () => setFreqZoom(0.5)),
-        mkBtn("Full", () => panFreq(0, NYQUIST)),
-        scaleBtn,
-      ]),
+      grp("freq", [freqOutBtn, freqInBtn, freqFullBtn, scaleBtn]),
       grp("contrast", [contrast]),
+      grp("view", [viewBtn]),
       rangeVal,
     ]);
 
