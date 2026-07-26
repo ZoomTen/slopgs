@@ -48,6 +48,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ctlrow .grp { display: flex; align-items: center; gap: 0.3em; }
 .ctlrow .grp + .grp { padding-left: 0.9em; border-left: 1px solid #333; }
 .ctlrow .zoomlabel, .ctlrow .zoomval, .ctlrow .rangeval { color: #888; }
+.ctlrow .playing-indicator { color: #7CFC9A; font-weight: 600; }
 .ctlrow .zoomval { min-width: 3em; }
 .ctlrow input.contrast { width: 110px; accent-color: #7CFC9A; }
 

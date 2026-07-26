@@ -1017,12 +1017,14 @@ const SlopgsCompare = (() => {
     // more: the spectrogram IS the transport, and every one of these starts at
     // the red playhead (or at 0 if nothing has been clicked yet).
     const playheadVal = el("span", { class: "rangeval" });
+    const playingVal = el("span", { class: "playing-indicator" });
     const playRow = el("div", { class: "ctlrow" }, [
       grp("play", [
         mkBtn("▶ reference", () => playAt("ref")),
         mkBtn("▶ slopgs", () => playAt("slop")),
         mkBtn("▶ mixed", () => playAt("mixed")),
         mkBtn("■ stop", () => stopCurrent()),
+        playingVal,
         playheadVal,
       ]),
       grp("align", [
@@ -1044,6 +1046,10 @@ const SlopgsCompare = (() => {
       cursorRaf = 0;
       cursor.style.display = "none";
     }
+    function onPlaybackStop() {
+      hideCursor();
+      playingVal.textContent = "";
+    }
     function trackCursor() {
       cursorRaf = requestAnimationFrame(trackCursor);
       const at = cursorFrom + (getPlayCtx().currentTime - cursorT0) * SYNTH_RATE;
@@ -1058,7 +1064,7 @@ const SlopgsCompare = (() => {
     // is far easier to hear than the same difference summed to mono.
     function playAt(which) {
       const at = playhead === null ? 0 : playhead;
-      const go = (l, lAt, r, rAt) => playFromOffsets(l, lAt, r, rAt, hideCursor);
+      const go = (l, lAt, r, rAt) => playFromOffsets(l, lAt, r, rAt, onPlaybackStop);
       const src = which === "ref"
         ? go(chan.refL, at + refOff, chan.refR, at + refOff)
         : which === "slop"
@@ -1067,6 +1073,8 @@ const SlopgsCompare = (() => {
       // Nothing started (playhead past the end of one signal) -- and nothing
       // was stopped either, so leave any running cursor alone.
       if (!src) return;
+      playingVal.textContent = which === "ref" ? "▶ playing reference"
+        : which === "slop" ? "▶ playing slopgs" : "▶ playing mixed (ref L / slopgs R)";
       if (cursorRaf) cancelAnimationFrame(cursorRaf);
       // Shared-timeline sample the cursor starts from -- `at`, not at+refOff:
       // the cursor is drawn in view coordinates, which are shared-timeline.
