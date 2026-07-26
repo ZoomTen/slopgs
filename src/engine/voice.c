@@ -555,28 +555,61 @@ static int32_t voice_lfo_cents(Voice *v) {
     runs rather than introducing a second one. */
 #endif
 
+/* Shortest re-aim this will size a slope over. A target that moves a handful
+ * of frames before a boundary would otherwise traverse in those few frames,
+ * i.e. a step. The reference does contain a minority of near-instant
+ * transitions (probe 32: 18 of 48 reps, ~4.2ms at the estimator's floor), so
+ * a fast mode is not wrong in principle, but reproducing it as a divide-by-
+ * near-zero is not modelling it. 64 frames == 2.9ms is both the sub-chunk
+ * granularity voice_update_pitch is actually called at and about the size of
+ * the reference's own fast mode. */
+#define RAMP_MIN_FRAMES 64
+
 static uint32_t g_ramp_accum = 0; /* ramp-grid clock, see voice_ramp_tick */
 
-/* Re-derive every active voice's held slope from wherever it actually is to
- * wherever it is now aimed. Integer truncation leaves a residual; the next
- * boundary recomputes from the real current value, so this converges instead
- * of drifting. A slope that truncates to zero would never arrive, so that
- * case lands directly. */
+/* Frames from here to the next grid boundary. voice_update_pitch runs from
+ * voices_update_modulation(), which render.c calls BEFORE voice_ramp_tick()
+ * for the same sub-chunk, so g_ramp_accum is still the value at the start of
+ * this chunk -- which is exactly where smf.c dispatched the event that moved
+ * the target. */
+static uint32_t ramp_frames_left(void) {
+    uint32_t left = RAMP_PERIOD_FRAMES - (g_ramp_accum % RAMP_PERIOD_FRAMES);
+    return left < RAMP_MIN_FRAMES ? RAMP_MIN_FRAMES : left;
+}
+
+/* Size the held slope to land on the target `frames` from now. Integer
+ * truncation leaves a residual; the next re-aim recomputes from the real
+ * current value, so this converges instead of drifting. A slope that
+ * truncates to zero would never arrive, so that case lands directly. */
+static void ramp_reaim(Voice *v, uint32_t frames) {
+    int64_t d = (int64_t)v->phase_step_target - (int64_t)v->phase_step;
+    int32_t slope = (int32_t)((d << 8) / (int64_t)frames); /* Q8 per sample */
+    if (slope == 0) {
+        v->phase_step = v->phase_step_target;
+        v->phase_step_ramp_acc = 0;
+    }
+    v->phase_step_ramp_step = slope;
+}
+
+/* The grid refresh: re-aim every active voice over a full period.
+ *
+ * This is the SLOPE MAGNITUDE half of the model. The other half -- re-aiming
+ * the moment a target actually moves, over whatever is left of the current
+ * period -- lives in voice_update_pitch, and without it this tick alone
+ * leaves a voice unable to move its pitch until the next boundary. That dead
+ * time is 0..RAMP_PERIOD_FRAMES plus a sub-chunk of quantisation, and it was
+ * audible: field/Kot_and_A64-GENERAL_SERUM's kick (channel 12, RPN0 = 24
+ * semitones, a 4800-cent fall authored as ~10 bend messages 7.3ms apart, and
+ * 76-80% of full-mix RMS) rendered with a 16.3ms flat cap on a gesture whose
+ * own authored hold is 6.7ms, against a reference that falls from the first
+ * sample. `[M: field, 61.34s and 136.44s]` */
 void voice_ramp_tick(uint32_t frames) {
     g_ramp_accum += frames;
     if (g_ramp_accum < RAMP_PERIOD_FRAMES) return;
     g_ramp_accum %= RAMP_PERIOD_FRAMES; /* one refresh per period however
         coarsely render.c happens to slice its chunks */
     for (int i = 0; i < NUM_VOICES; i++) {
-        Voice *v = &g_voices[i];
-        if (!v->active) continue;
-        int64_t d = (int64_t)v->phase_step_target - (int64_t)v->phase_step;
-        int32_t slope = (int32_t)((d << 8) / RAMP_PERIOD_FRAMES); /* Q8/sample */
-        if (slope == 0) {
-            v->phase_step = v->phase_step_target;
-            v->phase_step_ramp_acc = 0;
-        }
-        v->phase_step_ramp_step = slope;
+        if (g_voices[i].active) ramp_reaim(&g_voices[i], RAMP_PERIOD_FRAMES);
     }
 }
 
@@ -615,15 +648,25 @@ void voice_update_pitch(Voice *v) {
      * amount: the LFO/EG2 delta lands immediately while whatever error the
      * in-flight bend ramp is still carrying is preserved, so the two do not
      * fight over one accumulator. */
-    if (bend_cents == v->bend_cents_applied) {
+    int bend_moved = (bend_cents != v->bend_cents_applied);
+    if (!bend_moved) {
         int64_t moved = (int64_t)v->phase_step
                       + ((int64_t)new_target - (int64_t)v->phase_step_target);
         v->phase_step = (uint32_t)(moved < 0 ? 0 : moved);
     }
     v->bend_cents_applied = bend_cents;
-    /* Aim only. The slope that walks phase_step is re-derived on the ramp grid
-     * by voice_ramp_tick, never restarted here -- see RAMP_PERIOD_FRAMES. */
     v->phase_step_target = new_target;
+
+    /* Re-aim NOW, over what is left of the current period, rather than
+     * waiting for voice_ramp_tick to notice at the next boundary. The grid
+     * still sets how long a traverse takes -- a bend landing at the start of
+     * a period gets the full period, one landing late gets what remains, and
+     * the target is reached ON the boundary either way, which is what S6.6's
+     * "reach the target by the end of the block" means. What it removes is
+     * the dead time: waiting for the boundary meant a fresh voice could not
+     * move its pitch at all for up to a full period plus a sub-chunk, since
+     * voice_start zeroes the slope and render.c's ramp is gated on it. */
+    if (bend_moved) ramp_reaim(v, ramp_frames_left());
 }
 
 /* Advances every active voice's pitch-LFO phase by freq_hz*frames/RENDER_RATE
