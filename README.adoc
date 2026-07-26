@@ -10,6 +10,8 @@ Do note, that this is *not* a decompilation. Its goal is not
 to compile a software driver 1:1, but to provide **a portable
 implementation** of The Canonical MIDI Sound™.
 
+A demo is currently installed in https://zumi.neocities.org/stuff/midi/[my MIDI page].
+
 == Contributions
 
 Human and LLM-assisted PRs welcome.
