@@ -83,9 +83,9 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames) {
 
     for (uint32_t i = 0; i < frames && v->active; i++) {
         /* SPEC.md S6.6/S6.4.1: phase step is a ramp accumulator, not a
-         * direct write (see voice_update_pitch / PITCH_RAMP_MS in voice.c
-         * for the measurement behind the fixed-duration linear slew this
-         * applies one sample at a time). Advance it before use so
+         * direct write (see voice_update_pitch / RAMP_HORIZON_FRAMES in
+         * voice.c for the measurement behind the fixed-duration linear slew
+         * this applies one sample at a time). Advance it before use so
          * the very first sample after a target change already reflects one
          * step, matching the gain smoother's ordering just below. */
         if (v->phase_step_ramp_step) {
@@ -97,11 +97,11 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames) {
              * 40ms on probe 33's +-2 conditions. Accumulate and spend whole
              * LSBs, keep the remainder.
              *
-             * No arrival test: the slope is sized to land on target at the end
-             * of the period, and voice_ramp_tick re-derives it there from the
-             * real current value, so rounding residue is corrected rather than
-             * accumulated. Nothing here clamps to the target -- overshoot
-             * within a period is bounded by one rounding step. */
+             * No arrival test here: voice_ramp_tick owns that, via a per-voice
+             * frame countdown rather than by watching phase_step approach its
+             * target -- see voice.c. Nothing here clamps to the target either;
+             * overshoot before the countdown fires is bounded by one rounding
+             * step, since the slope was sized to land exactly on arrival. */
             v->phase_step_ramp_acc += v->phase_step_ramp_step;
             int32_t step = v->phase_step_ramp_acc >> 8; /* arithmetic, signed */
             v->phase_step_ramp_acc -= step << 8;
@@ -171,14 +171,15 @@ void render_frames(int16_t *out, uint32_t frames) {
            tick clock lives in voice.c; feed it elapsed frames. */
         voice_topup_tick(chunk);
         voices_update_modulation();
-        voice_ramp_tick(chunk); /* refresh held pitch slopes on the ramp grid,
-            AFTER the targets they aim at have been recomputed */
         for (int vi = 0; vi < NUM_VOICES; vi++) {
             Voice *v = &g_voices[vi];
             if (v->active && v->wave) {
                 render_voice(v, out + (uint32_t)done * 2, chunk);
             }
         }
+        voice_ramp_tick(chunk); /* retire pitch ramps whose horizon elapsed
+            THIS sub-chunk -- after render_voice, so every frame the ramp
+            owned was actually rendered with it before it's cleared */
         voices_advance_lfo(chunk);
         done += chunk;
     }

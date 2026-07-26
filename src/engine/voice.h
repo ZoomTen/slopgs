@@ -47,12 +47,17 @@ typedef struct Voice {
                              voice.h's gain_l/gain_l_target split */
     int32_t  phase_step_ramp_step; /* HELD per-sample slope towards
                              phase_step_target, in 1/256 phase_step LSBs (whole
-                             LSBs are too coarse below ~a semitone). Re-derived
-                             once per ramp grid period by voice_ramp_tick and
-                             held constant between refreshes, SPEC.md S6.6 --
-                             NOT restarted when the target moves */
+                             LSBs are too coarse below ~a semitone). Sized once
+                             by ramp_reaim when a bend moves the target, over a
+                             FIXED horizon private to this voice -- not a
+                             shared clock's period -- and held constant until
+                             ramp_left (below) expires, SPEC.md S6.6 */
     int32_t  phase_step_ramp_acc;  /* leftover 1/256ths from the slope above,
                              carried sample to sample by render_voice */
+    uint32_t ramp_left;    /* frames left on the current ramp; 0 = settled.
+                             voice_ramp_tick counts this down and snaps
+                             phase_step to its target on expiry -- render.c's
+                             per-sample accumulator has no arrival test */
     uint32_t base_ratio_q12; /* note-on base pitch ratio, clamped once at note-on
                                (incl. latched RPN1/RPN2); live bend/LFO multiply
                                this OUTSIDE the clamp -- `[M: probe 30]` */
@@ -185,8 +190,9 @@ void voices_update_modulation(void);
  * note-on. Called by render.c once per sub-chunk (SPEC.md LFO section
  * `[M: probe 06]`) so a held note's vibrato actually oscillates instead of
  * freezing at one per-block value for a long event-free chunk. */
-void voice_ramp_tick(uint32_t frames); /* re-derive held pitch slopes on the
-    ramp grid; call once per rendered sub-chunk, after voices_update_modulation */
+void voice_ramp_tick(uint32_t frames); /* retire pitch ramps whose horizon has
+    elapsed; call once per rendered sub-chunk, AFTER render_voice has actually
+    rendered those frames */
 void voices_advance_lfo(uint32_t frames);
 
 /* Recomputes v->gain_l/v->gain_r from v->atten_const_hdb (the fixed velocity+
