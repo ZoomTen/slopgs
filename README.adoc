@@ -10,7 +10,79 @@ Do note, that this is *not* a decompilation. Its goal is not
 to compile a software driver 1:1, but to provide **a portable
 implementation** of The Canonical MIDI Sound™.
 
-Now, I can't claim to:
+== Contributions
+
+Human and LLM-assisted PRs welcome.
+
+When submitting issues, use the `compare-*.html` tools to help.
+
+
+== How to work with this thing
+
+=== Files
+
+. `dist/gm.dls` - from your `C:\WINDOWS\system32`
+. `field/*.mid` - any real MIDI you want to test.
+. `field/*.flac` - you ought to provide the reference renderings, counterpart to their `.mid`
+
+=== Build
+
+. Run make on the project root.
+. Try exporting a track using `dist/msgs-render ... ?`
+
+=== A/B testing
+
+. Pick a real-world MIDI, and record it using Windows Media Player
+and the Stereo Mix, if available.
+. Export that out as a FLAC with the same name as the MIDI (example:
+`mylittlething.flac` for `mylittlething.mid`) into `field/`
+. Ensure you've run `make dist/msgs.wasm`.
+. Edit `dist/compare-field.html` using a text editor:
++
+[source,diff]
+--
+ (() => {
+   const STEMS = [
++    "mylittlething",
+-    "onestop_extract",
+-    "serum_opening",
+-    "corridor",
+-    "CrystalOscillator",
+-    "eek_the",
+-    "flourish",
+-    "HueArme-Weekend",
+-    "Kot_and_A64-GENERAL_SERUM",
+-    "onestop",
+-    "Strobe-faffaeefafaefae",
+-    "town",
+   ];
+--
+. Run a static-file web server off the project root:
++
+[source,sh]
+--
+python -m http.server <PORT>
+--
+. Go to `http://localhost:<PORT>/dist/compare-field.html`. You should see
+a bunch of cards with whatever `STEMS` listed.
+. Click `Load and compare`, and out pops a fancy spectrogram. You can
+zoom it, click it, play it, etc. There is also a waveform view, if you
+believe a problem is better illustrated there.
+
+=== Probles
+
+. `artifacts/probe-results` - record the `artifacts/probes` MIDIs as FLACs there.
+. Run a static-file web server off the project root:
++
+[source,sh]
+--
+python -m http.server <PORT>
+--
+. Go to `http://localhost:<PORT>/dist/compare-probes.html`.
+
+== A disclaimer
+
+I can't claim to:
 
 * have reverse-engineered it; the LLM did.
 * have coded it; the LLM also did.
@@ -27,7 +99,7 @@ _do_ know is that **I've wished for this thing for
 a while now**. And now, I have it. And you can have
 it as well.
 
-At least it can play GENERAL SERUM almost accurately...
+At least it can play GENERAL SERUM _almost_ accurately...
 
 == What's reimplemented
 
@@ -67,7 +139,7 @@ It is current year, and it's now here.
 
 Technology kind of scares me.
 
-=== Why did you employ the resource munchers?
+=== Why did you employ the resource-munchers?
 
 After seeing what it can do, I'm sadly addicted to these things.
 Most people in my general vicinity very much understands
@@ -99,7 +171,9 @@ but every note didn't stop. But it is *recognizable* as MSGS-derived.
 
 There was so much it can only infer from code, but the road to making it MSGS rests on the listening side, and me pointing out where it can be improved.
 
-From there it was a fine-tuning game. I feel like one of those ROM hackers
+From there it was a fine-tuning game. [.underline]#The 80% took like 3 hours. It's the last 20%, the one that counts, that takes forever.#
+
+I feel like one of those ROM hackers
 faffing about emulator accuracy and rejecting "inaccurate emulators" from
 the outset regardless of whether or not said accuracy is even relevant.
 
@@ -114,12 +188,3 @@ differs to a degree :)
 * HueArme - Weekend
 * furmillion's unfinished Crystal Oscillator
 * flourish, town, onestop
-
-== How to work with this thing
-
-=== Files
-
-. `dist/gm.dls` - from your `C:\WINDOWS\system32`
-. `tests/*.mid` - anything you want to test.
-. `tests/*.flac` - you ought to provide the reference renderings, counterpart to their `.mid`
-. `artifacts/probe-results` - record the `artifacts/probes` MIDIs as FLACs there.
