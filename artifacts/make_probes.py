@@ -1699,6 +1699,62 @@ def p35_decay_keyfollow():
     return _write_manifest("35_decay_keyfollow.mid", tr, man)
 
 
+def p36_kit_key_fallback():
+    """What happens when a drum kit does not cover the key?
+
+    SPEC.md S3.1.3 `[A:0x147b7]`: FindInstrument itself walks the key ranges,
+    so an instrument whose regions miss the note is rejected exactly like a
+    locale mismatch and S3.1.2's NEXT fallback tier gets a turn. Only one
+    instrument in gm.dls can exercise this: the SFX kit (drum, program 56)
+    covers keys 39-84, while the other eight kits cover 27-87/88. So a drum
+    note below 39 on an SFX-kit part should fall through to the Standard kit
+    (locale 0x80000000), not go silent.
+
+    This project dropped the note until 2026-07-26 (it matched the kit on
+    locale alone, then found no region and bailed), which is audible on
+    field/HueArme-Weekend.mid: channel 9 is an SFX-kit rhythm part playing
+    key 35 in a velocity-ramped roll, and the whole roll was missing.
+
+    Sections, all on channel 10 (the default rhythm part, no sysex needed):
+      A. Standard kit (program 0), keys 35 and 40 -- the control: what the
+         Standard kit's own regions for those keys sound like.
+      B. SFX kit (program 56), key 40 -- in range, plays the SFX kit region.
+      C. SFX kit, keys 27/35/38 -- all below the kit's 39 floor. Each must
+         sound, and must be identical to the same key in section A.
+      D. SFX kit, key 85 -- above the kit's 84 ceiling, the other side of the
+         same gap; Standard kit covers up to 87.
+      E. SFX kit, key 25 -- outside BOTH kits (Standard starts at 27, S2.11).
+         Retry #2 fails, and locale &= 0x7f then asks for melodic program 56
+         (Trumpet), which covers the full keyboard. So this one settles
+         whether the third tier really is reached from a drum locale: silence
+         means the fallback chain stops at the drum tier, a pitched trumpet
+         note means it does not.
+
+    RESOLVED by the reference render `[M]`, see SPEC.md S3.1.2: C and D all
+    sound (and C's key 35 is spectrally the Standard kit's own key-35 region,
+    log-spectrum r = 0.988), while E is digital silence -- the chain does
+    stop at the drum tier.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    clock = t(1.0)
+
+    def hit(prog, key):
+        nonlocal clock
+        tr.prog(clock, 9, prog)
+        tr.note(clock + t(0.1), t(0.8), 9, key, 120)
+        clock += t(2.0)
+
+    for key in (35, 40):        # A
+        hit(0, key)
+    hit(56, 40)                 # B
+    for key in (27, 35, 38):    # C
+        hit(56, key)
+    hit(56, 85)                 # D
+    hit(56, 25)                 # E
+    return write("36_kit_key_fallback.mid", tr)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -1707,7 +1763,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p23_rpn_tune, p24_gain_staging, p25_pan_law, p26_other_gains,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
-          p35_decay_keyfollow]
+          p35_decay_keyfollow, p36_kit_key_fallback]
 
 
 def check(path):

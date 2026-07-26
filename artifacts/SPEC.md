@@ -2146,6 +2146,24 @@ ever reached on this path: no voice is allocated, no instrument is
 substituted, and the previous patch is not retained. The note is silently
 dropped** `[A:0x12e52]` `[A:0x12e6d]` `[A:0x1302a]`.
 
+**Corroborated acoustically, whole chain, `[M: probe 36]`** —
+`36_kit_key_fallback.mid` drives the one instrument in gm.dls that can
+exercise a key-range miss (the SFX kit, drum program 56, covers keys 39–84
+where the other eight kits cover 27–87/88), and the reference render settles
+both branches at once:
+
+- Keys **27, 35, 38 and 85** on an SFX-kit part all **sound** in the
+  reference, and key 35 there is spectrally the *same region* as key 35 on
+  the Standard kit (log-spectrum `r` = 0.988, level equal to 0.0 dB). Retry
+  #2 (`locale = 0x80000000`) is real, and §3.1.3's key-range gate inside
+  `FindInstrument` — not a post-hoc region lookup — is what routes to it.
+- Key **25**, which falls outside *both* the SFX kit's range and the
+  Standard kit's own 27–87 (§2.11), is **digital silence** in the reference.
+  So retry #3 (`locale &= 0x7f`, which would reach melodic program 56,
+  Trumpet, covering the full keyboard) is genuinely unreachable from a drum
+  locale: the `if (locale == 0x80000000) goto NoInstrument` line above is
+  load-bearing, and the note is dropped rather than substituted.
+
 #### 3.1.3 `FindInstrument` — exact-equality linear scan, plus two extra gates
 
 `FindInstrument` (`0x14800`) walks a list of "buckets" (the bucket-list head

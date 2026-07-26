@@ -517,13 +517,6 @@ int dls_load(const uint8_t *data, uint32_t len) {
 /* -------------------------------------------------------------------- */
 /* Instrument/region lookup, SPEC.md S3.1                                */
 
-static Instrument *find_instrument_exact(uint32_t locale) {
-    for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
-        if (inst->locale == locale && inst->region_count > 0) return inst;
-    }
-    return 0;
-}
-
 static Region *find_region_for_note(Instrument *inst, uint8_t note) {
     for (Region *r = inst->first_region; r; r = r->next) {
         if (note >= r->low_key && note <= r->high_key) return r;
@@ -531,18 +524,32 @@ static Region *find_region_for_note(Instrument *inst, uint8_t note) {
     return 0;
 }
 
+/* SPEC.md S3.1.3 `[A:0x147b7]`: the key-range walk is part of FindInstrument,
+ * not a step after it -- an instrument whose regions do not cover the note is
+ * rejected like a locale mismatch, so the caller's next fallback tier gets a
+ * turn. That is what makes a drum kit with a hole in its key map (gm.dls's
+ * SFX kit, program 56, covers only 39-84) fall through to the Standard kit
+ * for the missing key instead of dropping the note. */
+static Instrument *find_instrument_exact(uint32_t locale, uint8_t note) {
+    for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+        if (inst->locale == locale && inst->region_count > 0 &&
+            find_region_for_note(inst, note)) return inst;
+    }
+    return 0;
+}
+
 Region *dls_find_region(uint32_t locale, uint8_t note) {
     if (!g_dls.valid) return 0;
-    Instrument *inst = find_instrument_exact(locale);
+    Instrument *inst = find_instrument_exact(locale, note);
     if (!inst) {
         if (locale & 0x80000000u) {
             locale = 0x80000000u;
-            inst = find_instrument_exact(locale);
+            inst = find_instrument_exact(locale, note);
         }
         if (!inst) {
             if (locale == 0x80000000u) return 0;
             locale &= 0x7f;
-            inst = find_instrument_exact(locale);
+            inst = find_instrument_exact(locale, note);
             if (!inst) return 0;
         }
     }
