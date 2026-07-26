@@ -3962,6 +3962,81 @@ sub-objects beyond their own `+0x10`/`+0x14`/`+0x28`/`+0x2c`, and the object
 pointed to by `+0x104`) are `[O]` — out of scope here and not required to
 implement the voice model.
 
+#### 5.1.1 The `+0x104` object's `+0x40` field, and the attack-segment rate formula (`0x188b0`) — LOCATED this pass
+
+Found while chasing a decay-model discrepancy this project measured on
+several high-sustain instruments (`SPEC_GAPS.md` item 23) — not yet a full
+resolution of that item, but two concrete new facts about mechanisms this
+section had left `[O]`.
+
+**The object at voice `+0x104` has a `+0x40` field: six raw DWORDs, one per
+EG1 segment/format slot, copied verbatim into the voice's own `+0x38`
+sub-object at note setup.** `0x19b54` (note setup, called with the region
+pointer in one argument and the `+0x104` object — call it `art` — passed
+through) does, for the attack/hold sub-object specifically:
+
+```c
+// 0x19c32-0x19c48, this = voice+0x38 (the attack/hold sub-object, §5.1's
+// "+0x38" row)
+EG1Setup(/*this=*/ &voice->_0x38, /*arg0=*/ art + 0x40,
+         /*arg1=*/ regionArg2, /*arg2=*/ regionArg3, /*arg3=*/ regionArg4);
+```
+
+`0x188b0` (the callee, `this=ecx` bound to `voice+0x38`) `[A:0x188b0]`:
+
+```c
+// this = &voice->_0x38 (attack/hold sub-object)
+this->_0x20 = arg3;
+memcpy(this /* +0x00 */, art /* +0x40 */, 6 * sizeof(DWORD));  // 0x188cb
+this->_0x18 = arg1;
+this->_0x1c = arg2;
+if (this->_0x10_as_word == 0 && this->_0x12_as_word == 0 &&
+    this->_0x14_as_word == 0 && this->_0x16_as_word == 0) {
+    // the two DWORDs at copied-offset +0x10/+0x14 (words 4-5 of the six),
+    // all-zero: fall back to a hardcoded rate
+    this->_0x28 = 0xac44;   // 44100 decimal
+    this->_0x2c = 0;
+} else {
+    // 64-bit divide: 0x20000 (2^17) / this->_0x00 (the FIRST copied DWORD)
+    this->_0x28 = 0x20000 / this->_0x00;   // quotient
+    this->_0x2c = 0x20000 % this->_0x00;   // remainder, 0x18902-0x18908
+}
+return {this->_0x28, this->_0x2c};
+```
+
+i.e. the sub-object's own `+0x28`/`+0x2c` (this section's §5.1 already names
+this field "target" from its role as the release-ramp's compare value) is,
+for the attack segment specifically, computed as **a fixed-point rate**:
+`0x20000 / duration_in_samples`, where `duration_in_samples` is the FIRST of
+six DWORDs copied from `art+0x40` — almost certainly the attack duration
+this project already computes via `0x15364` (§3.4.1) and stores at the
+articulation's own `wave+0x20` (DLS dest `0x0206`, §2.4.3's table). The
+`44100` fallback fires only when the SECOND PAIR of the six copied DWORDs
+(copied-offsets `+0x10`-`+0x16`, i.e. the 5th/6th of the six source DWORDs)
+is entirely zero — their own identity is not established this pass; a
+plausible reading given the position (immediately after four DWORDs that
+line up with attack/decay/target/release-ish slots) is a wave-format or
+rate-class flag pair, but that is `[I]`, not confirmed.
+
+**Open, narrower than before:** this pass only traced the ATTACK-segment
+call (`voice+0x38`); the analogous call configuring `voice+0x68` (the
+release sub-object, §5.6) was not re-examined here, so it is not confirmed
+that the DECAY segment specifically (as opposed to attack) uses this same
+`0x20000/duration` formula, nor which of the six copied DWORDs corresponds
+to the decay duration versus the sustain target. The per-sample consumption
+of this rate value — i.e. what `0x194da` (§5.1's "envelope-advance helper",
+cited but not itself disassembled by any pass to date) does with it each
+block, and specifically whether the resulting per-sample step operates on a
+LINEAR or LOG-domain envelope value (the `+0x13c` field is documented above
+as logarithmic-scale) — remains `[O]`. This matters beyond curiosity: this
+project's own measurement (`SPEC_GAPS.md` item 23) found real decay on
+several instruments several times larger than their authored sustain
+permille can produce under a "ramp toward the authored linear sustain
+level" model, in EITHER a linear or log ramp shape — which means whatever
+`0x194da` actually does, it is not simply "ramp toward the raw `wsmp`
+sustain-permille value," in either domain. `0x194da` is the next concrete
+disassembly target for that question.
+
 ---
 
 ### 5.2 Pool construction
@@ -4464,12 +4539,19 @@ in prose and are not claimed to be covered by a script.
 
 - The object pointed to by voice `+0x104` — only 4 of its own offsets
   (`+0x0`, `+0x4`, `+0x18`, `+0x1c`) are exercised by the code paths read for
-  this section; its full layout and identity are unresolved.
+  this section; its full layout and identity are unresolved. **Partially
+  extended, §5.1.1**: a 5th offset, `+0x40`, is now located (six raw DWORDs
+  feeding EG1 segment setup) — the object's full layout is still not
+  established.
 - The exact scheduling semantics of the `+0x108`/`+0x10c` and `+0x118`/
   `+0x11c` 64-bit timestamp pairs beyond "consumed by the DSP-advance
   routine `0x19644`" — these matter for exact sample-accurate envelope
   timing but not for the pool/steal/choke/note-off algorithms specified
-  here.
+  here. **See also §5.1.1**: the attack segment's own rate value (stored in
+  the analogous `+0x28`/`+0x2c` slot on the `+0x38` sub-object) is now known
+  to be `0x20000/duration_samples`; whether the same formula governs decay,
+  and how it ultimately drives `+0x13c`'s log-domain level via `0x194da`,
+  is still open.
 - *Why* the driver splits the pool into 48+6 rather than one flat 54-deep
   free list is not stated anywhere in the code and is not inferable from
   disassembly alone (the *mechanics* of the split are fully resolved in
