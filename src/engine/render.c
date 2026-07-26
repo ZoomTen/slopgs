@@ -83,21 +83,32 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames) {
 
     for (uint32_t i = 0; i < frames && v->active; i++) {
         /* SPEC.md S6.6/S6.4.1: phase step is a ramp accumulator, not a
-         * direct write (see voice_update_pitch / PITCH_RAMP_RATE_FRAC_PER_MS
-         * in voice.c for why this project chose a per-sample rate-limited
-         * linear slew over a fixed-duration one). Advance it before use so
+         * direct write (see voice_update_pitch / PITCH_RAMP_MS in voice.c
+         * for the measurement behind the fixed-duration linear slew this
+         * applies one sample at a time). Advance it before use so
          * the very first sample after a target change already reflects one
          * step, matching the gain smoother's ordering just below. */
-        if (v->phase_step != v->phase_step_target) {
-            int32_t step = v->phase_step_ramp_step;
+        if (v->phase_step_ramp_step) {
+            /* Apply the held slope. It is in 1/256 phase_step LSBs: a whole-LSB
+             * slope cannot express this ramp at all below about a semitone (a
+             * +-2 semitone bend at key 72 moves ~420 Q12 LSBs, under 1 LSB per
+             * sample), and truncating it to 1 silently turns the ramp into a
+             * rate limit -- measured, that made the period inert from 10ms to
+             * 40ms on probe 33's +-2 conditions. Accumulate and spend whole
+             * LSBs, keep the remainder.
+             *
+             * No arrival test: the slope is sized to land on target at the end
+             * of the period, and voice_ramp_tick re-derives it there from the
+             * real current value, so rounding residue is corrected rather than
+             * accumulated. Nothing here clamps to the target -- overshoot
+             * within a period is bounded by one rounding step. */
+            v->phase_step_ramp_acc += v->phase_step_ramp_step;
+            int32_t step = v->phase_step_ramp_acc >> 8; /* arithmetic, signed */
+            v->phase_step_ramp_acc -= step << 8;
             int64_t next = (int64_t)v->phase_step + step;
-            if (step == 0 ||
-                (step > 0 && next >= (int64_t)v->phase_step_target) ||
-                (step < 0 && next <= (int64_t)v->phase_step_target)) {
-                v->phase_step = v->phase_step_target;
-            } else {
-                v->phase_step = (uint32_t)next;
-            }
+            if (next < 0) next = 0; /* phase_step is unsigned; a big downward
+                slope must not wrap it to ~4 billion */
+            v->phase_step = (uint32_t)next;
         }
 
         uint32_t pos = v->phase_pos;
@@ -160,6 +171,8 @@ void render_frames(int16_t *out, uint32_t frames) {
            tick clock lives in voice.c; feed it elapsed frames. */
         voice_topup_tick(chunk);
         voices_update_modulation();
+        voice_ramp_tick(chunk); /* refresh held pitch slopes on the ramp grid,
+            AFTER the targets they aim at have been recomputed */
         for (int vi = 0; vi < NUM_VOICES; vi++) {
             Voice *v = &g_voices[vi];
             if (v->active && v->wave) {

@@ -36,16 +36,23 @@ typedef struct Voice {
     uint32_t phase_step;  /* Q12 per-output-sample increment -- the CURRENTLY-
                              APPLIED value, ramped towards phase_step_target
                              one sample at a time by render.c's render_voice
-                             (see PITCH_RAMP_RATE_FRAC_PER_MS in voice.c);
+                             (see PITCH_RAMP_MS in voice.c);
                              never written directly outside voice_note_on's
                              initial snap and that ramp step, SPEC.md S6.6 */
+    int32_t  bend_cents_applied; /* bend the in-flight ramp is aimed at; LFO and
+                             EG2 changes are carried through instantly instead */
     uint32_t phase_step_target;  /* live target voice_update_pitch recomputes
                              every block (bend/LFO/EG2); phase_step glides
                              toward this instead of jumping, mirroring
                              voice.h's gain_l/gain_l_target split */
-    int32_t  phase_step_ramp_step; /* fixed per-sample delta towards
-                             phase_step_target, latched once when the target
-                             changes (see voice_update_pitch); 0 once reached */
+    int32_t  phase_step_ramp_step; /* HELD per-sample slope towards
+                             phase_step_target, in 1/256 phase_step LSBs (whole
+                             LSBs are too coarse below ~a semitone). Re-derived
+                             once per ramp grid period by voice_ramp_tick and
+                             held constant between refreshes, SPEC.md S6.6 --
+                             NOT restarted when the target moves */
+    int32_t  phase_step_ramp_acc;  /* leftover 1/256ths from the slope above,
+                             carried sample to sample by render_voice */
     uint32_t base_ratio_q12; /* note-on base pitch ratio, clamped once at note-on
                                (incl. latched RPN1/RPN2); live bend/LFO multiply
                                this OUTSIDE the clamp -- `[M: probe 30]` */
@@ -178,6 +185,8 @@ void voices_update_modulation(void);
  * note-on. Called by render.c once per sub-chunk (SPEC.md LFO section
  * `[M: probe 06]`) so a held note's vibrato actually oscillates instead of
  * freezing at one per-block value for a long event-free chunk. */
+void voice_ramp_tick(uint32_t frames); /* re-derive held pitch slopes on the
+    ramp grid; call once per rendered sub-chunk, after voices_update_modulation */
 void voices_advance_lfo(uint32_t frames);
 
 /* Recomputes v->gain_l/v->gain_r from v->atten_const_hdb (the fixed velocity+

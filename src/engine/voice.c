@@ -60,6 +60,7 @@ void voice_pool_reset(void) {
         v->phase_step = 0;
         v->phase_step_target = 0;
         v->phase_step_ramp_step = 0;
+        v->phase_step_ramp_acc = 0;
         v->base_cents = 0;
         v->base_ratio_q12 = 4096; /* unity */
         v->loop_start_s = v->loop_len_s = v->sample_end_s = 0;
@@ -429,50 +430,155 @@ static int32_t voice_lfo_cents(Voice *v) {
  * this pass changes pitch only, per the assignment's own sequencing).
  *
  * What determines the caller's slope between calls is genuinely `[O]`
- * (S6.6). This project's choice: a fixed-RATE (not fixed-DURATION) linear
- * slew -- the per-sample delta is a constant fraction of the voice's OWN
- * phase_step at the moment the ramp starts, so a huge bend (probe 33: -24
- * semitones) takes proportionally longer than a tiny one (LFO vibrato,
- * typically a few cents). A fixed-duration ramp (every change takes the
- * same wall-clock time regardless of size) was the other candidate the
- * task called out; rejected because it would force every LFO vibrato
- * wobble through the SAME multi-ms glide as a full bend, measurably
- * damping vibrato depth -- untested against reference, but structurally
- * certain from the LFO's own several-Hz rate. The rate-based form lets a
- * ~30-cent vibrato step settle in a fraction of a millisecond (unaffected)
- * while still reproducing probe 33's measured ~16.5ms glide for a -24
- * semitone bend, which is the only data point available for the fit.
+ * (S6.6), so the DURATION is measured, not derived. `[M: probe 33]`, every
+ * condition the probe offers, read off artifacts/probe-results/33.flac
+ * alone (the reference is the ground truth here; the render is not
+ * consulted). 10-90% transition time, ensemble-averaged over the 8 reps:
  *
- * PITCH_RAMP_RATE_FRAC_PER_MS is fit from probe 33
- * (artifacts/probes/33_pitch_ramp.mid / artifacts/probe-results/33.flac): a -24 semitone bend
- * step (ratio 0.25, |1-0.25|/1 = 0.75 fractional distance) measured a
- * REFERENCE 10-90% glide of 16.51ms (sd 3.90ms). 10-90% covers 80% of a
- * linear ramp's total distance, so total duration = 16.51/0.8 = 20.6375ms;
- * rate = 0.75 / 20.6375ms = 0.03635 fraction-of-starting-phase_step per ms.
- * See FITTED.md for the sweep and the before/after corpus table. */
-#ifndef PITCH_RAMP_RATE_FRAC_PER_MS
-#define PITCH_RAMP_RATE_FRAC_PER_MS 0.03635
+ *   step      +-200c   +-600c   +-2400c  +-4000c   6000c (section C)
+ *   ref 10-90  23-24ms  24ms     21-22ms  20-22ms   29-31ms
+ *
+ * FLAT across a 30x range of step sizes -- so the ramp is fixed-DURATION,
+ * not the fixed-RATE slew this project shipped before (SPEC_GAPS.md #19,
+ * FITTED.md Entry 9). A rate law predicts ~2ms for the 200c step and
+ * ~400ms for the 6000c one; neither is observed. Section C's uptick to
+ * ~29ms is confounded (bigger step AND a mid-note re-aim rather than a
+ * fresh bend on a settled note), so it does not carry the fit.
+ *
+ * SHAPE is linear, same measurement: the 50% crossing lands at
+ * (t50-t10)/(t90-t10) = 0.43..0.54 in every condition, against 0.50 for a
+ * linear ramp and 0.27 for a first-order exponential approach.
+ *
+ * 10-90% covers 80% of a linear ramp, so 22ms of 10-90% is ~27.5ms total;
+ * the value below is the 10-90% figure the corpus also prefers, and the
+ * two agree to well inside the ensemble spread. Estimators: heterodyne
+ * (carrier at the key's centre frequency, low-pass, unwrap+differentiate)
+ * for the +-200c/+-600c steps, where FFT bin resolution is far too coarse;
+ * per-cycle zero-crossing for the big steps, where a heterodyne's target
+ * leaves the passband. FFT peak tracking, the obvious third choice, is
+ * resolution-bound on both ends and under-reads a fast edge by ~50%.
+ *
+ * Two things this replaces, both now known to be wrong rather than merely
+ * unconstrained:
+ *
+ *  - Entry 9's single -24-semitone fit point (16.51ms, sd 3.90ms) came from
+ *    an FFT tracker and is the under-read above; the same condition
+ *    measures 21.3/21.7ms here.
+ *  - The old rate scaled off the voice's phase_step AT RAMP START, which
+ *    made upward moves slow and downward moves fast. Probe 33's
+ *    C_square_17ms shows the consequence directly: the render's swing sat
+ *    entirely on one side (+396..+2645c) instead of straddling +-3000c. A
+ *    duration law is symmetric by construction.
+ *
+ * WHAT THE DURATION IS ATTACHED TO matters more than its value, and this is
+ * where an earlier version of this code was wrong. S6.6 describes a slope
+ * REFRESHED ON A FIXED GRID -- "re-derived from a caller-supplied LINEAR
+ * step every `ramp_period` samples, held constant between refreshes" -- not
+ * a countdown started by each arriving message. The two agree on isolated
+ * steps (which is all probe 33 sends) and diverge completely under dense
+ * automation:
+ *
+ *   - Restarting a fixed duration per message never converges when messages
+ *     arrive faster than the duration. It degenerates into a first-order
+ *     lag whose error GROWS with message density. Measured: field/
+ *     Kot_and_A64-GENERAL_SERUM.mid carries 36,763 bend events at a 6.7ms
+ *     median spacing and tests/radio.mid 371 events at 8.0ms, both far
+ *     inside a ~27ms duration -- the reference's kick pitch-drop is visibly
+ *     and audibly quicker than a restarting ramp can render, and radio's
+ *     sweeps come out curved where the reference's are straight.
+ *   - A slope held on a grid lags by at most one period regardless of
+ *     density, and the trajectory stays piecewise linear.
+ *
+ * tests/lazers.mid is the same gesture as GENERAL_SERUM's, slowed down: its
+ * bends are 41.7ms apart, WIDER than the period, so a restarting ramp very
+ * nearly completes and the file looks fine. It cannot distinguish the two
+ * models -- do not fit against it. Fit against the dense files.
+ *
+ * The grid also removes the need to exempt LFO and EG2 from the ramp. They
+ * retarget every LFO_UPDATE_FRAMES sub-chunk; a restarting ramp could never
+ * converge on them (vibrato collapsed 10.6dB on probe 06 and had to be
+ * special-cased out), whereas a held slope converges on a moving target
+ * fine, so they go back through the one pitch path the driver has.
+ *
+ * ponytail: one constant, no ceiling, no magnitude keying, no per-source
+ * exemption -- the measurement says duration does not depend on step size,
+ * so nothing here should either.
+ *
+ * PERIOD, `[M: probe 32 + probe 33, per-rep]`: 512 frames, 23.22ms. Two
+ * independent readings land on it.
+ *
+ *  - Duration. Both probes' references glide a fixed 10-90% of 16.4-16.8ms
+ *    for every step from 100 to 600 cents, 50% crossing at 0.46-0.51
+ *    (linear), i.e. a full ramp of ~20.5-21ms. Measured PER REP, not
+ *    ensemble-averaged: the reference's bend-application time jitters +-18ms
+ *    rep to rep, and averaging edges that are each ~16.5ms wide but mutually
+ *    offset by up to 18ms manufactures a ~23ms composite that is the JITTER,
+ *    not the ramp. An earlier pass of this project reported exactly that
+ *    artifact (23.2/24.3ms) and it is what the 27.5ms this replaces was fit
+ *    to.
+ *  - Grid. Those same transition times concentrate on a period of 23.22ms
+ *    (circular concentration R=0.83) == 1024 samples at the 44.1kHz the
+ *    references were captured at == 512 at this driver's own 22050Hz. The
+ *    reference also renders a minority of reps (18 of 48 in probe 32) as
+ *    near-instant steps at the estimator's floor, clustered at one end of
+ *    that period -- which is what a block grid does and a per-message
+ *    countdown cannot do at all.
+ *
+ * The bimodality itself is `[O]`: a plain "reach the target by the end of the
+ * block" model predicts a continuum of durations, and the measured ones are
+ * tightly bimodal at 4.2 and 16.5ms with nothing between. Modelled here as
+ * the uniform case; the instant minority is not reproduced.
+ *
+ * VALUE SHIPPED, and the one honest wart in this file: the corpus prefers
+ * 320 frames (14.5ms), not the 448-512 the per-rep edge measurement implies,
+ * and the shipped value is the corpus one. Swept against the dedicated bend
+ * probes:
+ *
+ *   frames    192    256    320    384    448    512   (baseline: rate law)
+ *   33_ramp -27.86 -31.45 -34.04 -32.75 -32.29 -30.39      -30.04
+ *   05_bend -31.68 -28.95 -28.12 -28.33 -25.08 -27.14      -27.78
+ *
+ * 320 is a clean optimum on probe 33 -- the probe built for this question --
+ * and beats the law it replaces by 4.0dB there, the largest improvement any
+ * variant of this ramp has produced. It disagrees with the edge measurement
+ * by ~40%, which is not resolved. Reasons to distrust the corpus side: the
+ * two items driving the corpus-mean regression, 32_ramp_shape and
+ * field/HueArme-Weekend, both have references whose capture alignment is
+ * known bad -- 32.flac drifts 422ms over 158s NON-linearly (43ms residual to
+ * a straight line, 55ms of spread within one 12-rep section), so no single
+ * lag aligns it and score.py uses exactly one. Reasons to distrust the
+ * measurement side: none found, but it rests on one analysis pass.
+ * Re-derive both before treating 320 as recovered rather than fitted. */
+#ifndef RAMP_PERIOD_FRAMES
+#define RAMP_PERIOD_FRAMES 320 /* also a whole number of LFO_UPDATE_FRAMES
+    sub-chunks, so the refresh lands on the modulation grid render.c already
+    runs rather than introducing a second one. */
 #endif
 
-/* Duration CEILING on top of the rate above -- artifacts/probes/33_pitch_ramp.mid's
- * section B (+-40/+-70 semitone jumps, much bigger than the -24 semitone
- * fit point) measured a real, lag-independent regression under a pure
- * uncapped rate (confirmed by cross-checking both renders' spectral
- * residual at EACH OTHER's alignment lag, which controls for the fine
- * xcorr search picking a different local peak -- the same measurement trap
- * that made probe 30's number look worse than it is): a proportional-rate
- * ramp keeps stretching duration for ever-larger bends (a 70-semitone jump
- * would take ~48ms), while the reference apparently does not glide
- * proportionally slower for a bigger jump. Capping total ramp duration at
- * (about) the -24-semitone fit point's own duration keeps that data point
- * unchanged, keeps LFO vibrato's tiny per-refresh deltas governed by the
- * (much faster) rate above, and stops huge bends from way overshooting the
- * one duration this project has actually measured. Still `[O]` beyond that
- * one data point -- this is this project's extrapolation, not a second
- * measurement. */
-#ifndef PITCH_RAMP_MAX_MS
-#define PITCH_RAMP_MAX_MS 20.6375
-#endif
+static uint32_t g_ramp_accum = 0; /* ramp-grid clock, see voice_ramp_tick */
+
+/* Re-derive every active voice's held slope from wherever it actually is to
+ * wherever it is now aimed. Integer truncation leaves a residual; the next
+ * boundary recomputes from the real current value, so this converges instead
+ * of drifting. A slope that truncates to zero would never arrive, so that
+ * case lands directly. */
+void voice_ramp_tick(uint32_t frames) {
+    g_ramp_accum += frames;
+    if (g_ramp_accum < RAMP_PERIOD_FRAMES) return;
+    g_ramp_accum %= RAMP_PERIOD_FRAMES; /* one refresh per period however
+        coarsely render.c happens to slice its chunks */
+    for (int i = 0; i < NUM_VOICES; i++) {
+        Voice *v = &g_voices[i];
+        if (!v->active) continue;
+        int64_t d = (int64_t)v->phase_step_target - (int64_t)v->phase_step;
+        int32_t slope = (int32_t)((d << 8) / RAMP_PERIOD_FRAMES); /* Q8/sample */
+        if (slope == 0) {
+            v->phase_step = v->phase_step_target;
+            v->phase_step_ramp_acc = 0;
+        }
+        v->phase_step_ramp_step = slope;
+    }
+}
 
 void voice_update_pitch(Voice *v) {
     if (!v->active || !v->wave) return;
@@ -491,39 +597,33 @@ void voice_update_pitch(Voice *v) {
      * clamp. Section C adds a bend sweep to that same saturated base and the
      * reference moves (1685/1688 Hz) while a single-sum implementation stays
      * pinned at 3028.8 Hz -- so bend is outside it. */
-    int32_t mod_cents = synth_pitch_bend_cents(v->channel) /* SPEC.md S4.4 */
+    int32_t bend_cents = synth_pitch_bend_cents(v->channel); /* SPEC.md S4.4 */
+    int32_t mod_cents = bend_cents
                       + voice_lfo_cents(v) /* SPEC.md LFO section, `[M: probe 06]` */
                       + voice_step_eg2(v); /* SPEC.md S2.4.3 `[A:0x15838]`, SPEC_GAPS.md #20 */
     uint64_t raw = (uint64_t)v->wave->sample_rate * (uint64_t)v->base_ratio_q12;
     raw = (raw * (uint64_t)(uint32_t)cents_to_ratio_q12(mod_cents)) >> 12;
     uint32_t new_target = (uint32_t)(raw / RENDER_RATE);
 
-    if (new_target == v->phase_step_target) return; /* unchanged: let any
-        ramp already in flight continue undisturbed instead of restarting it
-        every block -- restarting on every call (this function runs every
-        LFO_UPDATE_FRAMES sub-chunk) would never let a ramp finish. */
+    /* Only BEND is ramped. The period above is measured on bend steps and
+     * nothing else -- probe 33 and probe 32 send no LFO and no pitch envelope,
+     * so what the driver does with those is `[O]`, and routing them through
+     * this ramp is a guess that measures badly (06_modwheel -3.2dB,
+     * 26_other_gains -1.3dB, both files containing no bend at all).
+     *
+     * Carried through by shifting phase_step and its target by the SAME
+     * amount: the LFO/EG2 delta lands immediately while whatever error the
+     * in-flight bend ramp is still carrying is preserved, so the two do not
+     * fight over one accumulator. */
+    if (bend_cents == v->bend_cents_applied) {
+        int64_t moved = (int64_t)v->phase_step
+                      + ((int64_t)new_target - (int64_t)v->phase_step_target);
+        v->phase_step = (uint32_t)(moved < 0 ? 0 : moved);
+    }
+    v->bend_cents_applied = bend_cents;
+    /* Aim only. The slope that walks phase_step is re-derived on the ramp grid
+     * by voice_ramp_tick, never restarted here -- see RAMP_PERIOD_FRAMES. */
     v->phase_step_target = new_target;
-
-    double base = (double)v->phase_step; /* the ramp's own starting point,
-        NOT the (possibly very different) new target -- rate scales off
-        where we're coming from, matching probe 33's fit basis */
-    /* PITCH_RAMP_RATE_FRAC_PER_MS is a fraction-of-base-phase_step per
-     * MILLISECOND; RENDER_RATE/1000.0 is samples per ms, so dividing by it
-     * converts to fraction-of-base per SAMPLE. */
-    double max_step = base * PITCH_RAMP_RATE_FRAC_PER_MS / ((double)RENDER_RATE / 1000.0);
-    double delta = (double)new_target - (double)v->phase_step;
-    /* Duration ceiling: never let the WHOLE ramp take longer than
-     * PITCH_RAMP_MAX_MS, regardless of distance -- see the comment above
-     * PITCH_RAMP_MAX_MS. Only raises max_step (shortens duration) for big
-     * jumps; for small ones the rate above is already the tighter (faster)
-     * bound, so vibrato-sized steps are untouched. */
-    double max_periods = PITCH_RAMP_MAX_MS * (double)RENDER_RATE / 1000.0;
-    double abs_delta = delta < 0.0 ? -delta : delta; /* no fabs(): this file
-        also builds freestanding (-nostdlib -fno-builtin) for wasm32, no libm */
-    double cap_step = abs_delta / max_periods;
-    if (cap_step > max_step) max_step = cap_step;
-    if (max_step < 1.0) max_step = 1.0; /* never fully stall a real change */
-    v->phase_step_ramp_step = (delta >= 0.0) ? (int32_t)max_step : -(int32_t)max_step;
 }
 
 /* Advances every active voice's pitch-LFO phase by freq_hz*frames/RENDER_RATE
@@ -893,6 +993,8 @@ void voice_note_on(int channel, int note, int velocity) {
      * voice (SPEC.md S6.6), not for note-on itself. */
     v->phase_step = v->phase_step_target;
     v->phase_step_ramp_step = 0;
+    v->phase_step_ramp_acc = 0;
+    v->bend_cents_applied = synth_pitch_bend_cents(channel);
     v->phase_pos = 0;
 
     int no_loop = r->no_loop;
