@@ -3,57 +3,17 @@
 <head>
 <meta charset="utf-8">
 <title>slopgs vs reference -- tests</title>
-<style>
-  body { font: 14px/1.4 sans-serif; margin: 1.5em; background: #111; color: #eee; }
-  h1 { font-size: 1.3em; }
-  #notice { background: #222; border: 1px solid #444; padding: 0.75em; margin-bottom: 1em; font-size: 0.9em; }
-  .card { border: 1px solid #444; border-radius: 6px; padding: 0.75em 1em; margin: 0.75em 0; background: #1a1a1a; }
-  .card h3 { margin: 0 0 0.3em 0; }
-  .paths { color: #999; font-size: 0.85em; word-break: break-all; }
-  table.info { border-collapse: collapse; margin: 0.4em 0; font-size: 0.9em; }
-  table.info th { text-align: right; color: #aaa; padding: 2px 8px; vertical-align: top; }
-  table.info td { padding: 2px 4px; }
-  table.stats { border-collapse: collapse; margin: 0.5em 0; }
-  table.stats th, table.stats td { border: 1px solid #444; padding: 3px 10px; text-align: left; }
-  .extra-stats { color: #ccc; }
-  .status { color: #ffbd7c; min-height: 1.2em; }
-  .card > button { margin-right: 0.5em; }
-  button { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 0.3em 0.8em; cursor: pointer; }
-  button:hover { background: #444; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .specwrap { margin-top: 0.5em; }
-  .zoomrow { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.4em; }
-  .zoomrow .zoomlabel, .zoomrow .zoomval, .zoomrow .rangeval { color: #aaa; }
-  .zoomrow .zoomval { min-width: 3.5em; }
-  .zoomrow input.contrast { width: 110px; accent-color: #7CFC9A; }
-  .zoomrow { flex-wrap: wrap; }
-  /* Fixed viewport: the canvases never move. Scrolling and zooming change
-     which slice of the signal gets transformed, and both are repainted. */
-  .spec-viewport { border: 1px solid #333; background: #000; overflow: hidden; position: relative; }
-  /* Live playback position. A DOM overlay, not a canvas draw: it moves every
-     frame while audio runs, and a canvas repaint is width-many FFTs. The red
-     start-point line stays on the canvas so screenshots still carry it. */
-  .spec-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff;
-                 pointer-events: none; display: none; }
-  /* draggable left/right to nudge this signal against the other */
-  canvas.spectrogram { display: block; width: 100%; cursor: ew-resize; touch-action: none; }
-  canvas.spectrogram + canvas.spectrogram { border-top: 1px solid #333; }
-  /* Strip supplying one real scrollbar for both canvases; its spacer is
-     `zoom` viewports wide, so scrollLeft maps straight to a time offset. */
-  .spec-scrollbar { overflow-x: auto; overflow-y: hidden; height: 14px;
-                    scrollbar-width: thin; scrollbar-color: #666 #222; }
-  .spec-scrollbar::-webkit-scrollbar { height: 12px; }
-  .spec-scrollbar::-webkit-scrollbar-track { background: #222; }
-  .spec-scrollbar::-webkit-scrollbar-thumb { background: #666; border-radius: 6px; }
-  .spec-spacer { height: 1px; }
-</style>
+<link rel="stylesheet" href="compare.css">
 </head>
 <body>
 <h1>slopgs vs reference -- tests</h1>
 <p>Compares each hand-built test MIDI (<code>tests/</code>) against its reference render, rendered live
 in this page via <code>msgs.wasm</code> + <code>gm.dls</code>. Per-item table below is sourced from
 <code>tests/README.adoc</code>.</p>
+<details id="method">
+<summary>how the comparison is made</summary>
 <div id="notice"></div>
+</details>
 <div id="items"></div>
 <script src="compare.js"></script>
 <script>

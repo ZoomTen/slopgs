@@ -683,21 +683,23 @@ const SlopgsCompare = (() => {
     const { refN, slopN } = normalizeRMS(monoRef, monoSlop);
     const residualDb = spectralResidualDb(refN, slopN, SYNTH_RATE);
 
-    statusEl.textContent = `aligned: lag ${align.lagMs} ms, envelope r=${align.r.toFixed(3)} `
-      + `(level-normalized before residual)`;
+    statusEl.textContent = "";
 
+    // One row of chips. Peak/RMS used to be a table, residual/r/lag a
+    // paragraph, and lag/r again the status line -- three blocks stacked above
+    // the spectrograms saying five numbers between them.
     resultsEl.innerHTML = "";
-    const statsTable = el("table", { class: "stats" }, [
-      el("tr", null, [el("th", { text: "" }), el("th", { text: "reference" }), el("th", { text: "slopgs" })]),
-      el("tr", null, [el("th", { text: "peak dB" }), el("td", { text: peakRefDb.toFixed(1) }), el("td", { text: peakSlopDb.toFixed(1) })]),
-      el("tr", null, [el("th", { text: "RMS dB" }), el("td", { text: rmsRefDb.toFixed(1) }), el("td", { text: rmsSlopDb.toFixed(1) })]),
-    ]);
-    resultsEl.appendChild(statsTable);
-    const extra = el("p", { class: "extra-stats" });
-    extra.textContent = `spectral residual (level-normalized): ${residualDb.toFixed(1)} dB `
-      + `(worse = less negative)   |   envelope correlation r: ${align.r.toFixed(3)}   |   `
-      + `detected lag: ${align.lagMs} ms`;
-    resultsEl.appendChild(extra);
+    const pair = (a, b) => `${a.toFixed(1)} / ${b.toFixed(1)} dB`;
+    resultsEl.appendChild(el("div", { class: "summary" }, [
+      // The two headline numbers from CLAUDE.adoc's corpus gate, lit up: the
+      // rest of the row is context for these.
+      stat("residual", `${residualDb.toFixed(1)} dB`, "level-normalized spectral residual; worse = less negative", "key-residual"),
+      stat("env r", align.r.toFixed(3), "envelope correlation at the detected lag", "key-r"),
+      stat("lag", `${align.lagMs} ms`, "start-delay removed by envelope cross-correlation"),
+      stat("peak", pair(peakRefDb, peakSlopDb), "before level normalization"),
+      stat("rms", pair(rmsRefDb, rmsSlopDb), "before level normalization"),
+      el("span", { class: "note", text: "pairs are reference / slopgs" }),
+    ]));
 
     buildSpectrograms(resultsEl, monoRef, monoSlop, align.lagMs, chan);
   }
@@ -725,8 +727,6 @@ const SlopgsCompare = (() => {
     const zoomVal = el("span", { class: "zoomval" });
     const rangeVal = el("span", { class: "rangeval" });
     const nudgeVal = el("span", { class: "rangeval" });
-    const freqVal = el("span", { class: "rangeval" });
-    const bandVal = el("span", { class: "rangeval" });
     let dynRange = SPEC_DYNAMIC_RANGE_DB;
     let zoom = 1; // 1 = whole item across the viewport
     let pending = false;
@@ -780,25 +780,21 @@ const SlopgsCompare = (() => {
       // starting at `start` (plus each one's own nudge, which cancels here).
       if (playhead !== null) drawPlayhead(((playhead - start) / count) * viewWidth());
       playheadVal.textContent = playhead === null
-        ? "click the spectrogram to set a start point"
-        : `start ${(playhead / SYNTH_RATE).toFixed(3)}s`
+        ? "click a spectrogram to set the start point"
+        : `from ${(playhead / SYNTH_RATE).toFixed(3)}s`
           + (refOff || slopOff
             ? `  (ref ${((playhead + refOff) / SYNTH_RATE).toFixed(3)}s,`
               + ` slopgs ${((playhead + slopOff) / SYNTH_RATE).toFixed(3)}s)`
             : "");
 
-      bandVal.textContent = `band ${band} — ref rms ${sRef.bandRmsDb.toFixed(1)}dB, `
-        + `slopgs rms ${sSlop.bandRmsDb.toFixed(1)}dB, Δ ${sign(dRms)}dB `
-        + `(peak Δ ${sign(dPeak)}dB)`;
       const t0 = start / SYNTH_RATE, t1 = (start + count) / SYNTH_RATE;
       rangeVal.textContent = `${t0.toFixed(2)}s – ${t1.toFixed(2)}s of ${(total / SYNTH_RATE).toFixed(2)}s`;
       zoomVal.textContent = fmtZoom(zoom);
       // The number that matters for alignment is slopgs relative to reference;
       // it is what you would feed back as a corrected lag.
       const rel = toMs(slopOff - refOff);
-      nudgeVal.textContent = `nudge ${rel >= 0 ? "+" : ""}${rel.toFixed(1)} ms`
-        + ` (auto ${autoLagMs} ms → total ${(autoLagMs + rel).toFixed(1)} ms)`;
-      freqVal.textContent = `${fmtHz(fLo)} – ${fmtHz(fHi)}`;
+      nudgeVal.textContent = `${rel >= 0 ? "+" : ""}${rel.toFixed(1)} ms`
+        + ` → total ${(autoLagMs + rel).toFixed(1)} ms`;
     }
 
     // 2px red rule down both canvases. Drawn last, after the overlays, so it
@@ -925,22 +921,6 @@ const SlopgsCompare = (() => {
     attachDrag(cRef, () => refOff, (v) => { refOff = v; });
     attachDrag(cSlop, () => slopOff, (v) => { slopOff = v; });
 
-    const zoomRow = el("div", { class: "zoomrow" }, [
-      el("span", { class: "zoomlabel", text: "zoom" }),
-      mkBtn("−", () => setZoom(zoom / ZOOM_STEP)),
-      mkBtn("+", () => setZoom(zoom * ZOOM_STEP)),
-      mkBtn("Fit", () => setZoom(1)),
-      zoomVal,
-      rangeVal,
-    ]);
-    const alignRow = el("div", { class: "zoomrow" }, [
-      el("span", { class: "zoomlabel", text: "align" }),
-      mkBtn("◀ 1ms", () => { slopOff -= msToSamples(1); schedulePaint(); }),
-      mkBtn("1ms ▶", () => { slopOff += msToSamples(1); schedulePaint(); }),
-      mkBtn("Reset", () => { refOff = 0; slopOff = 0; schedulePaint(); }),
-      nudgeVal,
-    ]);
-
     const contrast = el("input", {
       type: "range", min: "20", max: "120", step: "5",
       value: String(SPEC_DYNAMIC_RANGE_DB), class: "contrast",
@@ -951,29 +931,44 @@ const SlopgsCompare = (() => {
       scaleBtn.textContent = logFreq ? "log" : "linear";
       schedulePaint();
     });
-    const freqRow = el("div", { class: "zoomrow" }, [
-      el("span", { class: "zoomlabel", text: "freq" }),
-      mkBtn("−", () => setFreqZoom(2)),   // wider band = zoomed out
-      mkBtn("+", () => setFreqZoom(0.5)),
-      mkBtn("Full", () => panFreq(0, NYQUIST)),
-      scaleBtn,
-      freqVal,
-      el("span", { class: "zoomlabel", text: "contrast" }),
-      contrast,
-      bandVal,
+    // Row one is what you are looking at, row two is what you do to it. The
+    // per-group readouts the canvas overlay already prints (band, contrast,
+    // window) are not repeated here.
+    const viewRow = el("div", { class: "ctlrow" }, [
+      grp("zoom", [
+        mkBtn("−", () => setZoom(zoom / ZOOM_STEP)),
+        mkBtn("+", () => setZoom(zoom * ZOOM_STEP)),
+        mkBtn("Fit", () => setZoom(1)),
+        zoomVal,
+      ]),
+      grp("freq", [
+        mkBtn("−", () => setFreqZoom(2)),   // wider band = zoomed out
+        mkBtn("+", () => setFreqZoom(0.5)),
+        mkBtn("Full", () => panFreq(0, NYQUIST)),
+        scaleBtn,
+      ]),
+      grp("contrast", [contrast]),
+      rangeVal,
     ]);
 
     // Transport. There is no separate reference/slopgs player on the card any
     // more: the spectrogram IS the transport, and every one of these starts at
     // the red playhead (or at 0 if nothing has been clicked yet).
     const playheadVal = el("span", { class: "rangeval" });
-    const playRow = el("div", { class: "zoomrow" }, [
-      el("span", { class: "zoomlabel", text: "play" }),
-      mkBtn("▶ reference", () => playAt("ref")),
-      mkBtn("▶ slopgs", () => playAt("slop")),
-      mkBtn("▶ mixed", () => playAt("mixed")),
-      mkBtn("■ stop", () => stopCurrent()),
-      playheadVal,
+    const playRow = el("div", { class: "ctlrow" }, [
+      grp("play", [
+        mkBtn("▶ reference", () => playAt("ref")),
+        mkBtn("▶ slopgs", () => playAt("slop")),
+        mkBtn("▶ mixed", () => playAt("mixed")),
+        mkBtn("■ stop", () => stopCurrent()),
+        playheadVal,
+      ]),
+      grp("align", [
+        mkBtn("◀ 1ms", () => { slopOff -= msToSamples(1); schedulePaint(); }),
+        mkBtn("1ms ▶", () => { slopOff += msToSamples(1); schedulePaint(); }),
+        mkBtn("Reset", () => { refOff = 0; slopOff = 0; schedulePaint(); }),
+        nudgeVal,
+      ]),
     ]);
 
     // Live playback cursor: a white bar tracking where the audio actually is,
@@ -1018,9 +1013,7 @@ const SlopgsCompare = (() => {
       trackCursor();
     }
 
-    specWrap.appendChild(zoomRow);
-    specWrap.appendChild(alignRow);
-    specWrap.appendChild(freqRow);
+    specWrap.appendChild(viewRow);
     specWrap.appendChild(playRow);
     specWrap.appendChild(viewport);
     specWrap.appendChild(scrollbar);
@@ -1060,18 +1053,33 @@ const SlopgsCompare = (() => {
     return b;
   }
 
+  function stat(label, value, title, key) {
+    return el("span", { class: key ? `stat ${key}` : "stat", title },
+      [el("i", { text: label }), el("b", { text: value })]);
+  }
+
+  // A labelled cluster of controls, ruled off from its neighbours by CSS.
+  function grp(label, children) {
+    return el("span", { class: "grp" }, [el("span", { class: "zoomlabel", text: label })].concat(children));
+  }
+
   function renderPage(config) {
     const root = document.getElementById("items");
     const notice = document.getElementById("notice");
+    // One term per trap from CLAUDE.adoc's "Measuring" section, plus the one
+    // platform requirement -- four separate facts, so four separate rows.
     if (notice) {
-      notice.textContent = "Rate: references are decoded via decodeAudioData on a 22050Hz "
-        + "OfflineAudioContext, so the platform resamples them to match the synth's native "
-        + "22050Hz output (verified against decodedBuffer.sampleRate). Alignment: start delay is "
-        + "removed by RMS-envelope cross-correlation over a 50ms hop, searching +/-5s of lag "
-        + "(detected lag is shown per item). Level: both signals are normalized to a common RMS "
-        + "before the spectral residual is computed, to neutralize reference dithering/gain. "
-        + "Reference FLAC decoding requires browser-native FLAC support (Chrome/Firefox); it will "
-        + "fail to decode in browsers without it.";
+      notice.innerHTML = `<dl>
+        <dt>rate</dt><dd>references are decoded via <code>decodeAudioData</code> on a 22050Hz
+          <code>OfflineAudioContext</code>, so the platform resamples them to the synth's native
+          22050Hz (verified against <code>decodedBuffer.sampleRate</code>).</dd>
+        <dt>alignment</dt><dd>start delay is removed by RMS-envelope cross-correlation over a 50ms
+          hop, searching ±5s of lag. The detected lag is shown per item.</dd>
+        <dt>level</dt><dd>both signals are normalized to a common RMS before the spectral residual
+          is computed, to neutralize reference dithering/gain.</dd>
+        <dt>requires</dt><dd>browser-native FLAC decoding (Chrome/Firefox); references will not
+          decode without it.</dd>
+      </dl>`;
     }
     for (const item of config.items) root.appendChild(makeCard(item));
   }
@@ -1092,13 +1100,26 @@ const SlopgsCompare = (() => {
     // been aligned, and once they have, the transport lives under the
     // spectrogram (buildSpectrograms) where the playhead is.
     const cmpBtn = el("button", { text: "Load & compare" });
+    // Unload drops the card's canvases AND the memoized render. A field item is
+    // up to 240s of stereo float either side; with nine cards on the page,
+    // keeping every one of them loaded is how the tab ends up in the gigabytes.
+    const unloadBtn = el("button", { text: "Unload" });
+    unloadBtn.disabled = true;
+    unloadBtn.onclick = () => {
+      stopCurrent();
+      results.innerHTML = "";
+      status.textContent = "";
+      state.slopPromise = null;
+      unloadBtn.disabled = true;
+    };
     cmpBtn.onclick = () => {
       cmpBtn.disabled = true;
       runItem(item, state, status, results).catch((err) => {
         status.textContent = `unexpected error: ${err.message || err}`;
-      }).finally(() => { cmpBtn.disabled = false; });
+      }).finally(() => { cmpBtn.disabled = false; unloadBtn.disabled = false; });
     };
     card.appendChild(cmpBtn);
+    card.appendChild(unloadBtn);
     card.appendChild(status);
     card.appendChild(results);
     return card;

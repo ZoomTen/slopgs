@@ -102,6 +102,7 @@ What should be in here:
 . The driver `bg-sound2` JS file
 . Comparison/test pages.
 * `compare.js` containing spectrogram code.
+* `compare.css`, shared by all three pages.
 
 The user is assumed to run a web server from the repo root.
 

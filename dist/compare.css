@@ -1,0 +1,72 @@
+/* Shared styles for the three dist/compare-*.html pages. One copy: the pages
+   differ only in their item list, and three drifting style blocks was the
+   reason the page looked like three different tools stacked together. */
+body { font: 14px/1.4 sans-serif; margin: 1.5em; background: #111; color: #eee; }
+h1 { font-size: 1.3em; }
+#method { background: #191919; border: 1px solid #333; border-radius: 6px; padding: 0.5em 0.75em;
+          margin-bottom: 1em; font-size: 0.9em; color: #bbb; }
+#method summary { cursor: pointer; color: #888; }
+#notice dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35em 1em;
+             margin: 0.6em 0 0.2em; max-width: 100ch; }
+#notice dt { color: #ffbd7c; text-align: right; }
+#notice dd { margin: 0; }
+#notice code { color: #ddd; }
+.card { border: 1px solid #444; border-radius: 6px; padding: 0.75em 1em; margin: 0.75em 0; background: #1a1a1a; }
+.card h3 { margin: 0 0 0.3em 0; }
+.paths { color: #999; font-size: 0.85em; word-break: break-all; }
+table.info { border-collapse: collapse; margin: 0.4em 0; font-size: 0.9em; }
+table.info th { text-align: right; color: #aaa; padding: 2px 8px; vertical-align: top; }
+table.info td { padding: 2px 4px; }
+.status { color: #ffbd7c; }
+.card > button { margin-right: 0.5em; }
+button { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 0.3em 0.8em; cursor: pointer; }
+button:hover { background: #444; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+/* Headline numbers, one row of chips. Every one of these used to be printed
+   twice or three times (status line, stats table, extra-stats paragraph). */
+.summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2em 1.4em; margin: 0.6em 0; }
+.summary .stat i { font-style: normal; color: #888; margin-right: 0.4em; }
+.summary .stat b { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* The two numbers the corpus gate is judged on, lit so they read first. The
+   accent stays on the text and border and the fill is a dark tint of it --
+   a light plate on this page is a hole punched in a dark surface. */
+.summary .key-residual, .summary .key-r { padding: 0.1em 0.6em; border-radius: 4px; border: 1px solid; }
+.summary .key-residual { background: rgba(255, 210, 124, 0.12); border-color: rgba(255, 210, 124, 0.45); }
+.summary .key-residual i { color: rgba(255, 210, 124, 0.75); }
+.summary .key-residual b { color: #ffd27c; }
+.summary .key-r { background: rgba(124, 252, 154, 0.12); border-color: rgba(124, 252, 154, 0.45); }
+.summary .key-r i { color: rgba(124, 252, 154, 0.75); }
+.summary .key-r b { color: #7cfc9a; }
+.summary .note { color: #666; font-size: 0.85em; }
+
+.specwrap { margin-top: 0.5em; }
+/* Controls: two rows, grouped by what they act on, each group separated by a
+   rule. Readouts that the canvas overlay already carries are not repeated. */
+.ctlrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3em 0.9em; margin-bottom: 0.35em; }
+.ctlrow button { padding: 0.15em 0.55em; font-size: 0.9em; }
+.ctlrow .grp { display: flex; align-items: center; gap: 0.3em; }
+.ctlrow .grp + .grp { padding-left: 0.9em; border-left: 1px solid #333; }
+.ctlrow .zoomlabel, .ctlrow .zoomval, .ctlrow .rangeval { color: #888; }
+.ctlrow .zoomval { min-width: 3em; }
+.ctlrow input.contrast { width: 110px; accent-color: #7CFC9A; }
+
+/* Fixed viewport: the canvases never move. Scrolling and zooming change
+   which slice of the signal gets transformed, and both are repainted. */
+.spec-viewport { border: 1px solid #333; background: #000; overflow: hidden; position: relative; }
+/* Live playback position. A DOM overlay, not a canvas draw: it moves every
+   frame while audio runs, and a canvas repaint is width-many FFTs. The red
+   start-point line stays on the canvas so screenshots still carry it. */
+.spec-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff;
+               pointer-events: none; display: none; }
+/* draggable left/right to nudge this signal against the other */
+canvas.spectrogram { display: block; width: 100%; cursor: ew-resize; touch-action: none; }
+canvas.spectrogram + canvas.spectrogram { border-top: 1px solid #333; }
+/* Strip supplying one real scrollbar for both canvases; its spacer is
+   `zoom` viewports wide, so scrollLeft maps straight to a time offset. */
+.spec-scrollbar { overflow-x: auto; overflow-y: hidden; height: 14px;
+                  scrollbar-width: thin; scrollbar-color: #666 #222; }
+.spec-scrollbar::-webkit-scrollbar { height: 12px; }
+.spec-scrollbar::-webkit-scrollbar-track { background: #222; }
+.spec-scrollbar::-webkit-scrollbar-thumb { background: #666; border-radius: 6px; }
+.spec-spacer { height: 1px; }
