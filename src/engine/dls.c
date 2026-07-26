@@ -135,6 +135,8 @@ static void artic_defaults(Artic *a) {
     a->lfo_delay_tc = (int32_t)0x80000000;
     a->lfo_pitch_inherent_cents = 0;
     a->lfo_pitch_cc1_cents = 0;
+    a->eg1_decay_kf_tc = 0;
+    a->eg2_decay_kf_tc = 0;
 }
 
 static int16_t clamp_cents(int32_t v) {
@@ -194,6 +196,14 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
             /* dest 0x0206/0x030a (velocity->EG attack) not modeled: not
              * authored anywhere impactful for gm.dls's amplitude EG in the
              * common case; documented in SPEC_GAPS.md. */
+        } else if (usrc == 3) { /* KEYNUMBER, SPEC.md S2.4.3 "Source = 3" table.
+                                   169 of gm.dls's 235 instruments carry the
+                                   0x0207 row -- every acoustic patch, most
+                                   synth leads/pads/SFX not; dropping it made
+                                   those notes decay 3-5x too slowly (see
+                                   voice.c's decay_tc_keyfollow). */
+            if (udest == 0x0207) a->eg1_decay_kf_tc = (int16_t)(lscale >> 16);
+            else if (udest == 0x030b) a->eg2_decay_kf_tc = (int16_t)(lscale >> 16);
         } else if (usrc == 5) { /* EG2 */
             if (udest == 0x0003) a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
         } else if (usrc == 1) { /* LFO -> PITCH, SPEC.md S2.4.3 "Source = 1" table,
@@ -209,8 +219,9 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
                    only accepts exactly 0 or 0x81). */
             }
         }
-        /* usSource==3 (key-follow) connections are parsed off but not wired
-         * into the signal path -- no key-scaling is implemented (SPEC_GAPS.md).
+        /* usSource==3 (key-follow) to any destination other than the two decay
+         * rows above is still dropped -- SPEC.md S2.4.3's own "Source = 3"
+         * table lists only 0x0207/0x030b, and gm.dls authors nothing else.
          * usSource==4 is correctly dropped per SPEC.md S2.4 (matches
          * original's own quirk). */
     }

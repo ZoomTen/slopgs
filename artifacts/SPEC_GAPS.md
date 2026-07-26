@@ -446,16 +446,30 @@ given `gm.dls`'s own actual data, that gives that specific file audible
 vibrato without reintroducing the confirmed regression (`FITTED.md` Entry 6
 section 4).
 
+**`usSource=3` (key-follow) is now applied too — RESOLVED 2026-07-26.** Both
+decay rows of SPEC.md S2.4.3's own "Source = 3" table (`0x0207` EG1 decay,
+`0x030b` EG2 decay) are stored and consumed at note-on
+(`voice.c`'s `decay_tc_keyfollow`); see SPEC.md S2.4.3.2 for the measurement.
+This was the single largest outstanding defect in the engine: 169 of
+`gm.dls`'s 235 instruments carry the `0x0207` row — every acoustic patch in
+the field corpus — so dropping it made those notes decay 3–5× too slowly
+(mean spectral residual −24.55 → −28.18 dB on the fix, −28.85 dB with the shape constant probe 35 then
+measured). `probes/35_decay_keyfollow.mid` has since been captured: it settles
+the source as the *absolute* key rather than 60-relative (the reading this
+document used to rule key-follow out), but the measured divisor 126.5 ± 0.8
+still cannot separate `/127` from `/128`. That much remains `[I]`.
+
 **Still not applied, unchanged from before:** `art1` connections for
 `usSource=1` (LFO depth to ATTENUATION/tremolo, `usDestination=0x0001`, 46
-blocks in `gm.dls`), `usSource=3` (key-follow), and the GS SysEx
-12-entry-per-part Scale Tuning grid are all parsed into their respective
-struct fields (or silently accepted in the SysEx dispatcher) but have no
-runtime effect: there is no tremolo oscillator, no key-follow scaling, and
-no per-semitone-class tuning offset applied anywhere in `render.c`/
-`voice.c`. Priority order in the assignment (numeric-detail signal path,
-voice model, control plane) was followed; these remain lower-priority,
-still-unattempted follow-ups with no measured probe reference yet.
+blocks in `gm.dls`), `usSource=3` to any destination outside the two decay
+rows (`gm.dls` authors none), and the GS SysEx 12-entry-per-part Scale
+Tuning grid are all parsed into their respective struct fields (or silently
+accepted in the SysEx dispatcher) but have no runtime effect: there is no
+tremolo oscillator and no per-semitone-class tuning offset applied anywhere
+in `render.c`/`voice.c`. Priority order in the assignment (numeric-detail
+signal path, voice model, control plane) was followed; these remain
+lower-priority, still-unattempted follow-ups with no measured probe
+reference yet.
 
 ## 11. RCV CHANNEL "Part" indirection is not modeled
 
@@ -534,6 +548,24 @@ since `msgs_midi` carries no timestamp parameter) cannot rely on the
 look-ahead-visibility behavior S4.7.3 describes.
 
 ## 15. `exp_coef`'s per-sample coefficient: retuned from a 1/e time constant to a "100dB-over-`seconds`" calibration -- SPEC.md leaves the exact number `[O]`
+
+> **The "~2.9x still too slow" residual below is RESOLVED 2026-07-26: it was
+> decay-time key-follow.** This entry ruled `usSource=3` out on the strength
+> of a `scale*(60-keynum)` reading, which is zero at note 60 and therefore
+> could not explain a note-60 measurement. That reading was wrong: DLS-1
+> normalizes the KEYNUMBER source as `key/128`, un-shifted, so Piano 1's own
+> `-3979` contributes `-1865` timecents at note 60 -- 40.02s -> 13.63s, i.e.
+> **7.34 dB/s against the 7.14 dB/s measured below**, from `gm.dls`'s own
+> data with no fudge factor. Shipped; see SPEC.md S2.4.3.2 and item 10 above.
+> The "100dB-over-`seconds`" calibration this entry describes is unchanged
+> and still `[O]` as a *mechanism* -- key-follow supplies the *duration*, this
+> supplies the *shape*, and the two were being conflated. Its *value* is no
+> longer open: `probes/35_decay_keyfollow.mid` measures the reference decaying
+> at 0.965x this project's rate, uniformly across 17 notes / 3 instruments /
+> a 7x rate range (sd 0.005, no trend vs. key), so the decay segment is
+> **96.5 dB over `seconds`**, shipped as `DECAY_RATE_MULT = 0.965`. Release
+> keeps 100 dB -- probe 35 measures decay only and S5.6's 70 ms fast-release
+> still matches. See FITTED.md Entry 15 section 4b.
 
 **Path:** `SPEC.md` S3.4.1 (timecent->duration formula, confirmed `[A]`) vs.
 S3.4.2 (release *shape* confirmed exponential, but exact per-sample

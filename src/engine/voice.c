@@ -122,6 +122,37 @@ static double timecents_to_seconds(int32_t tc) {
     return rt_pow(2.0, t / 1200.0);
 }
 
+/* Decay-time key-follow, SPEC.md S2.4.3 `[A:0x15868]`/`[A:0x1585b]` (the
+ * usSource==3 KEYNUMBER rows) -- higher notes decay faster. `kf` is the
+ * stored high word of lScale: the full-scale timecent offset, normalized by
+ * DLS-1's own key/128 KEYNUMBER scaling, so the per-note offset is
+ * kf*note/128 timecents == kf*note*512 in lScale's 1/65536-timecent units.
+ * A sentinel decay (nothing authored) stays a sentinel.
+ *
+ * 169 of gm.dls's 235 instruments carry the 0x0207 row and this project used
+ * to drop every one of them, so those notes decayed 3-5x too slowly. Two
+ * things that were open before this landed and are now closed by it:
+ *
+ *  - SPEC_GAPS.md's "EG1 decay still ~2.9x too slow for Piano 1 note 60,
+ *    unresolved". That gap ruled key-follow out on the strength of a
+ *    `scale*(60-keynum)` reading, which is zero at note 60; the DLS-1
+ *    normalization is key/128, not 60-relative. Piano 1's own -3979 kf then
+ *    predicts 7.34 dB/s at note 60 against that entry's own measured
+ *    reference 7.14 dB/s (this project shipped 2.50 dB/s).
+ *  - FITTED.md Entry 1's rejected global DECAY_RATE_MULT=2.85. That was this
+ *    same effect at note 60 (2^(1865/1200) = 2.945x) frozen into a constant,
+ *    which is exactly why it regressed every other key and did not ship.
+ *
+ * The key/128 normalization itself is `[I]`, from the DLS-1 spec: the
+ * driver's own consumption code is unrecovered (`[O]`, SPEC.md Part 5
+ * +0x13c). Swept against key/127 on the full corpus (mean spectral residual
+ * -28.18 dB vs -28.05 dB); /128 wins, and is the natural >>7 for integer
+ * code. See probe 35 for the direct per-key measurement. */
+static int32_t decay_tc_keyfollow(int32_t tc, int16_t kf, int note) {
+    if (tc == (int32_t)0x80000000 || kf == 0) return tc;
+    return tc + (int32_t)kf * (int32_t)note * 512; /* 65536/128 == 512 */
+}
+
 /* LFO rate, SPEC.md LFO section `[M: probe 06]` -- derived, not fit: the
  * standard DLS-1/SF2 "absolute pitch cents" convention, 8.176 Hz at 0
  * cents (lfo_freq_tc's own units, distinct from timecents_to_seconds'
@@ -165,14 +196,35 @@ static double lfo_freq_from_tc(int32_t tc) {
  * [O]. This uses a "decays 100dB over exactly `seconds` seconds" calibration
  * (the widely-used DLS-1/SF2 convention for this exact parameter), which
  * matches the S5.6 measurement almost exactly. Ceiling: best-effort
- * external-convention fit, not a byte-confirmed formula; ~2.9x still off for
- * the EG1 *decay* segment specifically in one measured case (see
- * SPEC_GAPS.md) -- upgrade path is locating the real consumption code if it
- * ever becomes available. */
-/* Rate multipliers, overridable with -D for sweeps (see FITTED.md Entry 1
- * and SPEC_GAPS.md #15). 1.0 = the shipped behaviour, unchanged. */
+ * external-convention fit, not a byte-confirmed formula -- upgrade path is
+ * locating the real consumption code if it ever becomes available. (The
+ * "~2.9x still off for the EG1 decay segment" caveat that used to sit here
+ * was decay key-follow, now supplied per-key by decay_tc_keyfollow above.) */
+/* Rate multipliers, overridable with -D for sweeps.
+ *
+ * DECAY_RATE_MULT is `[M: probe 35]`, not a fit. Once key-follow supplied the
+ * per-key decay DURATION, what was left between this project and the
+ * reference was a single scale factor on the decay SHAPE, uniform across
+ * every key and instrument: probe 35's reference decays at 0.965x this
+ * project's rate, mean over all 17 notes, sd 0.005 (three instruments, keys
+ * 24-96, rates spanning 3.8-27 dB/s -- a 7x range, with no trend against
+ * either key or instrument). That is 29 standard errors from 1.0, so the
+ * decay segment is "96.5dB over `seconds`", not the 100dB the shared
+ * exp_coef comment above assumes.
+ *
+ * NOT swept to this value -- the corpus cannot resolve it (0.9633/0.965/0.97
+ * all land within 0.05dB of each other on the mean). It is the direct
+ * measurement, shipped over the marginally better corpus number on purpose.
+ * Probe 35 itself: -36.82 -> -43.58dB; corpus mean -28.36 -> -28.85dB.
+ *
+ * Note 96.5 ~= 96.33 = a 16-bit floor (20*log10(2^16)). That would be a
+ * tidier constant than a measured 0.965 and sits 1.4 sd from it, but this
+ * project has NOT confirmed it -- do not "clean it up" to 0.9633 without a
+ * measurement that separates the two. RELEASE_RATE_MULT is untouched: probe
+ * 35 measures decay only, and S5.6's 70ms fast-release still matches 100dB.
+ * See FITTED.md Entry 15 and SPEC_GAPS.md #15. */
 #ifndef DECAY_RATE_MULT
-#define DECAY_RATE_MULT 1.0
+#define DECAY_RATE_MULT 0.965
 #endif
 #ifndef RELEASE_RATE_MULT
 #define RELEASE_RATE_MULT 1.0
@@ -195,6 +247,15 @@ static double lfo_freq_from_tc(int32_t tc) {
  * authored release): byte-identical renders, untouched. Overridable -D. */
 #ifndef RELEASE_FLOOR_S
 #define RELEASE_FLOOR_S 0.060
+#endif
+
+/* Audible-level floor for release finish detection, linear. GAIN_CEILING
+ * (~0.5) is a voice's structural maximum gain, so 1e-4 here is -74dB below
+ * a full-scale voice -- SPEC.md's -80dB `[A:0x19733]` constant read against
+ * a gain-inclusive envelope. See voice_step_envelope's ENV_RELEASE case for
+ * why the bare-EG floor alone is not enough. Overridable -D. */
+#ifndef AUDIBLE_FLOOR
+#define AUDIBLE_FLOOR 0.0001
 #endif
 
 /* mult is a rate multiplier, 1.0 = the calibration documented above.
@@ -223,7 +284,12 @@ static double exp_coef_scaled(double seconds, double mult) {
  * instruments/probes despite fixing the one measured target ratio. Full
  * measurement, the attempted value, and the sweep data are recorded in
  * FITTED.md (tagged [F:fitted, NOT SHIPPED]) rather than applied as code
- * here -- see FITTED.md before re-attempting this. */
+ * here -- see FITTED.md before re-attempting this.
+ *
+ * SUPERSEDED 2026-07-26: do not re-attempt it. The 2.85x was decay-time
+ * KEY-FOLLOW at note 60 mistaken for a constant -- see decay_tc_keyfollow
+ * above, which now supplies it per-key from gm.dls's own data. That is why
+ * the constant fixed note 60 and regressed everything else. */
 
 /* SPEC.md S4.4: pitch bend -> cents is synth_pitch_bend_cents(), re-read
  * live here (never baked into a frozen value) so a bend arriving while a
@@ -888,7 +954,8 @@ void voice_note_on(int channel, int note, int velocity) {
 
     /* Envelope (EG1, amplitude), SPEC.md S3.4 */
     double attack_s = timecents_to_seconds(r->artic->eg1_attack_tc);
-    double decay_s = timecents_to_seconds(r->artic->eg1_decay_tc);
+    double decay_s = timecents_to_seconds(
+        decay_tc_keyfollow(r->artic->eg1_decay_tc, r->artic->eg1_decay_kf_tc, note));
     v->env_sustain_level = (double)r->artic->eg1_sustain_permille / 1000.0;
     if (v->env_sustain_level < 0.0) v->env_sustain_level = 0.0;
     if (v->env_sustain_level > 1.0) v->env_sustain_level = 1.0;
@@ -912,7 +979,8 @@ void voice_note_on(int channel, int note, int velocity) {
     if (v->eg2_sustain_level < 0.0) v->eg2_sustain_level = 0.0;
     if (v->eg2_sustain_level > 1.0) v->eg2_sustain_level = 1.0;
     double eg2_atk_s = timecents_to_seconds(r->artic->eg2_attack_tc);
-    double eg2_dec_s = timecents_to_seconds(r->artic->eg2_decay_tc);
+    double eg2_dec_s = timecents_to_seconds(
+        decay_tc_keyfollow(r->artic->eg2_decay_tc, r->artic->eg2_decay_kf_tc, note));
     if (eg2_atk_s <= 0.0) {
         v->eg2_level = 1.0;
         v->eg2_stage = (eg2_dec_s > 0.0) ? ENV_DECAY : ENV_SUSTAIN;
@@ -1002,7 +1070,29 @@ double voice_step_envelope(Voice *v) {
              * probe and a very slightly worse (further from reference)
              * corridor.mid duration (53.13s vs. this value's 52.57s against
              * a 52.43s reference) -- reverted, see report. */
-            if (v->env_level < 0.0005) {
+            /* ...and the same floor applied to the voice's AUDIBLE level
+             * (EG x its own gain) rather than to the bare normalized EG.
+             * SPEC.md S5.7 reads `+0x13c` -- the field the finish check at
+             * 0x19733 compares against its -80dB constant, and the field
+             * both steal comparators tie-break on -- as "the voice's live
+             * envelope level" in a log-domain (dB) format `[I]`; a dB
+             * accumulator that the note's own attenuation sum (S3.5/S3.10:
+             * velocity + region attenuation + CC7 + CC11 + master) is added
+             * into is the reading that makes the tie-break "quietest voice
+             * dies first" mean anything. Without this, a voice triggered at
+             * velocity 46 keeps a pool slot for the ~66dB its normalized EG
+             * still has to fall through AFTER it is already inaudible.
+             *
+             * That is not cosmetic: on field/HueArme-Weekend.mid at t=23.9s
+             * the pool held 41 released voices, 20 of them below -40dB
+             * audible, and note-on's forced steal (S5.7, oldest-held-first)
+             * was evicting the two held Seashore (program 122) voices that
+             * carry the passage's noise wash -- 8dB missing in 400-1000Hz
+             * against the reference, visible as a hole in the compare
+             * page's spectrogram. */
+            if (v->env_level < 0.0005 ||
+                v->env_level * (v->gain_l > v->gain_r ? v->gain_l : v->gain_r)
+                    < AUDIBLE_FLOOR) {
                 v->env_level = 0.0;
                 v->active = 0;
                 v->env_stage = ENV_IDLE;

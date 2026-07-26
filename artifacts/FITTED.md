@@ -79,7 +79,16 @@ are history, not current measurements.
 
 ---
 
-## Entry 1: EG1 decay-segment rate multiplier (Acoustic Grand Piano probe) -- FIT ATTEMPTED, NOT SHIPPED
+## Entry 1: EG1 decay-segment rate multiplier (Acoustic Grand Piano probe) -- FIT ATTEMPTED, NOT SHIPPED, SUPERSEDED BY ENTRY 15
+
+> **SUPERSEDED 2026-07-26 -- do not re-attempt this fit.** The 2.85x was
+> decay-time KEY-FOLLOW at note 60 mistaken for a constant. `gm.dls` gives
+> Piano 1 a `usSource=3`(KEYNUMBER)->`0x0207`(EG1 decay) connection of
+> `-3979` timecents full-scale, which at note 60 is `-1865` tc =
+> **2.945x faster decay** -- within 3% of the 2.85 fit below, and available
+> per-key from the file instead of frozen into a constant. That is exactly
+> why this fit repaired probe 04 (note 60 only) and regressed monotonically
+> everywhere else. Now shipped properly as Entry 15 / SPEC.md S2.4.3.2.
 
 **Status: `[F:fitted, NOT SHIPPED]`.** Measured and characterized below, but
 **not applied** in `src/engine/voice.c` -- see "Residual delta" below for why.
@@ -2190,3 +2199,151 @@ Rebuild with `-DTOPUP_INTERVAL_FRAMES=64` (the old sub-chunk cadence) and
 re-render `field/HueArme-Weekend.mid`: the two total-silence dropouts at
 t=23.09-23.15 s and t=23.44-23.51 s must reappear, `score.py`'s r must fall
 back to ~0.60, and `probes/20_voice_count.mid` must stop settling at 48.
+
+---
+
+## Entry 15: EG1/EG2 decay-time key-follow (`decay_tc_keyfollow` in src/engine/voice.c) -- SHIPPED, `[M: field/town.mid]` + `[I]` normalization
+
+**Status: mostly `[A]` -- not a fit.** The connection itself is SPEC.md
+S2.4.3's own confirmed `usSource=3` (KEYNUMBER) table, `[A]`-parsed since
+the first `dls.c`. What was missing was consumption. Only the *normalization*
+(`key/128`) is `[I]`, and it is the one thing `probes/35_decay_keyfollow.mid`
+exists to settle. Recorded here because it supersedes Entry 1 and because a
+`[I]` constant sitting on the signal path belongs in this ledger even when it
+came from a published spec rather than a curve fit.
+
+### 1. What shipped
+
+`dls.c` stores both decay rows (`0x0207` EG1, `0x030b` EG2) into
+`Artic.eg1_decay_kf_tc`/`eg2_decay_kf_tc`; `voice.c` adds them at note-on:
+
+```c
+static int32_t decay_tc_keyfollow(int32_t tc, int16_t kf, int note) {
+    if (tc == (int32_t)0x80000000 || kf == 0) return tc;
+    return tc + (int32_t)kf * (int32_t)note * 512; /* 65536/128 == 512 */
+}
+```
+
+### 2. How it was found
+
+By ear/spectrogram on `field/town.mid`, 25.0-26.7 s: a Steel-str.Gt chord
+(keys 59/63/68) under a CC1 sweep rings for the whole bar while the reference
+fades, leaving its (correct) 6.0 Hz / +-47 c vibrato bright across the whole
+passage. The vibrato was the symptom; the note not dying was the defect.
+
+**169 of `gm.dls`'s 235 instruments carry the `0x0207` row** (scales
+-4800..+2400, median -3979; 29 also carry `0x030b`), and **92** of those pair
+it with a real decay and sustain < 10%, i.e. a measurable decay-to-silence.
+This was not a town.mid quirk -- every acoustic patch in the corpus decayed
+3-5x too slowly. The 66 without the row are mostly synth leads, pads and SFX;
+`008:080` Sine Wave and `001:080` Square are among them, which is why probe 35
+cannot use the clean-tone carriers probes 24/25/27 rely on.
+
+### 3. Measurement
+
+Hilbert band-envelope dB/s fit on four partials of that chord, 25.30-26.65 s,
+against `field/town.flac` (own fresh measurement, harness not retained):
+
+| partial | reference | before | after | predicted from gm.dls |
+|---|---|---|---|---|
+| key68 h4 (1661 Hz) | -13.4 | -4.6 | -13.3 | -15.6 |
+| key68 h5 (2076 Hz) | -12.3 | -4.2 | -12.4 | -15.6 |
+| key63 h5 (1556 Hz) | -10.7 | -3.7 | -10.8 | -14.2 |
+| key59 h6 (1482 Hz) |  -9.4 | -2.3 |  -8.6 | -13.1 |
+
+(The reference column is measured on the full mix, so other channels' energy
+floors the tail and biases every figure low -- which is why it sits under the
+prediction while tracking it. `field/town.mid` render duration 80.25 s ->
+79.13 s against a 79.22 s reference.)
+
+**Independent cross-check, different instrument, someone else's measurement:**
+SPEC_GAPS.md #15 measured Piano 1 note 60's reference decay at -7.14 dB/s and
+recorded this project shipping -2.50 dB/s, unresolved. Piano 1's own
+key-follow predicts **-7.34 dB/s** at note 60. No parameter was tuned to make
+that land.
+
+### 4. Normalization -- swept first, then MEASURED (`[M: probe 35]`)
+
+Before a reference existed: `key/128` vs. `key/127`, full corpus mean
+spectral residual **-28.18 dB** vs. **-28.05 dB**; EG2 row included vs. EG1
+only, -28.18 vs. -28.16. Shipped `/128` with EG2 on a 0.13 dB preference,
+flagged at the time as a tiebreak and not a measurement.
+
+`probe-results/35.flac` has since been captured. Fitting each note's decay in
+dB/s and regressing `log2(rate)` on key measures the divisor directly:
+
+| section | d(log2 rate)/dkey | implied divisor | `/128` | `/127` |
+|---|---|---|---|---|
+| Piano 1 (keys 24-96) | 0.02604 | 127.3 | 0.02590 | 0.02611 |
+| Steel-str.Gt (24-96) | 0.02897 | 126.3 | 0.02857 | 0.02880 |
+| Vibraphone (48-96) | 0.03179 | 125.8 | 0.03125 | 0.03150 |
+
+**Settled: the source is the absolute key, not 60-relative.** Both readings
+give the same slope, so the slope alone cannot separate them -- but they
+differ by a constant ~2.9x in absolute rate, and the reference matches the
+absolute-key form to 3.5% while 60-relative is out by that whole factor
+(2.50 vs. 7.34 dB/s at Piano 1 note 60). This is the reading SPEC_GAPS.md #15
+originally used to rule key-follow out, now measured wrong.
+
+**NOT settled: `/127` vs. `/128`.** Measured divisor 126.5 +- 0.8; the two
+candidates differ by 0.8% in slope and 1.4% in offset at key 96, well inside
+that. `/128` stays on the `>>7` argument. This is the residual `[I]` and the
+corpus tiebreak above should NOT be cited as having resolved it.
+
+### 4b. What the probe DID resolve: the decay shape constant (`[M: probe 35]`)
+
+With per-key duration correct, the entire remaining discrepancy is a single
+uniform scale factor. Reference / this project, per note:
+
+| section | keys 24 -> 96, ratio |
+|---|---|
+| Piano 1 | 0.963 0.964 0.961 0.962 0.960 0.957 0.963 |
+| Steel-str.Gt | 0.962 0.961 0.965 0.971 0.961 0.969 0.967 |
+| Vibraphone | (48) 0.967  (72) 0.972  (96) 0.978 |
+
+**Mean 0.965, sd 0.005, n=17**, across three instruments and a 7x range of
+decay rates (3.8-27 dB/s), with no trend against key or instrument -- which is
+what distinguishes a *shape* error from a *normalization* error, since the
+latter would trend with key. 29 standard errors from 1.0.
+
+Shipped as `DECAY_RATE_MULT = 0.965`: the decay segment is "96.5 dB over
+`seconds`", not the 100 dB the shared `exp_coef` assumes (SPEC_GAPS.md #15's
+`[O]`). Release untouched -- probe 35 measures decay only, and Part 5 S5.6's
+70 ms fast-release still matches 100 dB.
+
+**Deliberately not corpus-swept.** The corpus cannot resolve this constant:
+0.9633 -> -28.83, 0.965 -> -28.85, 0.97 -> -28.88, 0.96 -> -28.80. The
+measured value ships over the marginally better swept one. Probe 35's own
+residual -36.82 -> **-43.58 dB**; corpus mean -28.36 -> -28.85 dB.
+
+96.5 dB is close to 96.33 = 20*log10(2^16), a 16-bit floor, which would be a
+tidier constant -- but it sits 1.4 sd from the measurement and is a
+hypothesis, not a finding. Do not round to it without a measurement that
+separates the two.
+
+### 5. Corpus effect, including the regressions
+
+Mean spectral residual **-24.55 -> -28.18 dB**, mean envelope `r`
+**0.903 -> 0.909** (`artifacts/score.py`, 47 items).
+
+Improved most: `05_pitchbend` -7.80 -> -28.44, `14_running_status` -15.87 ->
+-39.25, `23_rpn_tune` -19.90 -> -41.47, `12_gs_sysex` -22.68 -> -42.92,
+`07_pan_volume` -18.02 -> -43.21, `13_edge` -19.35 -> -37.17,
+`17_master_volume` -22.62 -> -40.68, `04_envelope` -29.73 -> -37.47.
+
+Regressed: `corridor` -20.74 -> -17.65, `flourish` -18.98 -> -17.25,
+`03_velocity` -38.32 -> -30.68, `16_drum_parts` -24.15 -> -21.62, and
+`town`'s own *global* residual -21.84 -> -20.96 (its 1500-2500 Hz band --
+where the defect was found -- improves, while 200-500 Hz worsens). Shipped
+anyway: the mean moves 3.6 dB, the targeted defect is measured fixed, and two
+previously-open items close. The regressed set is the natural next place to
+look once probe 35 has a reference, since a normalization error would show up
+exactly as a low-key/high-key imbalance.
+
+### 6. The check that fails if this breaks
+
+Rebuild with `decay_tc_keyfollow` returning `tc` unchanged and re-render
+`field/town.mid`: the 1661 Hz partial's decay over 25.30-26.65 s must fall
+from ~-13 dB/s back to ~-4.6 dB/s, `score.py`'s corpus mean must fall from
+-28.18 dB to -24.55 dB, and the render must lengthen from 79.13 s to 80.25 s
+against a 79.22 s reference.

@@ -1295,6 +1295,73 @@ against reference audio, not recovered from the binary:
 | 0x0207 (EG1 decay) | high word of `lScale` | WORD wave+0x3a | `0x15868` |
 | 0x030b (EG2 decay) | high word of `lScale` | WORD wave+0x1a | `0x1585b` |
 
+#### 2.4.3.2 Runtime decay key-follow reimplementation — `[M: field/town.mid]`, normalization `[I]`
+
+The parsing above has always been `[A]`. As of 2026-07-26 `src/engine/`
+also *applies* it: `dls.c` stores both rows into
+`Artic.eg1_decay_kf_tc`/`eg2_decay_kf_tc`, and `voice.c`'s
+`decay_tc_keyfollow` adds `kf * key / 128` timecents to the authored decay
+time at note-on. Higher notes decay faster.
+
+- **169 of `gm.dls`'s 235 instruments carry the `0x0207` row** (scales
+  −4800..+2400, median −3979; 29 also carry `0x030b`). The 66 that do not are
+  mostly synth leads, pads and SFX — including `008:080` Sine Wave and
+  `001:080` Square, which is why those otherwise-ideal measurement carriers
+  cannot be used to probe this (see `probes/35_decay_keyfollow.mid`). Of the
+  169, **92** pair it with a real (non-sentinel) decay and sustain < 10%,
+  i.e. a decay segment that actually runs to silence and is measurable.
+  Dropping the row made every one of those notes decay 3–5× too slowly —
+  which is every acoustic patch in the field corpus. Found by ear/
+  spectrogram on `field/town.mid` 25.0–26.7 s: a Steel-str.Gt chord (keys
+  59/63/68, authored decay 24.6 s, `kf` −4389) rings for the whole bar while
+  the reference fades, leaving its otherwise-correct CC1 vibrato bright
+  across the whole passage.
+- **Measured** (own fresh measurement, Hilbert band-envelope dB/s fit on
+  four partials of that chord, 25.30–26.65 s, against `field/town.flac`):
+  reference −13.4/−12.3/−10.7/−9.4 dB/s; this project before the change
+  −4.6/−4.2/−3.7/−2.3; after −13.3/−12.4/−10.8/−8.6. `field/town.mid`
+  render duration 80.25 s → 79.13 s against a 79.22 s reference.
+- **Cross-check on a second, independently measured instrument:** Piano 1
+  note 60 (`SPEC_GAPS.md` §15's own measured reference, −7.14 dB/s). Base
+  6386.5 tc = 40.0 s gives 2.50 dB/s with no key-follow; with it, 13.63 s =
+  **7.34 dB/s**. That resolves §15's open "still ~2.9× too slow" residual and
+  explains why `FITTED.md` Entry 1's global 2.85× decay multiplier fixed
+  note 60 and regressed every other key — 2^(1865/1200) = 2.945× *is* this
+  connection at note 60, frozen into a constant.
+- **Normalization — measured `[M: probe 35]`, partially settled.** The driver
+  stores the full-scale high word and its consumption code is unrecovered
+  (Part 5 `+0x13c`, `[O]`), so the divisor was `[I]` from DLS-1's own
+  KEYNUMBER convention. `probes/35_decay_keyfollow.mid` (Piano 1 and
+  Steel-str.Gt at keys 24–96, Vibraphone at 48/96, all sustain=0) against
+  `probe-results/35.flac` now measures it directly, by fitting each note's
+  decay in dB/s and regressing `log2(rate)` on key:
+
+  | section | measured d(log2 rate)/dkey | implied divisor | `/128` predicts | `/127` predicts |
+  |---|---|---|---|---|
+  | Piano 1 | 0.02604 | 127.3 | 0.02590 | 0.02611 |
+  | Steel-str.Gt | 0.02897 | 126.3 | 0.02857 | 0.02880 |
+  | Vibraphone | 0.03179 | 125.8 | 0.03125 | 0.03150 |
+
+  **Settled:** the source is the *absolute* key, not 60-relative. Both give
+  the same slope, but 60-relative predicts absolute rates ~2.9× off (e.g.
+  2.50 vs. 7.34 dB/s at Piano 1 note 60) and the reference matches the
+  absolute-key form to 3.5%. **Not settled:** `/127` vs. `/128`. The measured
+  divisor is 126.5 ± 0.8, which does not separate them (they differ by 0.8%
+  in slope and 1.4% in offset at key 96). `/128` ships, as the natural `>>7`
+  for integer code. This is the residual `[I]`.
+- **Decay *shape* — `[M: probe 35]`.** With the per-key duration correct, the
+  only remaining discrepancy is a single scale factor on the rate, uniform
+  across all 17 notes: the reference decays at **0.965×** this project's rate
+  (sd 0.005, three instruments, rates spanning 3.8–27 dB/s, no trend against
+  key or instrument). So the decay segment is "96.5 dB over `seconds`", not
+  the 100 dB S3.4.2's shared `exp_coef` assumes; shipped as
+  `DECAY_RATE_MULT = 0.965` (`voice.c`). Release is untouched — Part 5 S5.6's
+  70 ms fast-release still matches 100 dB. 96.5 ≈ 96.33 dB (a 16-bit floor)
+  is a *hypothesis only*, 1.4 sd from the measurement and not confirmed.
+- **Corpus effect:** mean spectral residual −24.55 → −28.18 dB on key-follow
+  alone, → −28.85 dB with the shape correction; mean envelope `r`
+  0.903 → 0.909. Regressions named in `FITTED.md` Entry 15.
+
 **Source = 5 (EG2):**
 
 | usDestination | action | dest field | VMA |

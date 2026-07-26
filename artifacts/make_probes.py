@@ -1603,6 +1603,102 @@ def p34_sfx_bank_identity():
     return _write_manifest("34_sfx_bank_identity.mid", tr, man)
 
 
+def p35_decay_keyfollow():
+    """EG1 decay-time key-follow: how fast does a note decay as a function of
+    KEY? Turns the one number this project inferred into a measurement.
+
+169 of gm.dls's 235 instruments carry a usSource=3 (KEYNUMBER) ->
+    usDestination=0x0207 (EG1 decay) connection -- SPEC.md S2.4.3's own
+    confirmed table -- and this project dropped all of them until 2026-07-26,
+    so every acoustic patch decayed 3-5x too slowly (found on field/town.mid:
+    a Steel-str.Gt chord that rings for the whole bar instead of fading).
+
+    **Why not the Sine/Square carriers probes 24/25/27 use.** Those probes
+    measure engine-wide laws (gain, pan) that apply to any patch, so they pick
+    the cleanest tone available. This one measures a PER-INSTRUMENT gm.dls
+    data row, so the instrument is not a free variable: `008:080` Sine Wave
+    authors no EG1 decay at all (sentinel, no sustain row -- it holds flat
+    until note-off, there is no decay segment to time), `001:080` Square and
+    `000:081` Saw author 3.1 s but with sustain 968/1000, so their decay
+    segment falls 0.28 dB and stops -- and none of the three carries the
+    key-follow row in the first place. The usable set is the 92 instruments
+    with the row AND a real decay AND sustain < 10%.
+
+    Timbre matters less here than it would for a pitch probe: EG1 is a
+    broadband multiplier and every region used below loops, so the sample
+    contributes no amplitude change of its own past loop entry and total RMS
+    in dB vs. time is a straight line whatever the harmonic content. Verified
+    against our own render: r^2 0.993-1.000 on all 17 notes, fitted decay
+    within 2-6% of the expected column below. Beating between partials adds
+    ripple, not slope bias.
+
+    What is now shipped but NOT measured is the NORMALIZATION. The driver
+    stores the high word of lScale (the full-scale timecent offset) and its
+    consumption code is unrecovered (`[O]`, SPEC.md Part 5 +0x13c), so the
+    per-note offset `kf*key/128` is DLS-1's own convention taken on faith. The
+    corpus prefers /128 over /127 by 0.13 dB, which is not a measurement.
+
+    Sections, all one instrument per section, sustain=0, held long enough that
+    the whole decay segment is visible, big gaps so each note decays into
+    silence uncontaminated:
+
+      A. **Piano 1** (program 0) at keys 24/36/48/60/72/84/96. Its own authored
+         decay is 6386.5 tc (40.0 s) with kf = -3979, so under /128 the decay
+         time should run 27.0 s (key 24) -> 6.1 s (key 96): a >4x span across
+         the section, far larger than any plausible measurement error. Fit
+         dB/s per note and the slope of log(decay_time) vs. key IS the
+         normalization: /128 predicts -3979/128 = -31.1 tc per key, /127
+         predicts -31.3, and a 60-relative reading predicts the same slope but
+         a decay time that crosses 40.0 s at key 60 instead of key 0. The
+         three differ in OFFSET, which is why the sweep needs low keys.
+      B. **Steel-str.Gt** (program 25), the instrument the field defect was
+         found on, at the same keys. Different base (5543.9 tc) and different
+         kf (-4389) -- so it cross-checks that the model is per-instrument
+         data and not a constant fitted to Piano 1.
+      C. **Vibraphone** (program 11, kf = -4800, the most extreme value the
+         file uses) at keys 48/72/96 -- 13.1 s down to 4.6 s. This is the
+         closest thing to a sine carrier that carries the connection at all:
+         near-sinusoidal, and the largest kf makes any normalization error
+         the most visible. The section to read if A and B disagree.
+         (`008:006` Coupled Hps. matches its kf on a 40.0 s base, a slightly
+         wider absolute span, but needs a GS Reset for the bank-8 select and
+         is a pluckier, less clean tone. Not used.)
+
+    All three carry eg1_sustain = 0, so the decay segment runs all the way to
+    silence and a straight-line dB/s fit measures it end to end.
+
+    Deliberately plain: velocity fixed at 100, no CC, no bend, no pedal, no
+    GS Reset (bank 0 programs need none). Nothing here should decay for the
+    same reason twice.
+    """
+    tr = Track()
+    clock = t(0.5)
+    man = ["# 35_decay_keyfollow.mid -- expected EG1 decay per note onset",
+           "# base_tc/kf are gm.dls art1 raw values; T = 2^((base_tc/65536 +"
+           " kf*key/128)/1200) seconds",
+           "# onset_seconds\tsection\tprogram\tkey\texpected_decay_s"]
+
+    def section(tag, program, base_tc, kf, keys, hold, gap):
+        nonlocal clock
+        tr.prog(clock, 0, program)
+        clock += t(0.05)
+        for key in keys:
+            secs = 2.0 ** ((base_tc / 65536.0 + kf * key / 128.0) / 1200.0)
+            tr.note(clock, t(hold), 0, key, 100)
+            man.append(f"{clock / TPS:.3f}\t{tag}\t{program}\t{key}\t{secs:.2f}")
+            clock += t(hold + gap)
+        clock += t(1.0)
+
+    # hold 8s: long enough to see the whole decay on the fast (high) keys and
+    # a clean straight-line dB/s fit on the slow (low) ones, without making
+    # the probe minutes long. The note is still held at note-off on low keys
+    # by design -- the decay segment is what is being measured, not release.
+    section("A_piano", 0, 418578432, -3979, (24, 36, 48, 60, 72, 84, 96), 8.0, 1.5)
+    section("B_steel_gt", 25, 363331584, -4389, (24, 36, 48, 60, 72, 84, 96), 8.0, 1.5)
+    section("C_vibraphone", 11, 409796608, -4800, (48, 72, 96), 8.0, 1.5)
+    return _write_manifest("35_decay_keyfollow.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -1610,7 +1706,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p19_prior_art, p20_voice_count, p21_steal_policy, p22_no_gs_reset,
           p23_rpn_tune, p24_gain_staging, p25_pan_law, p26_other_gains,
           p27_gain_curves, p28_expression_gate, p29_all_sound_off_gap,
-          p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity]
+          p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
+          p35_decay_keyfollow]
 
 
 def check(path):
