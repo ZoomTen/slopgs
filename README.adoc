@@ -114,3 +114,12 @@ differs to a degree :)
 * HueArme - Weekend
 * furmillion's unfinished Crystal Oscillator
 * flourish, town, onestop
+
+== How to work with this thing
+
+=== Files
+
+. `dist/gm.dls` - from your `C:\WINDOWS\system32`
+. `tests/*.mid` - anything you want to test.
+. `tests/*.flac` - you ought to provide the reference renderings, counterpart to their `.mid`
+. `artifacts/probe-results` - record the `artifacts/probes` MIDIs as FLACs there.
