@@ -17,7 +17,7 @@ residuals track compare.js closely but are not bit-identical to it.
 
 Needs numpy (requirements.txt) and ffmpeg.
 """
-import os, subprocess, sys, tempfile
+import os, subprocess, sys, tempfile, wave
 
 import numpy as np
 
@@ -27,19 +27,21 @@ RENDERER = os.environ.get("MSGS_RENDER", os.path.join(ROOT, "dist/msgs-render"))
 
 
 def mono_s16(path):
-    x = np.fromfile(path, dtype="<i2").astype(np.float64) / 32768.0
+    with wave.open(path, "rb") as w:
+        raw = w.readframes(w.getnframes())
+    x = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
     return x.reshape(-1, 2).mean(axis=1)
 
 
 def decode_ref(flac, tmp):
-    out = os.path.join(tmp, "ref.pcm")
+    out = os.path.join(tmp, "ref.wav")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", flac, "-ar", str(RATE),
-                    "-ac", "2", "-f", "s16le", out], check=True)
+                    "-ac", "2", "-f", "wav", out], check=True)
     return mono_s16(out)
 
 
 def render(mid, tmp):
-    out = os.path.join(tmp, "slop.pcm")
+    out = os.path.join(tmp, "slop.wav")
     subprocess.run([RENDERER, os.path.join(ROOT, "dist/gm.dls"), mid,
                     "0", "999999999", out], check=True, stdout=subprocess.DEVNULL)
     return mono_s16(out)

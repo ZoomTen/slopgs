@@ -9,10 +9,11 @@
  * (minus its leading <wasm> argument); this program produces the same JSON
  * format to stdout, suitable for parsing by analysis scripts:
  *
- *   msgs-render <dls> <smf|""> <loops> <max_frames> <out_pcm>
+ *   msgs-render <dls> <smf|""> <loops> <max_frames> <out_wav>
  *
- * <out_pcm> receives raw interleaved stereo signed-16-bit-LE PCM at the
- * synth's fixed 22050 Hz render rate. One JSON line goes to stdout.
+ * <out_wav> receives a canonical 44-byte-header WAV file wrapping
+ * interleaved stereo signed-16-bit-LE PCM at the synth's fixed 22050 Hz
+ * render rate. One JSON line goes to stdout.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,33 @@ static unsigned char *read_file(const char *path, uint32_t *len_out) {
     fclose(f);
     *len_out = (uint32_t)n;
     return buf;
+}
+
+/* Canonical 44-byte PCM WAV header, stereo 16-bit @ 22050 Hz. Written once
+ * as a zero-size placeholder before streaming render output, then rewritten
+ * in place once `frames` is known -- the render loop below doesn't know the
+ * total length until the synth reports it finished. */
+static void write_wav_header(FILE *f, unsigned long frames) {
+    uint32_t sample_rate = 22050, byte_rate = 22050 * 4;
+    uint32_t data_bytes = (uint32_t)frames * 4;
+    uint32_t riff_size = 36 + data_bytes;
+    uint32_t fmt_size = 16;
+    uint16_t audio_fmt = 1, channels = 2, block_align = 4, bits = 16;
+
+    fseek(f, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, f);
+    fwrite(&riff_size, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+    fwrite("fmt ", 1, 4, f);
+    fwrite(&fmt_size, 4, 1, f);
+    fwrite(&audio_fmt, 2, 1, f);
+    fwrite(&channels, 2, 1, f);
+    fwrite(&sample_rate, 4, 1, f);
+    fwrite(&byte_rate, 4, 1, f);
+    fwrite(&block_align, 2, 1, f);
+    fwrite(&bits, 2, 1, f);
+    fwrite("data", 1, 4, f);
+    fwrite(&data_bytes, 4, 1, f);
 }
 
 /* Inherited single-line JSON format from the legacy Node-based harness runner. */
@@ -184,7 +212,7 @@ int main(int argc, char **argv) {
         return selftest(argv[2], argv[3]);
     }
     if (argc != 6) {
-        fprintf(stderr, "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_pcm>\n"
+        fprintf(stderr, "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_wav>\n"
                         "       %s --selftest <dls> <smf>\n", argv[0], argv[0]);
         return 1;
     }
@@ -225,9 +253,10 @@ int main(int argc, char **argv) {
 
     FILE *out = fopen(out_path, "wb");
     if (!out) {
-        emit(1, init_ret, load_ret, 0, 0, "could not open out_pcm");
+        emit(1, init_ret, load_ret, 0, 0, "could not open out_wav");
         return 2;
     }
+    write_wav_header(out, 0); /* placeholder, patched below once total is known */
 
     static int16_t buf[CHUNK * 2]; /* stereo interleaved */
     unsigned long total = 0;
@@ -237,7 +266,7 @@ int main(int argc, char **argv) {
         if (n > 0) {
             if (fwrite(buf, 4, n, out) != n) {
                 fclose(out);
-                emit(1, init_ret, load_ret, total, truncated, "short write to out_pcm");
+                emit(1, init_ret, load_ret, total, truncated, "short write to out_wav");
                 return 2;
             }
             total += n;
@@ -246,6 +275,7 @@ int main(int argc, char **argv) {
         if (smf_is_finished()) break;
         if (total >= max_frames) { truncated = 1; break; }
     }
+    write_wav_header(out, total);
     fclose(out);
 
     emit(1, init_ret, load_ret, total, truncated, NULL);
