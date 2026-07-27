@@ -1351,29 +1351,38 @@ double voice_step_envelope(Voice *v) {
              * probe and a very slightly worse (further from reference)
              * corridor.mid duration (53.13s vs. this value's 52.57s against
              * a 52.43s reference) -- reverted, see report. */
-            /* ...and the same floor applied to the voice's AUDIBLE level
-             * (EG x its own gain) rather than to the bare normalized EG.
-             * SPEC.md S5.7 reads `+0x13c` -- the field the finish check at
-             * 0x19733 compares against its -80dB constant, and the field
-             * both steal comparators tie-break on -- as "the voice's live
-             * envelope level" in a log-domain (dB) format `[I]`; a dB
-             * accumulator that the note's own attenuation sum (S3.5/S3.10:
-             * velocity + region attenuation + CC7 + CC11 + master) is added
-             * into is the reading that makes the tie-break "quietest voice
-             * dies first" mean anything. Without this, a voice triggered at
-             * velocity 46 keeps a pool slot for the ~66dB its normalized EG
-             * still has to fall through AFTER it is already inaudible.
+            /* The bare EG, NOT the audible level. This used to also reap on
+             * `env_level * gain < AUDIBLE_FLOOR`, on SPEC.adoc S5.7's `[I]`
+             * reading of `+0x13c` (the field 0x19733 compares against its
+             * -80dB constant) as a gain-inclusive level. That reading is
+             * WRONG, and `0x19490` shows it directly: the amplitude EG is
+             * evaluated at `0x194aa`, stored to `+0x13c` at `[A:0x194da]`,
+             * and only THEN are the LFO term (`[A:0x194f0]`) and the
+             * CC7/expression term (`[A:0x19525]`) summed into the running
+             * total. `+0x13c` never sees them. The driver therefore cannot
+             * reap a voice for being momentarily quiet.
              *
-             * That is not cosmetic: on field/HueArme-Weekend.mid at t=23.9s
-             * the pool held 41 released voices, 20 of them below -40dB
-             * audible, and note-on's forced steal (S5.7, oldest-held-first)
-             * was evicting the two held Seashore (program 122) voices that
-             * carry the passage's noise wash -- 8dB missing in 400-1000Hz
-             * against the reference, visible as a hole in the compare
-             * page's spectrogram. */
-            if (v->env_level < 0.0005 ||
-                v->env_level * (v->gain_l > v->gain_r ? v->gain_l : v->gain_r)
-                    < AUDIBLE_FLOOR) {
+             * Ours could, and did. On field/Kot_and_A64-GENERAL_SERUM.mid at
+             * t=3.23s, four voices at env 0.95 -- fully sounding, just
+             * released -- were reaped the instant their note-off landed,
+             * because that segment's sampled gain was 7e-6 (CC11 passing
+             * through 0 on its way up from a gate). The whole release tail
+             * vanished and the mix went to digital silence for 75 ms, which
+             * is a score gap where the reference rings. The old one-pole gain
+             * smoother hid this by never letting gain reach 0; per-segment
+             * gain does not, so the latent bug became audible.
+             *
+             * What this loses: the reap used to also evict voices that are
+             * inaudible from their OWN attenuation (a velocity-46 note holds
+             * a slot for the ~66 dB its normalized EG still has to fall
+             * through). That was measured to matter on
+             * field/HueArme-Weekend.mid at t=23.9s -- 41 released voices, 20
+             * below -40dB audible, and note-on's forced steal evicting the
+             * two held Seashore voices carrying the passage's noise wash,
+             * 8 dB missing in 400-1000Hz. If that hole returns it needs the
+             * real 48+6 pool split (SPEC_GAPS #-- the reserve top-up), not a
+             * reap condition the driver does not have. */
+            if (v->env_level < 0.0005) {
                 v->env_level = 0.0;
                 v->active = 0;
                 v->env_stage = ENV_IDLE;
