@@ -52,6 +52,22 @@
     "msgs_is_finished", "msgs_midi", "memory",
   ];
 
+  // Cache Storage persists across page loads (unlike synthPromise below,
+  // which only dedupes fetches within one page's lifetime). Bump this name
+  // whenever msgs.wasm/gm.dls change content at the same URL, since nothing
+  // else here invalidates a stale cached entry.
+  const ASSET_CACHE_NAME = "slopgs-20260727";
+
+  async function cachedFetch(url) {
+    if (typeof caches !== "object") return fetch(url); // no Cache Storage (e.g. insecure context)
+    const cache = await caches.open(ASSET_CACHE_NAME);
+    const hit = await cache.match(url);
+    if (hit) return hit;
+    const resp = await fetch(url);
+    if (resp.ok) cache.put(url, resp.clone()).catch(() => {});
+    return resp;
+  }
+
   // ---------------------------------------------------------------------
   // Singleton synth: one wasm instance, one gm.dls load, shared by every
   // bg-sound element for the lifetime of the page. The ABI has no session
@@ -71,7 +87,7 @@
 
       let wasmBytes;
       try {
-        const resp = await fetch(WASM_URL);
+        const resp = await cachedFetch(WASM_URL);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         wasmBytes = await resp.arrayBuffer();
       } catch (err) {
@@ -103,7 +119,7 @@
       let dlsBytes;
       const dlsStart = performance.now();
       try {
-        const resp = await fetch(DLS_URL);
+        const resp = await cachedFetch(DLS_URL);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         dlsBytes = new Uint8Array(await resp.arrayBuffer());
       } catch (err) {
