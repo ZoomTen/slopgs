@@ -28,6 +28,10 @@ in this page via <code>msgs.wasm</code> + <code>gm.dls</code>. Per-item table be
       regression: "immediate pitch movement, step-shaped", expect: "gradual pitch movement" },
     { stem: "radio", from: "GENERAL SERUM by Kot & Abstract 64", tests: "aliasing and pitch range",
       regression: "(spectrogram mismatch)", expect: "spectrogram matches, iunno what else to say." },
+    { stem: "sine-gate", from: "Carve Your Own Path by Abstract 64 (Zumi's cover)", tests: "gating behavior",
+      regression: "all the notes crashing into each other", expect: "notes reasonably separating from each other" },
+    { stem: "sine2", from: "Carve Your Own Path by Abstract 64 (Zumi's cover)", tests: "gating behavior + expression + pitch bend",
+      regression: "same as sine-gate", expect: "same as sine-gate" },
   ];
   const items = TESTS.map((t) => ({
     title: t.stem,

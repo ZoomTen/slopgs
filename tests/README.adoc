@@ -27,4 +27,16 @@
 |(spectrogram mismatch)
 |spectrogram matches, iunno what else to say.
 
+|sine-gate
+|Carve Your Own Path by Abstract 64 (Zumi's cover)
+|gating behavior
+|all the notes crashing into each other
+|notes reasonably separating from each other
+
+|sine2
+|Carve Your Own Path by Abstract 64 (Zumi's cover)
+|gating behavior + expression + pitch bend
+|same as sine-gate
+|same as sine-gate
+
 |===
