@@ -15,7 +15,7 @@ behavior including all of its quirks and characteristics.
 Generated and non-generated analysis material. Don't treat this as residue,
 but as your primary experimental workspace.
 
-`SPEC.md`:: Directly analyzed from the driver this is sourced from. Use this as a proxy for checking the behavior of the original `swmidi.sys`.
+`SPEC.adoc`:: Directly analyzed from the driver this is sourced from. Use this as a proxy for checking the behavior of the original `swmidi.sys`.
 +
 Behavioral claims in there were implied by:
 +
@@ -26,12 +26,12 @@ Behavioral claims in there were implied by:
 * `[O]` open, to be resolved
 * `[F]` empirical fit, also to be resolved
 
-`SPEC_GAPS.md`:: Meant to document apparent discrepancies
+`SPEC_GAPS.adoc`:: Meant to document apparent discrepancies
 between what was implied by the driver code vs. what is actually
 observed.
 +
 Be wary, though, that some items may be the result of not actually
-implementing a certain feature of the `SPEC.md`.
+implementing a certain feature of the `SPEC.adoc`.
 
 `make_probes.py`:: Script to generate MIDIs that aim to test a
 specific aspect of the engine.
