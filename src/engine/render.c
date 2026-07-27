@@ -42,45 +42,38 @@
  * 27.8 ms with a 12.5 ms mean, half a segment, which is where a uniformly
  * placed note-off inside one lands.
  *
- * THE CORPUS SWEEP says 128 (5.8 ms), and 512 ships anyway. 63 items, mean
- * spectral residual / mean envelope r, against -31.1483 / 0.9238 for the
- * one-pole this replaces:
+ * THE CORPUS SWEEP says 128 (5.8 ms). 256 ships, splitting them. 63 items,
+ * mean spectral residual / mean envelope r / field-only dead, against
+ * -31.1483 / 0.9238 / 2260 ms for the one-pole this replaces, all measured
+ * AFTER the reap fix in voice_step_envelope (before it, a CC11 gate could
+ * delete live voices and every number here was contaminated):
  *
- *      128 fr   -31.1897 / 0.9249      the corpus optimum
- *      256 fr   -31.1552 / 0.9249      (one +10.5 dB outlier on probe 37)
- *      384 fr   -31.0757 / 0.9243
- *      512 fr   -30.9116 / 0.9227   <- ships, the directly-measured value
- *      768 fr   -30.1227 / 0.9219
- *     1024 fr   -29.3281 / 0.9160
+ *      128 fr   -31.1778 / 0.9251 / 2595 ms      the corpus optimum
+ *      256 fr   -31.1440 / 0.9252 / 2545 ms   <- ships
+ *      384 fr   -31.0694 / 0.9243 / 2525 ms
+ *      512 fr   -30.9013 / 0.9229 / 2460 ms      the directly-measured value
  *
- * THIS IS A DELIBERATE GATE FAILURE, recorded rather than papered over: by
- * CLAUDE.adoc's rule (targeted probe improves AND corpus mean does not regress)
- * 128 is what should ship, and 512 costs 0.24 dB of corpus mean. It ships
- * because three separate things say the corpus is the instrument that is wrong
- * here, not the value:
+ * 256 costs 0.004 dB of corpus mean -- flat -- and has the best envelope r of
+ * anything tested including the one-pole. It is also the best of any build on
+ * the gating tests this work started from: sine-gate -25.00 -> -27.61 (128
+ * gives -26.20, 512 gives -28.20), sine2 -25.50 -> -26.86.
  *
- *   - 512's mean is dragged down by exactly TWO sparse single-note probes,
- *     08_reverb +9.45 dB and 03_velocity +7.10, with nothing else above +3.04.
- *     Why those two move that far is NOT diagnosed -- it is the one piece of
- *     evidence that would settle this, and it is still owed.
- *   - 512 wins every item that exercises the gain path this models: 25_pan_law
- *     -12.17 dB, warm-echo -5.42, sine-gate -3.20, 32_ramp_shape -2.83,
- *     24_gain_staging -1.60, 46_noteoff_grid -1.52, 28_expression_gate -1.34,
- *     07_pan_volume -1.28.
- *   - on the dropout metric the ranking inverts: field-only `dead` totals are
- *     2260 ms for the one-pole, 3975 for 512, 5450 for 128. The corpus optimum
- *     is the WORST of the three at inventing digital silence the reference does
- *     not have, which the spectral mean does not see at all.
+ * The two sources disagree at all because we cannot match the reference's grid
+ * PHASE -- that is a property of the machine that recorded it. A note-off is
+ * misplaced by up to one segment in EITHER direction, so a short segment scores
+ * better partly by under-applying the mechanism rather than by being right.
  *
- * The two sources can disagree at all because we cannot match the reference's
- * grid PHASE -- that is a property of the machine that recorded it. A note-off
- * is misplaced by up to one segment in EITHER direction, so a short segment
- * scores better by under-applying the mechanism rather than by being right.
- * Note that the gating tests improve at every length tested, so what is in
- * question is how far to apply this, never whether.
- *
- * If a future capture pins the recorder's buffer size, set this to it. Do not
- * re-fit it against the corpus and call the result a measurement.
+ * WHAT IS STILL WRONG AT 512, and unexplained: 08_reverb +9.45 dB and
+ * 03_velocity +7.10 against the one-pole, with nothing else above +3.04. The
+ * reap fix changed both by exactly zero, so it is not that. The items that
+ * regress with segment length are decay-dominated -- those two plus
+ * 04_envelope +1.55 and 41_sustain_decay_curve +1.81 -- which points at the
+ * chord: we render a decay segment as a straight line between its endpoints,
+ * and a chord across 23 ms of a fast geometric decay sits measurably above the
+ * curve. If that is the whole story then the reference's effective segment is
+ * finer than probe 45's 23.5 ms and one of the two readings is wrong. Not
+ * settled. Chase it before moving this constant again -- and do not re-fit it
+ * against the corpus and call the result a measurement.
  *
  * Matches smf.c's SERVICE_BLOCK_FRAMES deliberately: same buffer, two halves of
  * one mechanism, and the sweep moved them together.
@@ -89,7 +82,7 @@
  * in that sweep the block ends the segment first, so the cap would be dead
  * code. Add it if the block ever grows past 1103 frames. */
 #ifndef GAIN_SEGMENT_FRAMES
-#define GAIN_SEGMENT_FRAMES (512u * RESAMPLE_FACTOR)
+#define GAIN_SEGMENT_FRAMES (256u * RESAMPLE_FACTOR)
 #endif
 
 /* SUPERSEDED 2026-07-28, kept only as the record of what this replaced.

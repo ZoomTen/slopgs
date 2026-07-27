@@ -241,10 +241,10 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
  * which is the early release probe 46 measures and which nothing in the
  * envelope code could explain. Matches render.c's GAIN_SEGMENT_FRAMES
  * deliberately -- same buffer, two halves of one mechanism; see that macro for
- * the corpus sweep behind the length, and for why 512 ships even though the
- * corpus prefers 128. */
+ * the corpus sweep behind the length, and for what is still unexplained about
+ * it. */
 #ifndef SERVICE_BLOCK_FRAMES
-#define SERVICE_BLOCK_FRAMES (512u * RESAMPLE_FACTOR)
+#define SERVICE_BLOCK_FRAMES (256u * RESAMPLE_FACTOR)
 #endif
 
 static int is_note_event(const Event *e) {
