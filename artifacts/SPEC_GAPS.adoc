@@ -1642,9 +1642,33 @@ never let gain reach 0, so the condition could not fire.
 **What it gives up:** the reap of voices inaudible from their OWN attenuation,
 which was measured to matter on `HueArme-Weekend` at t=23.9s (41 released
 voices, 20 below -40 dB audible, the two held Seashore voices evicted, 8 dB
-missing in 400-1000 Hz). HueArme moves -18.20 -> -17.93. If that hole returns
-properly it needs the real 48+6 pool split, not a reap condition the driver does
-not have.
+missing in 400-1000 Hz).
+
+**That concern did not survive measurement, and the claim attached to it was
+wrong twice over.** At the shipped 256-frame segment HueArme scores -19.35
+against -19.10 for the pre-segment build -- better, not worse; the -17.93
+reading that prompted the worry was taken at a 512-frame segment and wrongly
+blamed on the reap. And the remedy named at the time -- "it needs the real 48+6
+pool split" -- was false: that split is implemented and has been (`voice.c`'s
+`in_reserve` bookkeeping, `find_free_primary`/`find_free_reserve`, both S5.7
+steal comparators, `topup_reserve`'s Branch A and B, and S5.3 recycling that
+always returns to primary). The statement is corrected here rather than left
+standing in the commit that introduced it.
+
+What IS a stand-in is the top-up CADENCE, and that `[O]` is now closed:
+`TopUpReserve` runs at `[A:0x12be7]` once per `0x12bd6`, which runs once per
+`0x13054` `[A:0x130af]`, which renders one KS buffer -- once per service block,
+with the driver allocating 1024-frame buffers `[A:0x184c0]`. Wired up at that
+cadence the model breaks the probe xref:SPEC.adoc#s5-5[S5.5] bounds it with.
+Corpus mean / `20_voice_count`: 256 frames -31.0087 / -17.25, 1024 frames
+-31.1163 / -22.95, the fitted 2048 -31.1440 / -24.14, pre-segment build
+-31.1483 / -24.13. The recovered cadence is therefore not usable as one, which
+means something else in Branch B is wrong. Likeliest suspect: `need`. A voice
+Branch B marks stays `active` while it drains, so it never reduces
+`reserve_free`, and the next call recomputes the same shortfall and marks
+another batch. If the driver increments its reserveCount at MARK time rather
+than at recycle time, one batch per saturation event falls out at any cadence,
+which is what S5.5's measurement shows. Untested -- next step on this item.
 
 [#item22]
 == CC121 (Reset All Controllers) does not reset Channel Volume -- RESOLVED 2026-07-26 by `[M: probe 37]`, SHIPPED

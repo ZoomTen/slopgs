@@ -946,8 +946,22 @@ static void start_release(Voice *v, int fast) {
  * TOPUP_RESERVE_COUNT over an entire saturated 8-second run. That only holds
  * if a top-up cannot fire again until the batch it marked has drained and
  * been recycled -- so the period is at least the ~70ms fast-release time.
- * The real 0x13054 timer period is not recovered anywhere in SPEC.md ([O]),
- * so this is fitted, not derived; the knob below is deliberate. */
+ * The real period IS now recovered, and it refutes itself. TopUpReserve runs
+ * at `[A:0x12be7]`, once per 0x12bd6, which runs once per 0x13054
+ * `[A:0x130af]`, which renders one KS buffer -- so the driver's true cadence
+ * is once per service block, and the driver allocates 1024-frame buffers
+ * `[A:0x184c0]`. Wired up at that cadence this model breaks the very probe
+ * S5.5 bounds it with. Measured, corpus mean / 20_voice_count residual:
+ * 256 frames (our block) -31.0087 / -17.25, 1024 (the driver's buffer)
+ * -31.1163 / -22.95, this value -31.1440 / -24.14, against -31.1483 / -24.13
+ * for the pre-segment build. So the recovered cadence is not usable AS a
+ * cadence, which means something else in Branch B is wrong -- the likeliest
+ * suspect is `need`: a voice Branch B marks stays `active` while it drains,
+ * so it never reduces reserve_free, and the next call recomputes the same
+ * shortfall and marks another batch. The driver's own reserveCount may be
+ * incremented at MARK time rather than at recycle time, which would make one
+ * batch per saturation event fall out naturally at any cadence. Not tested.
+ * Until it is, this stays fitted, and the knob below is deliberate. */
 #ifndef TOPUP_INTERVAL_FRAMES
 #define TOPUP_INTERVAL_FRAMES (2048 * RESAMPLE_FACTOR) /* ~92.9ms */
 #endif
@@ -1379,9 +1393,13 @@ double voice_step_envelope(Voice *v) {
              * field/HueArme-Weekend.mid at t=23.9s -- 41 released voices, 20
              * below -40dB audible, and note-on's forced steal evicting the
              * two held Seashore voices carrying the passage's noise wash,
-             * 8 dB missing in 400-1000Hz. If that hole returns it needs the
-             * real 48+6 pool split (SPEC_GAPS #-- the reserve top-up), not a
-             * reap condition the driver does not have. */
+             * 8 dB missing in 400-1000Hz. Measured after the fact at the
+             * shipped 256-frame segment, that hole does NOT return: HueArme
+             * scores -19.35 against -19.10 for the one-pole build, i.e.
+             * better. (An earlier -17.93 reading was taken at a 512-frame
+             * segment and wrongly blamed on this change.) If it ever does
+             * return, the fix is in the reserve top-up, not in a reap
+             * condition the driver does not have. */
             if (v->env_level < 0.0005) {
                 v->env_level = 0.0;
                 v->active = 0;
