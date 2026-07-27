@@ -1658,17 +1658,50 @@ standing in the commit that introduced it.
 What IS a stand-in is the top-up CADENCE, and that `[O]` is now closed:
 `TopUpReserve` runs at `[A:0x12be7]` once per `0x12bd6`, which runs once per
 `0x13054` `[A:0x130af]`, which renders one KS buffer -- once per service block,
-with the driver allocating 1024-frame buffers `[A:0x184c0]`. Wired up at that
-cadence the model breaks the probe xref:SPEC.adoc#s5-5[S5.5] bounds it with.
-Corpus mean / `20_voice_count`: 256 frames -31.0087 / -17.25, 1024 frames
--31.1163 / -22.95, the fitted 2048 -31.1440 / -24.14, pre-segment build
--31.1483 / -24.13. The recovered cadence is therefore not usable as one, which
-means something else in Branch B is wrong. Likeliest suspect: `need`. A voice
-Branch B marks stays `active` while it drains, so it never reduces
-`reserve_free`, and the next call recomputes the same shortfall and marks
-another batch. If the driver increments its reserveCount at MARK time rather
-than at recycle time, one batch per saturation event falls out at any cadence,
-which is what S5.5's measurement shows. Untested -- next step on this item.
+with the driver allocating 1024-frame buffers `[A:0x184c0]`.
+
+The first attempt to use it failed and the reason was instructive. Wired up at
+that cadence the model collapsed: probe `20_voice_count` -24.13 -> -17.25,
+corpus mean -31.0087. The suspect recorded at the time was `need` -- that a
+voice Branch B marks stays `active`, never reduces `reserve_free`, and lets the
+next call mark another batch. **That was wrong.** `[A:0x12b6a]` reads:
+
+  esi = (int16)dev->+0xf52 (6); esi -= dev->+0x1b8 (reserveCount)
+  Branch A: pop primary (+0x1a8) -> push reserve (+0x1b4), incl +0x1b8
+  Branch B: 0x12426 (symmetric steal) -> 0x19aa4 (ScheduleFastRelease), dec esi
+
+Only Branch A moves the count. The driver recomputes the same shortfall exactly
+as we do, so the structure was never the difference.
+
+**The difference was the drain time, and `FAST_RELEASE_S` was wrong by 5x.**
+SPEC.adoc S5.6 reads the `0x46` in `0x19834` as 70 ms. It is not milliseconds:
+`0x19aa4` passes the SAMPLE RATE (`[A:0x19acd]`, device+0x0 = 22050 from
+`[A:0x12b3e]`) and `0x19834` does `div $0x46` on it, clamping the segment to
+rate/70 SAMPLES = 315 = 14.29 ms. At 70 ms a marked batch cannot drain before
+the next top-up call and every call marks another; at 14.29 ms it nearly can.
+
+Corrected, corpus mean / `20_voice_count`:
+
+[options="header"]
+|===
+| build | mean residual | 20_voice_count
+| fast 70 ms, topup 2048 (was shipped) | -31.1440 | -24.14
+| fast 14.29 ms, topup 2048 | **-31.1584** | -24.14
+| fast 14.29 ms, topup 256 (true cadence) | -31.1497 | -24.00
+| fast 70 ms, topup 256 | -31.0087 | -17.25
+|===
+
+The clamp correction ships. The true cadence does NOT, yet: `cli.c --selftest`
+asserts S5.5's `[M]` invariant directly and reports 43 of 48 voices surviving 80
+held note-ons instead of 48. One batch too many is still marked, because 14.29
+ms of drain does not fit inside an 11.6 ms block.
+
+The driver's does fit, and `[A:0x197dc]` says why: `0x19834` clamps a duration
+that has ALREADY been scaled by the voice's current level, and Branch B's
+comparator picks the QUIETEST released voice first -- so the voices it marks
+drain in a fraction of the clamp. **Implementing that level scaling is the
+remaining step on this item**, and the thing to do before touching the cadence
+again.
 
 [#item22]
 == CC121 (Reset All Controllers) does not reset Channel Volume -- RESOLVED 2026-07-26 by `[M: probe 37]`, SHIPPED

@@ -274,10 +274,32 @@ static double lfo_freq_from_tc(int32_t tc) {
 #define RELEASE_FLOOR_S 0.060
 #endif
 
-/* The fast/choke-release time-constant clamp, SPEC.md S5.6's measured 70.0ms
- * figure (see the file header comment above). Overridable -D. */
+/* The fast/choke-release duration clamp, `[A:0x1987f]`. Read as 70 ms from
+ * SPEC.adoc S5.6, which is what the 0x46 in `0x19834` looks like at a glance.
+ * It is not milliseconds: `0x19aa4` passes the SAMPLE RATE as the argument
+ * (`[A:0x19acd]`, device+0x0 = 22050 from `[A:0x12b3e]`), and `0x19834` does
+ * `div $0x46` on it, clamping the segment duration to rate/70 SAMPLES = 315 at
+ * 22050 = 14.29 ms. A fifth of what we had.
+ *
+ * That mattered well beyond the choke itself. voice_topup_reserve's Branch B
+ * marks voices for this release and does NOT decrement the shortfall it is
+ * working against (`[A:0x12b6a]`: only Branch A touches +0x1b8), so the next
+ * call recomputes the same shortfall -- and if a marked batch cannot drain and
+ * be recycled before that call, every call marks another batch until the pool
+ * is gone. At 70 ms it could not, which is why the top-up cadence had to be
+ * fitted to a slow ~93 ms period instead of the driver's own once-per-buffer.
+ * At 14.29 ms it drains inside one block: probe 20_voice_count at the true
+ * cadence scores -24.00 with this value against -17.25 with 70 ms, restoring
+ * S5.5's measured "exactly one batch per saturation".
+ *
+ * NOT the whole story: `0x19834` clamps a duration that `0x197dc`'s formula
+ * already scaled by the voice's current level, so the driver's fast release is
+ * shorter still for a quiet voice. We apply the clamp only. Probe 18's
+ * reference choke falls (90%->10%) measure 30-52 ms against our 67-96 ms at
+ * 70 ms; that measurement is contaminated by the closed hat sounding through
+ * it, so it bounds the direction rather than the value. Overridable -D. */
 #ifndef FAST_RELEASE_S
-#define FAST_RELEASE_S 0.070
+#define FAST_RELEASE_S (1.0 / 70.0)
 #endif
 
 /* Audible-level floor for release finish detection, linear. GAIN_CEILING
@@ -961,7 +983,26 @@ static void start_release(Voice *v, int fast) {
  * shortfall and marks another batch. The driver's own reserveCount may be
  * incremented at MARK time rather than at recycle time, which would make one
  * batch per saturation event fall out naturally at any cadence. Not tested.
- * Until it is, this stays fitted, and the knob below is deliberate. */
+ * The `need` suspect above was WRONG: `[A:0x12b6a]` shows Branch B never
+ * touching +0x1b8 either, so the driver recomputes the same shortfall exactly
+ * as we do. What differs is the drain time -- FAST_RELEASE_S was 70 ms where
+ * the driver's clamp is rate/70 samples = 14.29 ms (see that macro), so our
+ * marked batch could not clear before the next call and cascaded.
+ *
+ * Correcting the clamp gets the true once-per-block cadence most of the way
+ * back: probe 20_voice_count goes -17.25 -> -24.00 and the corpus mean
+ * -31.0087 -> -31.1497. It is still not right. cli.c's --selftest, which
+ * asserts S5.5's `[M]` invariant directly, reports 43 of 48 voices surviving
+ * 80 held note-ons instead of 48: one batch too many is still being marked,
+ * because 14.29 ms of drain does not fit inside an 11.6 ms block.
+ *
+ * The driver's does fit, and `[A:0x197dc]` says why: `0x19834` clamps a
+ * duration that has ALREADY been scaled by the voice's current level, and
+ * Branch B's comparator (`0x12426`) picks the QUIETEST released voice first --
+ * so the voices it marks drain in a fraction of the clamp. Implementing that
+ * level scaling is the remaining step, and is the thing to do before touching
+ * this cadence again. Until then it stays at the fitted period, which with the
+ * corrected clamp scores -31.1584 / -24.14, the best of anything measured. */
 #ifndef TOPUP_INTERVAL_FRAMES
 #define TOPUP_INTERVAL_FRAMES (2048 * RESAMPLE_FACTOR) /* ~92.9ms */
 #endif

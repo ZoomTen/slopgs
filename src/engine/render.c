@@ -75,14 +75,14 @@
  * settled. Chase it before moving this constant again -- and do not re-fit it
  * against the corpus and call the result a measurement.
  *
- * Matches smf.c's SERVICE_BLOCK_FRAMES deliberately: same buffer, two halves of
- * one mechanism, and the sweep moved them together.
+ * Defaults to SERVICE_BLOCK_FRAMES (voice.h) rather than carrying its own
+ * number: it is the same buffer, and the sweep moved them together.
  *
  * ponytail: no separate knob for the driver's own 50 ms cap -- at every length
  * in that sweep the block ends the segment first, so the cap would be dead
  * code. Add it if the block ever grows past 1103 frames. */
 #ifndef GAIN_SEGMENT_FRAMES
-#define GAIN_SEGMENT_FRAMES (256u * RESAMPLE_FACTOR)
+#define GAIN_SEGMENT_FRAMES SERVICE_BLOCK_FRAMES
 #endif
 
 /* SUPERSEDED 2026-07-28, kept only as the record of what this replaced.

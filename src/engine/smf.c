@@ -233,19 +233,13 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
 #define SMF_BANKPROG_LOOKAHEAD 1
 #endif
 
-/* Audio service block, SPEC.adoc S6.6 / `[A:0x13054]`. The driver renders one
+/* The service block, SPEC.adoc S6.6 / `[A:0x13054]`. The driver renders one
  * audio buffer per call and drains EVERY event due anywhere inside that buffer
  * before rendering a single sample of it -- `0x12bd6` is called with
  * `pos + nframes` `[A:0x130a3]`-`[A:0x130af]`, not with `pos`. That one fact is
  * what makes a note-off take effect from the START of the block containing it,
  * which is the early release probe 46 measures and which nothing in the
- * envelope code could explain. Matches render.c's GAIN_SEGMENT_FRAMES
- * deliberately -- same buffer, two halves of one mechanism; see that macro for
- * the corpus sweep behind the length, and for what is still unexplained about
- * it. */
-#ifndef SERVICE_BLOCK_FRAMES
-#define SERVICE_BLOCK_FRAMES (256u * RESAMPLE_FACTOR)
-#endif
+ * envelope code could explain. Length is SERVICE_BLOCK_FRAMES (voice.h). */
 
 static int is_note_event(const Event *e) {
     if (e->kind != EKIND_MIDI) return 0;

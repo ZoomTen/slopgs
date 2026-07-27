@@ -27,6 +27,16 @@
  * cadence exists at all. */
 #define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
 
+/* Audio service block: the driver renders one KS buffer per call, drains that
+ * whole buffer's events before rendering a sample of it, re-aims each voice's
+ * amplitude ramp at most once per segment within it, and runs the reserve
+ * top-up once per call. Four things on one clock, so one definition -- same
+ * reason LFO_UPDATE_FRAMES lives here. See render.c's GAIN_SEGMENT_FRAMES for
+ * the sweep behind the length and for what is still unexplained about it. */
+#ifndef SERVICE_BLOCK_FRAMES
+#define SERVICE_BLOCK_FRAMES (256u * RESAMPLE_FACTOR)
+#endif
+
 /* RESAMPLE_FACTOR is an INTEGER multiplier, never a rate ratio. Writing
  * ((double)48000/(double)BASE_RATE) here does not give you a 48kHz engine, it
  * gives you a silently detuned one: RENDER_RATE becomes a double, every
