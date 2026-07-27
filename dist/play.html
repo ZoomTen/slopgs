@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>slopgs -- play a MIDI file</title>
+<link rel="stylesheet" href="compare.css">
+</head>
+<body>
+<h1>play a MIDI file</h1>
+<p>Pick a local <code>.mid</code> file and play it here via <code>bg-sound2.js</code> (<code>msgs.wasm</code> + <code>gm.dls</code>).</p>
+<p>
+  <input type="file" id="file" accept=".mid,.midi,audio/midi">
+  <button id="stop" disabled>stop</button>
+  <label><input type="checkbox" id="loop" checked> loop</label>
+</p>
+<p id="status"></p>
+<script src="bg-sound2.js"></script>
+<script>
+(() => {
+  const fileInput = document.getElementById("file");
+  const stopButton = document.getElementById("stop");
+  const loopBox = document.getElementById("loop");
+  const status = document.getElementById("status");
+  let bgSound = null;
+  let objectUrl = null;
+
+  function stop() {
+    if (bgSound) {
+      bgSound.parentElement && bgSound.parentElement.removeChild(bgSound);
+      bgSound = null;
+    }
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      objectUrl = null;
+    }
+    stopButton.disabled = true;
+  }
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    stop();
+    objectUrl = URL.createObjectURL(file);
+    bgSound = document.createElement("bg-sound");
+    bgSound.addEventListener("bg-sound-error", (e) => {
+      status.textContent = `error: ${e.detail}`;
+    });
+    bgSound.src = objectUrl;
+    bgSound.loop = loopBox.checked ? "-1" : "1";
+    status.textContent = `playing ${file.name}`;
+    document.body.appendChild(bgSound);
+    stopButton.disabled = false;
+  });
+
+  stopButton.addEventListener("click", () => {
+    status.textContent = "stopped";
+    stop();
+  });
+})();
+</script>
+</body>
+</html>
