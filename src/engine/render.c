@@ -20,7 +20,63 @@
 #include "render.h"
 #include "voice.h"
 
-/* [F:fitted] -- Per-sample one-pole gain smoothing, SPEC.md S6.6: Part 6's own reverse
+/* Amplitude segment length, SPEC.adoc S6.6 / `[A:0x18fba]`. The driver renders
+ * each voice in segments of `min(next envelope change, device->+0x18, buffer
+ * end)`, samples envelope x gain at the segment's END (`[A:0x19720]`), and
+ * ramps the applied amplitude linearly to it across the segment
+ * (`[A:0x190c8]`). Its own cap is `(rate + 19) / 20` = 1103 frames = 50.0 ms at
+ * 22050 `[A:0x128f9]`, but the cap is never what binds: the driver's buffers
+ * are 0x1000 bytes = 1024 frames `[A:0x184c0]` and the per-call frame count
+ * comes from the KS descriptor above it (`[A:0x181fa]`, SPEC.adoc open question
+ * #2), so in practice the buffer ends the segment first.
+ *
+ * The LENGTH is therefore `[F:fitted]`, not recovered -- it cannot be, because
+ * it was set by the capture machine's audio buffering rather than by anything
+ * in the binary. Two sources disagree about it and both are reported here
+ * rather than one being quietly dropped:
+ *
+ * DIRECT MEASUREMENT says ~512 frames (23.2 ms). Probe 45's ten sub-segment
+ * releases give 23.6/23.6/23.7/23.5/23.4 and 23.5/23.5/23.6/23.5/23.7 ms, sd
+ * 0.1 over a 52x level range; probe 44's four short-release patches imply
+ * 24-28 ms; probe 46's note-off sweep spreads its early-release start over
+ * 27.8 ms with a 12.5 ms mean, half a segment, which is where a uniformly
+ * placed note-off inside one lands.
+ *
+ * THE CORPUS SWEEP says 128 (5.8 ms), and that is what ships. 63 items,
+ * mean spectral residual / mean envelope r, against -31.1483 / 0.9238 for the
+ * one-pole this replaces:
+ *
+ *      128 fr   -31.1897 / 0.9249   <- ships, 23 items better, 22 worse
+ *      256 fr   -31.1552 / 0.9249      (one +10.5 dB outlier on probe 37)
+ *      384 fr   -31.0757 / 0.9243
+ *      512 fr   -30.9116 / 0.9227      the directly-measured value
+ *      768 fr   -30.1227 / 0.9219
+ *     1024 fr   -29.3281 / 0.9160
+ *
+ * They disagree because we cannot match the reference's grid PHASE -- it is a
+ * property of the machine that recorded it. A note-off is misplaced by up to
+ * one segment in EITHER direction against the reference, so the corpus prefers
+ * a segment short enough to keep that error small over one that is the right
+ * length in the wrong place. The gating tests improve at every length tested
+ * (sine-gate -25.00 -> -26.20, sine2 -25.50 -> -27.89 at 128), so the mechanism
+ * is not in question here; only how far to apply it is.
+ *
+ * If a future capture ever pins the recorder's buffer size, set this to it and
+ * accept the corpus cost -- -D is one flag. Do not re-fit it against the
+ * corpus and call the result a measurement.
+ *
+ * Matches smf.c's SERVICE_BLOCK_FRAMES deliberately: same buffer, two halves of
+ * one mechanism, and the sweep moved them together.
+ *
+ * ponytail: no separate knob for the driver's own 50 ms cap -- at every length
+ * in that sweep the block ends the segment first, so the cap would be dead
+ * code. Add it if the block ever grows past 1103 frames. */
+#ifndef GAIN_SEGMENT_FRAMES
+#define GAIN_SEGMENT_FRAMES (128u * RESAMPLE_FACTOR)
+#endif
+
+/* SUPERSEDED 2026-07-28, kept only as the record of what this replaced.
+ * [F:fitted] -- Per-sample one-pole gain smoothing, SPEC.adoc S6.6: Part 6's own reverse
  * engineering confirms gain is NOT applied as an instant per-block jump --
  * "active phase step are each held in a coarse ramp accumulator ... a
  * linear-ramp smoothing mechanism operating on [gain]" (S6.6). The exact
@@ -53,10 +109,15 @@
  * at BASE_RATE would be 0.003772156967). Dividing also keeps factor 1
  * bit-identical to the build this constant was verified in, which recomputing
  * would not. Recompute as 1 - exp(-1/(0.012 * RENDER_RATE)) if tau is ever
- * re-fit against a reference. */
-#ifndef GAIN_SMOOTH_ALPHA
-#define GAIN_SMOOTH_ALPHA (0.003780968318281238 / RESAMPLE_FACTOR)
-#endif
+ * re-fit against a reference.
+ *
+ * The one-pole stood in for a ramp SPEC.adoc said existed but whose mechanism was
+ * unrecovered. The mechanism is now recovered (GAIN_SEGMENT_FRAMES above), so
+ * the stand-in is gone. Its stated job -- keeping GENERAL_SERUM's ~7-11 ms
+ * literal-0 CC11 blips from truncating the output to exact zero -- the real
+ * thing does better: a controller value is not read at all until the segment
+ * boundary, so a blip shorter than one segment cannot reach the output even in
+ * principle. */
 
 /* Sub-block modulation granularity, SPEC.md LFO section `[M: probe 06]`:
  * render_frames is otherwise called once per MIDI-event-free chunk (smf.c
@@ -83,13 +144,60 @@ static int16_t sat_add_i16(int32_t a, int32_t b) {
     return (int16_t)s;
 }
 
-static void render_voice(Voice *v, int16_t *out, uint32_t frames) {
+static void render_voice(Voice *v, int16_t *out, uint32_t frames, uint32_t block_left) {
+    /* Clip the voice into this call the way the driver clips it into the
+     * buffer: a note-on dispatched at the block top still starts on its own
+     * sample. See Voice::start_delay. */
+    if (v->start_delay) {
+        if (v->start_delay >= frames) { v->start_delay -= frames; return; }
+        out += (uint32_t)v->start_delay * 2u;
+        frames -= v->start_delay;
+        block_left -= v->start_delay;
+        v->start_delay = 0;
+    }
     uint32_t sample_end_q12 = (uint32_t)v->sample_end_s << 12;
     uint32_t loop_len_q12 = (uint32_t)v->loop_len_s << 12;
     int32_t sample_count = v->wave->sample_count;
     const int16_t *samples = v->wave->samples;
 
     for (uint32_t i = 0; i < frames && v->active; i++) {
+        if (v->amp_left == 0) {
+            /* Re-aim: start a new amplitude segment. SPEC.adoc S6.6 /
+             * `[A:0x18fba]`. The envelope is advanced across the WHOLE segment
+             * first and its value at the far end is the ramp target -- the
+             * driver evaluates it as a closed-form function of the segment's
+             * end time (`[A:0x19720]`), and ours is incremental, so stepping it
+             * ahead is the same thing. That look-ahead is the mechanism, not a
+             * shortcut: it is why a note-off dispatched into an already-running
+             * segment is not heard until the segment's start. */
+            uint32_t seg = GAIN_SEGMENT_FRAMES;
+            uint32_t next = voice_env_frames_to_change(v);
+            if (next < seg) seg = next;
+            /* ...and never past the end of this service block, the way the
+             * driver's segment is clamped to the buffer end `[A:0x196de]`.
+             * Without this a segment shortened by an attack boundary knocks
+             * every later one out of block alignment, and the envelope
+             * look-ahead then runs past events that have not been dispatched
+             * yet. */
+            if (block_left < seg) seg = block_left;
+            if (seg == 0) seg = 1;
+
+            double env_end = v->env_level;
+            for (uint32_t k = 0; k < seg; k++) env_end = voice_step_envelope(v);
+            /* voice_step_envelope clears `active` the moment the envelope hits
+             * its finish floor. Hold the voice open for the rest of the segment
+             * so the ramp it is already committed to actually lands on zero --
+             * that landing IS the reference's straight-line release. */
+            v->amp_retire = !v->active;
+            v->active = 1;
+
+            v->gain_l = v->gain_l_target;
+            v->gain_r = v->gain_r_target;
+            v->amp_step_l = (env_end * v->gain_l - v->amp_l) / (double)seg;
+            v->amp_step_r = (env_end * v->gain_r - v->amp_r) / (double)seg;
+            v->amp_left = seg;
+        }
+
         /* SPEC.md S6.6/S6.4.1: phase step is a ramp accumulator, not a
          * direct write (see voice_update_pitch / RAMP_HORIZON_FRAMES in
          * voice.c for the measurement behind the fixed-duration linear slew
@@ -131,16 +239,23 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames) {
         int32_t tap1 = samples ? samples[idx1] : 0;
         int32_t interp = (tap0 * (4096 - frac) + tap1 * frac) >> 12;
 
-        double env = voice_step_envelope(v);
-        double sample = (double)interp * env;
-
-        v->gain_l += (v->gain_l_target - v->gain_l) * GAIN_SMOOTH_ALPHA;
-        v->gain_r += (v->gain_r_target - v->gain_r) * GAIN_SMOOTH_ALPHA;
-        int32_t out_l = (int32_t)(sample * v->gain_l);
-        int32_t out_r = (int32_t)(sample * v->gain_r);
+        /* One linear step of the segment's amplitude ramp. Envelope and gain
+         * are NOT applied separately here: the driver sums them into a single
+         * attenuation, converts that to linear once (`[A:0x190dc]`), and ramps
+         * the product -- which is why its short releases are straight lines in
+         * amplitude rather than the envelope's own curve. */
+        v->amp_l += v->amp_step_l;
+        v->amp_r += v->amp_step_r;
+        int32_t out_l = (int32_t)((double)interp * v->amp_l);
+        int32_t out_r = (int32_t)((double)interp * v->amp_r);
 
         out[i * 2 + 0] = sat_add_i16(out[i * 2 + 0], out_l);
         out[i * 2 + 1] = sat_add_i16(out[i * 2 + 1], out_r);
+
+        if (--v->amp_left == 0 && v->amp_retire) {
+            v->active = 0;
+            v->amp_retire = 0;
+        }
 
         pos += v->phase_step;
         if (pos >= sample_end_q12) {
@@ -182,7 +297,7 @@ void render_frames(int16_t *out, uint32_t frames) {
         for (int vi = 0; vi < NUM_VOICES; vi++) {
             Voice *v = &g_voices[vi];
             if (v->active && v->wave) {
-                render_voice(v, out + (uint32_t)done * 2, chunk);
+                render_voice(v, out + (uint32_t)done * 2, chunk, frames - done);
             }
         }
         voice_ramp_tick(chunk); /* retire pitch ramps whose horizon elapsed

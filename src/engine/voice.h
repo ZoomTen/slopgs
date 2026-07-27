@@ -105,10 +105,39 @@ typedef struct Voice {
     int32_t loop_start_s, loop_len_s; /* samples; loop_len_s==0 => one-shot */
     int32_t sample_end_s;             /* one-shot end / loop end, samples */
 
-    double gain_l, gain_r; /* CURRENTLY-APPLIED gain, smoothed towards the
-                               target every output sample by render.c (see
-                               GAIN_SMOOTH_ALPHA there) -- never written
-                               directly outside voice_note_on's initial snap */
+    /* Frames this voice must wait before it produces anything, counted from the
+     * start of the render call it was created in. The driver dispatches a whole
+     * buffer's events before rendering a sample of it, but each voice carries
+     * its own start timestamp and the renderer clips it into the buffer
+     * (`[A:0x19653]`-`[A:0x1967d]`) -- so a note-on lands on its exact sample
+     * even though its EVENT was handled at the buffer top. This is that clip.
+     * Without it note-ons come out as early as note-offs, which the reference
+     * plainly does not do. */
+    uint32_t start_delay;
+
+    double gain_l, gain_r; /* gain in force for the CURRENT amplitude segment:
+                               gain_*_target sampled at the segment boundary and
+                               held for its duration, since the driver's mixer
+                               only re-reads the summed attenuation when it
+                               re-aims a ramp `[A:0x19490]`. Read by
+                               voice_step_envelope's audible-level finish test */
+
+    /* Amplitude ramp segment, SPEC.adoc S6.6 / `[A:0x18fba]`. The driver samples
+     * envelope x gain ONCE, at the END of each segment, and the mixer ramps the
+     * applied amplitude linearly (in the amplitude domain, `[A:0x190dc]`) from
+     * the previous segment's value to it. Everything the release-shape work
+     * chased falls out of that: a release shorter than one segment renders as a
+     * single straight line to zero, a longer one as a chain of linear chords of
+     * its geometric curve, and a note-off landing mid-segment is not heard until
+     * the segment START -- early, which is what probe 46 measures. See
+     * SPEC_GAPS.adoc item 21's resolution. */
+    uint32_t amp_left;            /* frames left in this segment; 0 = re-aim */
+    double amp_l, amp_r;          /* applied amplitude, envelope x gain */
+    double amp_step_l, amp_step_r;/* per-frame increment towards the target */
+    int amp_retire;               /* envelope finished inside this segment;
+                                     the voice dies at the segment's end, not
+                                     the instant the envelope did, so the ramp
+                                     it is already committed to still lands */
     double gain_l_target, gain_r_target; /* live target gain, recomputed
                                every block by voice_update_gain from
                                atten_const_hdb plus current channel vol/
@@ -217,6 +246,14 @@ void voice_sustain_lift(int channel);    /* CC64 released: release deferred voic
  * interpolation, and saturating accumulation; voice.c owns the envelope
  * state machine itself. */
 double voice_step_envelope(Voice *v);
+
+/* Set by smf.c while draining a service block: where inside the current
+ * render call the event being dispatched falls. Only note-on consumes it. */
+void voice_set_event_offset(uint32_t frames);
+
+/* "No scheduled boundary" sentinel for voice_env_frames_to_change, below. */
+#define ENV_NO_CHANGE 0xFFFFFFFFu
+uint32_t voice_env_frames_to_change(const Voice *v);
 
 /* 1 if any voice is currently producing sound, else 0 (used by smf.c to
  * decide when playback has fully finished, including release tails). */

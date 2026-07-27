@@ -2462,6 +2462,226 @@ def p43_level_vs_pitch():
     return _write_manifest("43_level_vs_pitch.mid", tr, man)
 
 
+def p44_release_shape():
+    """What SHAPE is the ordinary note-off release, and what sets its length?
+
+    tests/sine-gate.mid answers this for exactly one patch and the answer
+    contradicts the engine. Its reference releases are LINEAR IN AMPLITUDE and
+    reach true digital zero: 15 consecutive envelope samples falling by a
+    constant -0.0254 of the plateau every 2 ms, straight into silence, ~31 ms
+    from plateau to zero, reproduced across two independent captures. The
+    engine's ENV_RELEASE is geometric (-100 dB over RELEASE_FLOOR_S), which
+    asymptotes and never lands, so it sits at -18 dB in every one of that
+    file's 10.7 ms gaps and the notes never separate.
+
+    One patch is not a law, and 008:080's own authored release is 6.25 ms (the
+    rate the engine renders with RELEASE_FLOOR_S forced to 0), five times
+    shorter than the 31 ms observed. Three readings fit that single data point
+    identically and imply different code:
+
+      1. linear to zero over eg1_release_tc x some constant factor
+      2. linear to zero over a FIXED duration, patch-independent -- a
+         voice-retire fade, with the 6.25 ms authored release finishing
+         invisibly underneath it and eg1_release_tc never reaching the output
+      3. a RATE rather than a duration (fraction of full scale per second), so
+         what varies is the level at note-off, not the patch -- probe 45
+
+    Nothing in the existing corpus separates them. Scanning all 43 references
+    for plateau-to-silence falls finds plenty, but they are the wrong events:
+    32/33/37/31 are CC7/CC11 controller ramps (all four implying the same
+    ~20.9 ms full-to-zero, i.e. the mixer ramp period, not a release), 04/39/41
+    are EG1 DECAY tails on sustain=0 patches, and 11/18 are drum key-group
+    chokes on the fast-release path. sine-gate is the only item in the corpus
+    where an ordinary note-off release is isolated against silence.
+
+    Section A: 12 melodic patches chosen to span the authored-release range,
+    one note each, held 600 ms then 900 ms of silence so the release completes
+    in the clear whatever its length. Three reps per patch: the sine-gate
+    captures disagreed on 2 of 34 gaps, so a single observation per patch is
+    not enough to call one an outlier.
+
+    If every patch ramps in the same ~31 ms, reading 2 is right and the fix is
+    a constant. If ramp length tracks the patch, reading 1 is right and the
+    factor falls out of the 12 points.
+
+    Section B: keys 48/60/72 on three of them. SPEC S2.4.3 has key-follow on
+    the DECAY time; whether the release has it too is unrecorded, and a probe
+    that cannot see it would need re-recording if it does.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 44_release_shape.mid",
+           "# onset_s\toff_s\tsection\trep\tpatch\tbank\tprogram\tkey\tvel"]
+    clock = t(0.5)
+    DUR, GAP = t(0.6), t(0.9)
+    PATCHES = [(0, 0, "piano1"), (0, 16, "organ1"), (0, 24, "nylon_gt"),
+               (0, 47, "timpani"), (0, 48, "strings"), (0, 52, "choir_aahs"),
+               (0, 61, "brass_section"), (0, 73, "flute"),
+               (0, 80, "square_lead"), (0, 88, "pad_new_age"),
+               (0, 122, "seashore"), (8, 80, "sine(008:080)")]
+
+    def case(section, rep, bank, prog, key, vel=100):
+        nonlocal clock
+        tr.cc(clock, 0, 7, 100)
+        tr.cc(clock, 0, 11, 127)
+        tr.cc(clock, 0, 10, 64)
+        tr.cc(clock, 0, 0, bank)
+        tr.cc(clock, 0, 32, 0)
+        tr.prog(clock, 0, prog)
+        onset = clock + t(0.1)
+        tr.note(onset, DUR, 0, key, vel)
+        name = next(n for b, p, n in PATCHES if (b, p) == (bank, prog))
+        man.append(f"{onset / TPS:.3f}\t{(onset + DUR) / TPS:.3f}\t{section}\t{rep}\t"
+                   f"{name}\t{bank}\t{prog}\t{key}\t{vel}")
+        clock = onset + DUR + GAP
+
+    for rep in range(3):
+        for bank, prog, _ in PATCHES:
+            case("A_patches", rep, bank, prog, 60)
+    for bank, prog, _ in ((0, 0, ""), (0, 48, ""), (8, 80, "")):
+        for key in (48, 60, 72):
+            case("B_keyfollow", 0, bank, prog, key)
+    # A redundant CC11=127 (already its value, so silent) purely to push
+    # end-of-track past the last note-off: the release tail IS the measurement
+    # here, and a player that stops at EOT would clip the final case.
+    tr.cc(clock, 0, 11, 127)
+    return _write_manifest("44_release_shape.mid", tr, man)
+
+
+def p45_release_from_level():
+    """Is the release a fixed DURATION or a fixed RATE, and does it ride on the
+    bare EG or on the audible level?
+
+    Probe 44 varies the patch. This varies the level the release starts from,
+    holding the patch fixed, which is the axis that separates reading 3 from
+    readings 1 and 2. A linear ramp at a fixed rate (fraction of full scale per
+    second) takes proportionally less time from a lower starting level; a fixed
+    duration takes the same time from any level, so the two diverge by tens of
+    milliseconds at the bottom of section A.
+
+    Section A moves the EG level: two patches whose EG1 decays toward a low
+    sustain, note-off taken at 50/150/300/600/1200/2400 ms after note-on so the
+    envelope is at a different point of its decay each time. Piano 1 is probe
+    04's own patch (sustain=0, so the decay spans the full range); Marimba is a
+    second sustain=0 patch, because one patch behaving oddly here would
+    otherwise be indistinguishable from a law.
+
+    Sections B and C move the level WITHOUT moving the EG, which is the
+    distinction voice_step_envelope's finish detection already had to make
+    (SPEC S5.7 reads +0x13c as a gain-inclusive log-domain level, and this
+    project's AUDIBLE_FLOOR check depends on that reading). Both use the
+    flat-sustain sine so the EG is pinned at its plateau:
+
+      B: velocity 127/96/64/32/16 -- moves the note's own attenuation
+      C: CC7 at 127/96/64/32/16 at fixed velocity -- moves channel volume only,
+         touching nothing in the voice's envelope setup at all
+
+    If ramp length varies in A but not in B/C, the ramp is on the bare EG. If
+    it varies in all three, it is on the audible level. If it varies in none,
+    the release is a fixed duration and probe 44 alone settles the rest.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 45_release_from_level.mid",
+           "# onset_s\toff_s\tsection\tpatch\tbank\tprogram\tkey\tvel\tcc7\thold_ms"]
+    clock = t(0.5)
+    GAP = t(0.9)
+
+    def case(section, bank, prog, pname, key, vel, cc7, hold_s):
+        nonlocal clock
+        tr.cc(clock, 0, 7, cc7)
+        tr.cc(clock, 0, 11, 127)
+        tr.cc(clock, 0, 10, 64)
+        tr.cc(clock, 0, 0, bank)
+        tr.cc(clock, 0, 32, 0)
+        tr.prog(clock, 0, prog)
+        onset, dur = clock + t(0.1), t(hold_s)
+        tr.note(onset, dur, 0, key, vel)
+        man.append(f"{onset / TPS:.3f}\t{(onset + dur) / TPS:.3f}\t{section}\t{pname}\t"
+                   f"{bank}\t{prog}\t{key}\t{vel}\t{cc7}\t{hold_s * 1000:.0f}")
+        clock = onset + dur + GAP
+
+    for prog, pname in ((0, "piano1"), (12, "marimba")):
+        for hold in (0.05, 0.15, 0.30, 0.60, 1.20, 2.40):
+            case("A_eg_level", 0, prog, pname, 60, 100, 100, hold)
+    for vel in (127, 96, 64, 32, 16):
+        case("B_velocity", 8, 80, "sine(008:080)", 60, vel, 100, 0.60)
+    for cc7 in (127, 96, 64, 32, 16):
+        case("C_cc7", 8, 80, "sine(008:080)", 60, 100, cc7, 0.60)
+    tr.cc(clock, 0, 11, 127)   # see probe 44: keep EOT clear of the last tail
+    return _write_manifest("45_release_from_level.mid", tr, man)
+
+
+def p46_noteoff_grid():
+    """Why does the reference start its release BEFORE the MIDI note-off?
+
+    Measured on tests/sine-gate.mid: the release ramp begins 5 to 27 ms ahead
+    of the nominal note-off, varying note to note, while note-ONS in the same
+    file land within ~1 ms of sample-exact. Two independent captures agree per
+    note (r = 0.963, sd of the difference 1.79 ms, and 32 of 34 notes agree to
+    ~0.5 ms), so it is deterministic -- not real-time scheduling jitter, and
+    not anything the Windows-side sequencer could produce.
+
+    That points at the driver's own drain: SPEC `[A:0x12bd6]`, called once per
+    audio block from the render callback `[A:0x130af]` with now+nframes, pops
+    every event due during the COMING block and acts on it immediately. A
+    note-off would then take effect at the block start -- early by up to one
+    block -- while a note-on still gets its offset within the block. But no
+    fixed block size fits sine-gate's 34 points (2-D scan over period 8-32 ms
+    and phase: best rms 4.55 ms against a 6.38 ms null, i.e. no fit), which
+    would mean a VARIABLE nframes per callback.
+
+    34 note-offs scattered over one song is too thin to resolve that. This
+    sweeps the note-off across a fine grid instead: 64 cases at 500 ms spacing,
+    each note-off one tick (1.042 ms) later within its case than the last, so
+    the note-off's absolute time advances by 501.042 ms per case and walks
+    densely across the phase of any grid in the plausible range. Sine patch,
+    300 ms of silence after each note-off so the release always completes.
+
+    Section B is the discriminator, and it removes the alignment error that
+    limits the sine-gate measurement. Each case carries a MARKER note on
+    channel 1 -- key 96, 2093 Hz, three octaves clear of the key-60 body --
+    struck at exactly the same tick as the note-off. Note-ons are already
+    established as sample-exact, so the interval from the marker's onset to the
+    body's ramp start IS the earliness, read inside one file with no reference
+    alignment and no clock-drift correction in the path. Section A repeats the
+    same sweep without the marker, so if the marker's own voice allocation
+    perturbs anything the two sections disagree and say so.
+
+    If the earliness is -(t mod B) for some B, 64 dense phases will show it as
+    a sawtooth outright. If it is not, that kills the block-quantisation
+    reading and the answer is somewhere else in swmidi.sys.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    man = ["# 46_noteoff_grid.mid",
+           "# onset_s\toff_s\tsection\tcase\toff_offset_ticks\tmarker"]
+    clock = t(0.5)
+    SPACING, HOLD = t(0.5), t(0.2)
+    for section, marker in (("A_plain", False), ("B_marked", True)):
+        for i in range(32):
+            for ch in (0, 1):
+                tr.cc(clock, ch, 7, 100)
+                tr.cc(clock, ch, 11, 127)
+                tr.cc(clock, ch, 10, 64)
+                tr.cc(clock, ch, 0, 8)
+                tr.cc(clock, ch, 32, 0)
+                tr.prog(clock, ch, 80)
+            onset = clock + t(0.1)
+            off = onset + HOLD + i          # +i ticks: 1.042 ms per case
+            tr.at(onset, [0x90, 60, 100])
+            tr.at(off, [0x80, 60, 0])
+            if marker:
+                tr.note(off, t(0.1), 1, 96, 100)
+            # 6 decimals, not 3: the sweep step is 1.042 ms and millisecond
+            # rounding would quantize away the very thing being measured.
+            man.append(f"{onset / TPS:.6f}\t{off / TPS:.6f}\t{section}\t{i}\t{i}\t"
+                       f"{'key96_ch1' if marker else '-'}")
+            clock += SPACING
+    tr.cc(clock, 0, 11, 127)   # see probe 44: keep EOT clear of the last tail
+    return _write_manifest("46_noteoff_grid.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2472,7 +2692,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p30_tune_clamp_bend, p31_tune_clamp_bend_sine, p32_ramp_shape, p33_pitch_ramp, p34_sfx_bank_identity,
           p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
           p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
-          p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch]
+          p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
+          p44_release_shape, p45_release_from_level, p46_noteoff_grid]
 
 
 def check(path):

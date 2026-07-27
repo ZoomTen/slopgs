@@ -233,6 +233,20 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
 #define SMF_BANKPROG_LOOKAHEAD 1
 #endif
 
+/* Audio service block, SPEC.adoc S6.6 / `[A:0x13054]`. The driver renders one
+ * audio buffer per call and drains EVERY event due anywhere inside that buffer
+ * before rendering a single sample of it -- `0x12bd6` is called with
+ * `pos + nframes` `[A:0x130a3]`-`[A:0x130af]`, not with `pos`. That one fact is
+ * what makes a note-off take effect from the START of the block containing it,
+ * which is the early release probe 46 measures and which nothing in the
+ * envelope code could explain. Matches render.c's GAIN_SEGMENT_FRAMES
+ * deliberately -- same buffer, two halves of one mechanism; see that macro for
+ * the corpus sweep behind the length and for why direct measurement puts it at
+ * 512 while the corpus ships 128. */
+#ifndef SERVICE_BLOCK_FRAMES
+#define SERVICE_BLOCK_FRAMES (128u * RESAMPLE_FACTOR)
+#endif
+
 static int is_note_event(const Event *e) {
     if (e->kind != EKIND_MIDI) return 0;
     if ((e->status & 0xF0) == 0x80 || (e->status & 0xF0) == 0x90) return 1;
@@ -445,13 +459,25 @@ uint32_t smf_render(int16_t *out, uint32_t frames) {
             }
         }
 
-        uint32_t next_event_sample = (g_event_index < g_event_count) ? g_events[g_event_index].sample_time : g_song_length_samples;
-        uint32_t chunk = frames - produced;
-        if (next_event_sample > g_sample_pos) {
-            uint32_t until = next_event_sample - g_sample_pos;
-            if (until < chunk) chunk = until;
-        }
+        /* Blocks are anchored to the absolute sample position, not to wherever
+         * this call happens to start, so the grid does not move with the host's
+         * buffer size. */
+        uint32_t chunk = SERVICE_BLOCK_FRAMES - (g_sample_pos % SERVICE_BLOCK_FRAMES);
+        if (chunk > frames - produced) chunk = frames - produced;
+
         if (chunk == 0) chunk = 1;
+
+        /* Drain-ahead: every event due inside this block acts NOW, before a
+         * sample of it is rendered. Each carries the offset it really falls at,
+         * which only a note-on uses -- that is the whole note-on/note-off
+         * asymmetry the reference shows, in two lines. */
+        while (g_event_index < g_event_count &&
+               g_events[g_event_index].sample_time < g_sample_pos + chunk) {
+            voice_set_event_offset(g_events[g_event_index].sample_time - g_sample_pos);
+            dispatch_event(&g_events[g_event_index]);
+            g_event_index++;
+        }
+        voice_set_event_offset(0);
         render_frames(out + produced * 2, chunk);
         produced += chunk;
         g_sample_pos += chunk;

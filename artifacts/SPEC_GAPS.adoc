@@ -1311,7 +1311,7 @@ checking the finding against `gm.dls`'s own connection data, which turned a
 visual impression into an exact correlation.
 
 [#item21]
-== Ordinary-note-off release is too short against isolate references -- fitted floor SHIPPED, delayed-onset shape genuinely open
+== Ordinary-note-off release is too short against isolate references -- fitted floor SHIPPED, superseded 2026-07-28: the real defect is in the GAIN path, see the resolution addendum below
 
 **Path:** `SPEC.md` xref:SPEC.adoc#s5-6[S5.6]/xref:SPEC.adoc#s3-8-2[S3.8.2] (the only documented minimum-release
 mechanism -- the rate clamp at `0x19834`, dividing by literal `0x46`/70 --
@@ -1358,6 +1358,249 @@ plateau-then-fall shape; this was not tested against the corpus and the
 isolate's own resolution limits (low-register fundamental period 8-53 ms)
 mean the 38 ms plateau length is not pinned precisely enough to fit a
 two-segment model from the data gathered this session alone.
+
+[#item21-addendum]
+== Item 21 addendum 2026-07-27: the shape is SETTLED by `[M: probes 44/45]` -- it is a LINEAR ramp to zero, not a stretched exponential -- but implementing it alone REGRESSES the corpus, so the fitted floor stays
+
+The original entry's "genuinely open" note guessed a delayed release onset
+from one hand-cut isolate. Probes 44, 45 and 46 were built to settle it and
+did, in a way that is both more specific and more awkward than the guess.
+
+**What the floor actually is.** Probe 44 isolates one release per patch
+against 900 ms of silence, 12 patches x 3 reps. Classified by level-crossing
+regression -- a linear-to-zero ramp makes the crossing time linear in level,
+a geometric one linear in log level -- validated in both directions before
+use (it reads this project's own geometric render as geometric, R2 0.993 vs
+0.837, and `tests/sine-gate.flac` as linear). Split by authored release, the
+latter measured on this engine with the floor removed:
+
+[options="header"]
+|===
+| authored `eg1_release_tc` | patches | reference shape
+| 6.4 / 8.8 / 22.8 / 25.7 ms | square lead, sine 008:080, organ 1, nylon gt | **LINEAR to digital zero**
+| 86 / 121 / 474-1972 ms | brass, flute, choir, piano, strings, pad, seashore | geometric
+|===
+
+For every geometric patch the reference's fall matches THIS ENGINE'S EXISTING
+RATE to within 1-6% (ref / no-floor ratio 1.00, 1.00, 1.01, 1.01, 1.02, 1.06;
+brass 1.30 and flute 1.17 sit nearest the crossover). The geometric segment
+was never wrong. Only the floor was, and it was the wrong SHAPE, which is why
+a duration had to be fitted to stand in for it.
+
+**The ramp is a fixed duration, on the envelope.** Probe 45 sections B and C
+sweep velocity 127..16 and CC7 127..16 on the sine, moving the level at
+note-off over a 52x range (0.3087 -> 0.0059). The ramp measures 23.6 / 23.6 /
+23.7 / 23.5 / 23.4 and 23.5 / 23.5 / 23.6 / 23.5 / 23.7 ms -- ten cases, sd
+0.1 ms. A fixed RATE would have shrunk with the level by the same 52x. Being
+unmoved by CC7 also puts the ramp on the envelope and not on the audible
+level, the same distinction `voice_step_envelope`'s finish detection makes.
+
+**Still not established:** that 52x range is all GAIN. Every linear case
+observed starts from a near-full EG, so "fixed duration" holds across gain
+and not across envelope level. Probe 45's section A cannot settle it -- both
+its patches (piano, marimba) have long authored releases and take the
+geometric path. A note released mid-decay on a SHORT-release patch would.
+
+**Why it is not shipped.** Implemented as `RELEASE_MIN_S = 0.0235` with a
+linear branch in `ENV_RELEASE` (~10 lines), it improves its targeted probes
+and fails the corpus gate:
+
+[options="header"]
+|===
+| build | mean residual | mean env r | sine-gate | sine2 | p44 | p45
+| HEAD: geometric, 60 ms floor | **-31.1483** | 0.9238 | -25.00 | -25.50 | -44.09 | -26.02
+| linear 23.5 ms | -30.8095 | 0.9225 | -22.97 | -22.80 | **-44.96** | **-26.59**
+| linear 23.5 ms + 6 ms note-off lead | -30.7313 | 0.9236 | -24.50 | -24.11 | -42.06 | -25.93
+|===
+
+63 items. Reverted; `RELEASE_FLOOR_S = 0.060` stays as the shipped
+approximation.
+
+**What is missing is the PLACEMENT, and that is now the live question.** The
+original entry's "delayed onset" was the right instinct with the sign
+inverted: the reference's ramp starts BEFORE the note-off. Probe 46 sweeps
+the note-off across a 1.042 ms grid, 64 cases, half of them carrying a key-96
+marker struck on the same tick so the earliness reads inside one file with no
+reference alignment in the path. Both sections agree: the ramp starts 0-27 ms
+ahead of the nominal note-off, mean 12.5 ms, spread 27.8 ms. Note-ONs in the
+same captures are sample-exact, and two independent captures of
+`tests/sine-gate.mid` reproduce the per-note pattern (r = 0.963, 32 of 34
+notes agreeing to ~0.5 ms), so it is deterministic and not host scheduling.
+
+The per-case step is startlingly quantised -- 15 of 31 steps are -9.8 ms with
+sd 0.05 ms -- but the jumps between runs are +11.0 ms (x6) and +15.8 ms (x5),
+two different sizes, so it is a lattice and not a fixed grid. A phase-free
+first-harmonic scan over periods 4-60 ms finds nothing above the shuffled
+null (0.407 vs 0.400). Consistent with `[A:0x12bd6]`'s drain acting at the
+start of the block containing the event, with a VARIABLE block size; not
+consistent with any single block period.
+
+A blanket note-off lead is not the implementation, and testing one shows why:
+at 12 ms, `field/Strobe-faffaeefafaefae.mid` never terminates, because a note
+shorter than the lead has its note-off scheduled before its note-on and the
+voice is never released. Whatever the mechanism is, it is bounded by the
+note's own start.
+
+**Next step:** settle the placement first, then re-test the shape -- they are
+one defect, and the fitted 60 ms floor is currently absorbing both halves.
+Probes 44/45/46 and their references are in the corpus and do not need
+re-recording for it.
+
+[#item21-addendum-disasm]
+== Item 21 addendum 2026-07-28: disassembly of the release path -- the ramp is a fixed RATE `[A:0x197dc]`, note-off is scheduled sample-accurately `[A:0x16cac]`, and the earliness is NOT the event drain
+
+Read against `artifacts/swmidi.sys` (PE32, image base `0x10000`, so SPEC.md's
+addresses are VAs directly). Four things the audio could not separate:
+
+**1. The release ramp scales with the level at note-off -- it is a rate, not a
+duration `[A:0x197dc]`.** `EG_Release(eg, tLo, tHi)` evaluates the envelope at
+the note-off time (`0x18a7a`), then `newDuration = releaseTime * level / 1000`
+-- a 64-bit multiply by `eg->+0x10/+0x14` (`0x1049c`) followed by a divide by
+`0x3e8` (`0x10490`) -- and stores the note-off timestamp as the segment start
+at `eg->+0x28/+0x2c`. A segment whose duration is proportional to its starting
+level is a constant-slope line to zero.
+
+This settles the "OPEN" paragraph in the addendum above, and it says probe 45
+was right for the wrong reason: its 52x sweep is velocity and CC7, both of
+which move GAIN and leave the envelope level untouched, so a rate law and a
+duration law predict identical output for all ten of its cases. The
+implementation consequence is small but real -- `env_release_step` should be
+`(fixed rate) * RENDER_RATE` rather than `env_level / (D * RENDER_RATE)`; the
+two agree only for a voice released at full level.
+
+**2. `0x19834` is the same function plus a clamp**, `duration = min(duration,
+arg/0x46)` -- SPEC.md xref:SPEC.adoc#s5-6[S5.6]'s 70 ms figure, confirmed as a
+ceiling on the computed duration rather than a separate mechanism.
+
+**3. The note-off carries the event's OWN timestamp all the way down, so the
+driver's release is sample-accurate.** `0x16cac` (the queue pop) copies the
+node's timestamp into the caller's record (`out[0..3] = node->+0x8`, `out[4..7]
+= node->+0xc`, `[A:0x16ccb]`-`[A:0x16cd1]`), and every note-off case in the
+dispatcher passes exactly that record's timestamp to `0x19a2c` (`[A:0x12c53]`,
+`[A:0x12cb9]`, `[A:0x12cf5]`, `[A:0x12da5]`, `[A:0x12e0e]`). **So the 0-27 ms
+earliness probe 46 measures is not the drain applying note-offs at a block
+boundary, which is what the addendum above proposed.** The remaining candidate
+is the gain refresh: `0x19644` renders each voice in sub-segments bounded by
+"next change or `ramp_period`, clamped to the buffer end" (`[A:0x196cd]`-
+`[A:0x196f0]`), recomputing the gain at each boundary via `0x19490` and ramping
+to it across the segment in the MMX inner loop (`[A:0x19e26]`). A note-off
+inside a segment is therefore not visible until the boundary evaluation, at
+which point the ramp toward the already-partly-released level runs from the
+SEGMENT START -- early, by up to one segment, bounded by the buffer. That is
+the right shape of answer for a lattice with no fixed period, but it is
+inferred from the segment structure and NOT yet traced through `0x195a2`'s
+inner loop. Do that before building anything on it.
+
+**4. `0x19a2c` clamps the release time to `max(eventTime, voiceStart + 1)`**
+(`[A:0x19a5b]`: `add $0x1,%eax / adc $0x0,%ecx`). A release can never be
+scheduled at or before its own voice's start. This is exactly the invariant the
+blanket-note-off-lead experiment above violated, and why
+`field/Strobe-faffaeefafaefae.mid` never terminated under it -- worth carrying
+into any future placement model as a hard constraint, not a special case.
+
+**Also closed along the way:** SPEC.md's open question #2 (the frame count
+supplied to `0x13054`) is answered in this same binary -- see that entry. The
+count is the KS buffer's byte length, chosen by the audio stack above the
+driver, so there is no block period to recover and probe 46's non-fitting
+lattice is the expected result rather than a failed measurement.
+
+[#item21-resolved]
+== Item 21 RESOLVED 2026-07-28 by `[A:0x18fba]`: there is no release floor. The "linear ramp" is the gain interpolator's segment quantisation, and it is why the release starts early
+
+`0x195a2` traced end-to-end, as the addendum above said it had to be. The
+inferred reading was right in shape and wrong in cause, and the real mechanism
+explains every measurement in items 21's two addenda with one rule.
+
+**The render loop cuts each voice into segments, and evaluates the gain at each
+segment's END.** `0x19644`: segment start is `max(voiceStart, bufferStart)`
+`[A:0x19653]`-`[A:0x1967d]`; segment end is `min(nextChange, device->+0x18,
+bufferEnd)` `[A:0x196cd]`-`[A:0x196f0]`. Then `0x19490` computes the gain **at
+the segment end** `[A:0x19720]`, and `0x18fba` renders the samples of
+`[start, end)` `[A:0x19771]`, writing at `buffer + (segStart - bufStart) *
+channels * 2` `[A:0x1975c]`-`[A:0x1976a]`.
+
+**`0x18fba` ramps from the PREVIOUS segment's gain to that new target across
+the whole segment, in the LINEAR amplitude domain.** It takes
+`maxDelta = max(|dGainL|, |dGainR|, 2*|dPitch|)` `[A:0x19033]`-`[A:0x1906e]`,
+derives `ramp_period = clamp((nsamples * 8) / (maxDelta / 2), 1, 0x200)` rounded
+up to a multiple of 4 `[A:0x19077]`-`[A:0x1909f]`, and steps toward the target
+by `delta * ramp_period / nsamples` every `ramp_period` samples
+`[A:0x190c8]`-`[A:0x190d3]`. The dB->linear conversion (`0x18dea`) happens
+BEFORE the delta is taken `[A:0x190dc]`-`[A:0x19103]`, so the interpolation is
+linear in amplitude, not in dB.
+
+Three measurements fall out of that one rule:
+
+* **Why the release starts before the note-off.** A note-off inside segment
+  `[s, e)` is dispatched at the top of the buffer (`0x12bd6` with
+  `pos + nframes`) and schedules the envelope correctly at its own timestamp --
+  but the segment boundaries were already cut, and the gain the mixer ramps
+  toward is the envelope sampled at `e`, by which point the release is
+  partly done. The audible fall therefore begins at **`s`**, up to one segment
+  early. Probe 46 measured 0-27 ms, mean 12.5 -- about half a segment, which is
+  what a uniformly-placed note-off inside a segment gives.
+* **Why short releases look linear and long ones geometric.** A release
+  shorter than one segment is rendered as a SINGLE linear interpolation from
+  full gain to zero -- one straight line, hitting exactly zero. A long release
+  spans many segments, each a linear chord of the underlying geometric curve,
+  which measures as geometric. The apparent split at ~26 ms of authored release
+  in probe 44 is just "shorter than a segment" versus "longer than a segment".
+* **Why the ramp looked like a fixed duration.** The ~23.5 ms probe 45
+  measured with sd 0.1 ms over a 52x level range is the SEGMENT LENGTH in those
+  captures, not an envelope parameter. Of course it does not move with velocity
+  or CC7: segment boundaries have nothing to do with gain.
+
+**So `RELEASE_MIN_S` was a fiction and `RELEASE_FLOOR_S` is a fiction, and the
+right fix is not in `start_release()` at all** -- it is to render gain the way
+the driver does: piecewise-linear between segment boundaries, target sampled at
+the segment end. That also subsumes SPEC_GAPS #19's "render.c's gain smoother
+is still a one-pole, i.e. still the wrong shape", which is the same defect seen
+from the controller side.
+
+**The one constant that IS recoverable** is the segment cap:
+`device->+0x18 = (rate + 19) / 20` `[A:0x128f9]`-`[A:0x12901]`, i.e. ceil(rate/20)
+= 1103 samples = 50.0 ms at 22050 Hz, with `+0x1c = 0` `[A:0x128f3]`. The
+driver also allocates its own 0x1000-byte (1024-frame, 46.4 ms) buffers
+`[A:0x184c0]`-`[A:0x184d9]`. Both are ABOVE the ~23.5 ms segment the reference
+captures actually show, so in those captures the binding constraint was the
+per-call frame count from the KS descriptor (~512 frames), which -- per SPEC.md
+open question #2 -- is set by the audio stack and is not a property of this
+driver. A clean-room implementation has to pick one; it cannot recover it.
+
+**Status:** mechanism resolved, cited, and IMPLEMENTED. `render.c`'s one-pole
+gain smoother is gone; the mixer now re-aims once per segment and ramps the
+applied amplitude (envelope x gain, one product) linearly to a target sampled at
+the segment's end, `smf.c` drains a whole service block's events before
+rendering any of it, and a note-on carries a per-voice start offset so it still
+lands on its own sample. `RELEASE_FLOOR_S` is deleted -- nothing floors the
+release any more.
+
+Corpus, 63 items, against the one-pole build: mean spectral residual -31.1483 ->
+-31.1897, mean envelope r 0.9238 -> 0.9249. Gating tests, which is what started
+all of this: sine-gate -25.00 -> -26.20, sine2 -25.50 -> -27.89.
+
+**The segment LENGTH is unresolved and the two sources disagree.** Direct
+measurement puts it at ~512 frames (23.2 ms) -- see the probe numbers above.
+The corpus sweep puts it at 128 (5.8 ms): -31.1897/0.9249 at 128, -31.1552/
+0.9249 at 256, -31.0757 at 384, -30.9116 at 512, -30.1227 at 768, -29.3281 at
+1024. 128 ships because that is what the gate in CLAUDE.adoc says to do, NOT
+because it is believed to be the true value.
+
+They can disagree because the reference's grid PHASE is a property of the
+machine that recorded it and cannot be matched, so a note-off is misplaced by up
+to one segment in either direction; a shorter segment keeps that error small at
+the cost of under-applying the mechanism. At 512 the mean is dragged negative by
+just two sparse single-note probes -- `08_reverb` +9.45 dB and `03_velocity`
++7.10 dB, with nothing else above +3.04 -- while 512 wins on every item that
+exercises the gain path: `25_pan_law` -12.17, `warm-echo` -5.42, `sine-gate`
+-3.20, `32_ramp_shape` -2.83, `24_gain_staging` -1.60, `46_noteoff_grid` -1.52,
+`28_expression_gate` -1.34, `07_pan_volume` -1.28. Why those two sparse probes
+move that far at 512 is NOT diagnosed, and it is the single piece of evidence
+that would settle 128 vs 512. Do that before re-fitting anything.
+
+**Also not clean:** at 128 the field-only `dead` total goes 2260 ms -> 5450 ms
+-- we invent more digital-silence dropouts than the one-pole build did. The mean
+does not show it. Unexplained.
 
 [#item22]
 == CC121 (Reset All Controllers) does not reset Channel Volume -- RESOLVED 2026-07-26 by `[M: probe 37]`, SHIPPED

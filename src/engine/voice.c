@@ -67,6 +67,11 @@ void voice_pool_reset(void) {
         v->loop_start_s = v->loop_len_s = v->sample_end_s = 0;
         v->gain_l = v->gain_r = 0.0;
         v->gain_l_target = v->gain_r_target = 0.0;
+        v->amp_left = 0;
+        v->amp_l = v->amp_r = 0.0;
+        v->amp_step_l = v->amp_step_r = 0.0;
+        v->amp_retire = 0;
+        v->start_delay = 0;
         v->atten_const_hdb = 0;
         v->env_stage = ENV_IDLE;
         v->env_level = 0.0;
@@ -122,6 +127,14 @@ static int32_t cents_to_ratio_q12(int32_t cents) {
 /* SPEC.md S3.4.1: tc = lScale/65536.0; duration = 2^(tc/1200), trunc toward
  * zero (we keep this as a plain double, not truncated, since it feeds a
  * continuous-time envelope coefficient rather than an integer table). */
+/* Where inside the current render call the event being dispatched actually
+ * falls. smf.c sets it per event while draining a service block; anything
+ * dispatched outside that path (direct msgs_midi injection) leaves it at 0,
+ * i.e. "now". Only note-on reads it -- see Voice::start_delay. */
+static uint32_t g_event_offset = 0;
+
+void voice_set_event_offset(uint32_t frames) { g_event_offset = frames; }
+
 static double timecents_to_seconds(int32_t tc) {
     if (tc == (int32_t)0x80000000) return 0.0;
     double t = (double)tc / 65536.0;
@@ -1123,12 +1136,20 @@ void voice_note_on(int channel, int note, int velocity) {
      * The region's own pan offset (artic->pan_cb) is fixed; the channel's
      * live CC10 pan is combined with it fresh in voice_update_gain. */
     voice_update_gain(v);
-    /* Snap the smoothed gain to the freshly-computed target: a brand new
-     * voice has no prior gain to glide from (see render.c's GAIN_SMOOTH_ALPHA
-     * comment), and the envelope (below) already shapes the amplitude
-     * on-ramp -- gliding gain too would double up the attack shaping. */
     v->gain_l = v->gain_l_target;
     v->gain_r = v->gain_r_target;
+    v->amp_left = 0;
+    v->amp_step_l = v->amp_step_r = 0.0;
+    v->amp_retire = 0;
+    v->start_delay = g_event_offset;
+    /* amp_l/amp_r are PRIMED from the envelope's own starting level at the end
+     * of this function, once that level is known -- not left at zero. The
+     * driver primes its mixer the same way and for the same reason: `0x18fba`
+     * called with nsamples==0 writes the gains straight into the ramp state
+     * without rendering `[A:0x18fd9]`. Leaving them at zero instead makes every
+     * instant-attack patch (attack_s <= 0 sets env_level = 1.0 below) fade in
+     * across a whole segment -- measured as a 23 ms ramp-up on every note of
+     * probe 14, 5x too quiet at 4 ms in. */
 
     /* Envelope (EG1, amplitude), SPEC.md S3.4 */
     double attack_s = timecents_to_seconds(r->artic->eg1_attack_tc);
@@ -1215,6 +1236,11 @@ void voice_note_on(int channel, int note, int velocity) {
     }
     v->eg2_decay_coef = eg2_coef(eg2_dec_s);
     v->eg2_release_coef = eg2_coef(timecents_to_seconds(r->artic->eg2_release_tc));
+
+    /* Prime the amplitude ramp (see the amp_left reset above). env_level is
+     * final only now: 1.0 for an instant attack, 0.0 for a real one. */
+    v->amp_l = v->env_level * v->gain_l;
+    v->amp_r = v->env_level * v->gain_r;
 }
 
 void voice_note_off(int channel, int note) {
@@ -1265,6 +1291,29 @@ int voice_any_active(void) {
         if (g_voices[i].active) return 1;
     }
     return 0;
+}
+
+/* Frames until EG1's current segment ends, or ENV_NO_CHANGE if it has no
+ * scheduled end. This is the driver's "next change" term: `0x19490` mins the
+ * envelope's own next boundary into the voice's segment length `[A:0x19490]`,
+ * which is what keeps a 5 ms attack from being smeared across a 23 ms
+ * amplitude segment. Sustain and release deliberately return ENV_NO_CHANGE --
+ * sustain has no end, and release running uncut to the finish floor is exactly
+ * why a short release renders as one straight line into silence. */
+uint32_t voice_env_frames_to_change(const Voice *v) {
+    switch (v->env_stage) {
+        case ENV_ATTACK: {
+            if (v->env_attack_step <= 0.0) return 1;
+            double n = (1.0 - v->env_level) / v->env_attack_step;
+            if (n < 1.0) return 1;
+            if (n >= (double)ENV_NO_CHANGE) return ENV_NO_CHANGE;
+            return (uint32_t)n + 1;
+        }
+        case ENV_DECAY:
+            return v->env_decay_samples_left > 0 ? (uint32_t)v->env_decay_samples_left : 1;
+        default:
+            return ENV_NO_CHANGE;
+    }
 }
 
 double voice_step_envelope(Voice *v) {
