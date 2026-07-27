@@ -33,6 +33,13 @@ static int fourcc_is(const uint8_t *p, char a, char b, char c, char d) {
     return p[0] == (uint8_t)a && p[1] == (uint8_t)b && p[2] == (uint8_t)c && p[3] == (uint8_t)d;
 }
 
+/* wsmp chunk sizes (S2.3.4/S2.7): the fixed header through cSampleLoops
+ * (cbSize..ulLoops), and that header plus one loop record
+ * (cbSize+ulLoopType+ulStart+ulLength). Parsed identically for a wave's own
+ * wsmp (wave_defaults callers) and a region's override wsmp. */
+#define WSMP_MIN_SIZE 0x14
+#define WSMP_LOOP_MIN_SIZE (WSMP_MIN_SIZE + 0x10)
+
 /* -------------------------------------------------------------------- */
 /* Wave-chunk contents: fmt / data / wsmp / edit (SPEC.md S2.3.4, S2.7)   */
 
@@ -94,7 +101,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w) 
                 }
             }
         } else if (fourcc_is(p, 'w', 's', 'm', 'p')) {
-            if (size >= 0x14) {
+            if (size >= WSMP_MIN_SIZE) {
                 w->unity_note = cdata[4]; /* low byte only, S2.3.4 */
                 w->fine_tune = rd_i16(cdata + 6);
                 int32_t latten = rd_i32(cdata + 8);
@@ -104,7 +111,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w) 
                     w->no_loop = 1;
                 } else {
                     w->no_loop = 0;
-                    if (size >= 0x14 + 0x10) {
+                    if (size >= WSMP_LOOP_MIN_SIZE) {
                         /* loop record: cbSize(0x14)+ulLoopType(0x18)+ulStart(0x1c)+ulLength(0x20) */
                         uint32_t lstart = rd_u32(cdata + 0x1c);
                         uint32_t llen = rd_u32(cdata + 0x20);
@@ -266,7 +273,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen) {
                 r->key_group = cdata[0xa];
             }
         } else if (fourcc_is(p, 'w', 's', 'm', 'p')) {
-            if (size >= 0x14) {
+            if (size >= WSMP_MIN_SIZE) {
                 r->has_own_wsmp = 1;
                 r->unity_note = cdata[4];
                 r->fine_tune = rd_i16(cdata + 6);
@@ -277,7 +284,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen) {
                     r->no_loop = 1;
                 } else {
                     r->no_loop = 0;
-                    if (size >= 0x14 + 0x10) {
+                    if (size >= WSMP_LOOP_MIN_SIZE) {
                         uint32_t lstart = rd_u32(cdata + 0x1c);
                         uint32_t llen = rd_u32(cdata + 0x20);
                         r->loop_start = (int32_t)lstart;

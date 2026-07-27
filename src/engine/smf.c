@@ -6,15 +6,23 @@
 #include "render.h"
 #include "rt.h"
 
+enum {
+    EKIND_MIDI = 0,
+    EKIND_SYSEX,
+    EKIND_TEMPO,
+};
+
+#define MAX_TRACKS 512
+
 typedef struct Event {
     uint32_t abs_tick;
     uint32_t seq;
-    uint8_t kind;      /* 0=midi short, 1=sysex, 2=tempo meta */
+    uint8_t kind;           // EKIND_*
     uint8_t status, d1, d2;
-    const uint8_t *data; /* sysex payload (kind==1) */
+    const uint8_t *data;    // kind == EKIND_SYSEX
     uint32_t data_len;
-    uint32_t tempo_usec; /* kind==2 */
-    uint32_t sample_time; /* computed */
+    uint32_t tempo_usec;    // kind == EKIND_TEMPO
+    uint32_t sample_time;   // computed
 } Event;
 
 static Event *g_events = 0;
@@ -75,7 +83,7 @@ static uint32_t walk_track(const uint8_t *data, uint32_t len, EmitFn emit, void 
             if (p + mlen > end) break;
             if (type == 0x51 && mlen == 3) {
                 uint32_t usec = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
-                if (emit) emit(abs_tick, seq_base + count, 0, 0, 0, 0, 0, usec, 2, ctx);
+                if (emit) emit(abs_tick, seq_base + count, 0, 0, 0, 0, 0, usec, EKIND_TEMPO, ctx);
                 count++;
             }
             /* other meta types (track name, end-of-track, etc.): ignored */
@@ -85,7 +93,7 @@ static uint32_t walk_track(const uint8_t *data, uint32_t len, EmitFn emit, void 
             uint32_t slen = read_vlq(&p, end);
             if (p + slen > end) break;
             if (b == 0xF0) {
-                if (emit) emit(abs_tick, seq_base + count, 0, 0, 0, p, slen, 0, 1, ctx);
+                if (emit) emit(abs_tick, seq_base + count, 0, 0, 0, p, slen, 0, EKIND_SYSEX, ctx);
                 count++;
             }
             p += slen;
@@ -98,7 +106,7 @@ static uint32_t walk_track(const uint8_t *data, uint32_t len, EmitFn emit, void 
             if (kind != 0xC0 && kind != 0xD0) {
                 d2 = (p < end) ? *p++ : 0;
             }
-            if (emit) emit(abs_tick, seq_base + count, running_status, d1, d2, 0, 0, 0, 0, ctx);
+            if (emit) emit(abs_tick, seq_base + count, running_status, d1, d2, 0, 0, 0, EKIND_MIDI, ctx);
             count++;
         } else { /* running status data byte */
             if (running_status == 0) { p++; continue; } /* malformed: skip byte defensively */
@@ -109,7 +117,7 @@ static uint32_t walk_track(const uint8_t *data, uint32_t len, EmitFn emit, void 
             if (kind != 0xC0 && kind != 0xD0) {
                 d2 = (p < end) ? *p++ : 0;
             }
-            if (emit) emit(abs_tick, seq_base + count, running_status, d1, d2, 0, 0, 0, 0, ctx);
+            if (emit) emit(abs_tick, seq_base + count, running_status, d1, d2, 0, 0, 0, EKIND_MIDI, ctx);
             count++;
         }
     }
@@ -226,11 +234,13 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
 #endif
 
 static int is_note_event(const Event *e) {
-    return e->kind == 0 && ((e->status & 0xF0) == 0x80 || (e->status & 0xF0) == 0x90);
+    if (e->kind != EKIND_MIDI) return 0;
+    if ((e->status & 0xF0) == 0x80 || (e->status & 0xF0) == 0x90) return 1;
+    return 0;
 }
 
 static int is_bankprog_event(const Event *e) {
-    if (e->kind != 0) return 0;
+    if (e->kind != EKIND_MIDI) return 0;
     if ((e->status & 0xF0) == 0xC0) return 1;
     return (e->status & 0xF0) == 0xB0 && (e->d1 == 0 || e->d1 == 32);
 }
@@ -299,10 +309,10 @@ int smf_load(const uint8_t *data, uint32_t len) {
     const uint8_t *end = data + len;
 
     /* Pass 1: locate each track's byte range, and count events. */
-    const uint8_t *track_ptrs[512];
-    uint32_t track_lens[512];
+    const uint8_t *track_ptrs[MAX_TRACKS];
+    uint32_t track_lens[MAX_TRACKS];
     uint32_t nt = 0;
-    while (p + 8 <= end && nt < 512 && nt < ntracks) {
+    while (p + 8 <= end && nt < MAX_TRACKS && nt < ntracks) {
         if (!fourcc_is(p, 'M', 'T', 'r', 'k')) break;
         uint32_t tlen = rd_u32be(p + 4);
         const uint8_t *tdata = p + 8;
@@ -315,7 +325,7 @@ int smf_load(const uint8_t *data, uint32_t len) {
 
     uint32_t total = 0;
     uint32_t seq_base = 0;
-    uint32_t track_seq_bases[512];
+    uint32_t track_seq_bases[MAX_TRACKS];
     for (uint32_t i = 0; i < nt; i++) {
         track_seq_bases[i] = seq_base;
         uint32_t c = walk_track(track_ptrs[i], track_lens[i], 0, 0, seq_base);
@@ -367,7 +377,7 @@ int smf_load(const uint8_t *data, uint32_t len) {
         last_tick = e->abs_tick;
         double st = time_accum * (double)RENDER_RATE + 0.5;
         e->sample_time = (st < 0.0) ? 0 : (uint32_t)st;
-        if (e->kind == 2) cur_tempo = e->tempo_usec;
+        if (e->kind == EKIND_TEMPO) cur_tempo = e->tempo_usec;
     }
 
     g_events = arr;
@@ -382,13 +392,15 @@ void smf_set_loop(int32_t loops) {
 }
 
 static void dispatch_event(Event *e) {
-    if (e->kind == 0) {
-        synth_midi(e->status, e->d1, e->d2);
-    } else if (e->kind == 1) {
-        synth_sysex(e->data, e->data_len);
+    switch (e->kind) {
+        case EKIND_MIDI:
+            return synth_midi(e->status, e->d1, e->d2);
+        case EKIND_SYSEX:
+            return synth_sysex(e->data, e->data_len);
+        case EKIND_TEMPO:
+        /* no action, already folded into sample_time precompute */
+            break;
     }
-    /* kind==2 (tempo): already folded into the sample_time precompute, no
-     * runtime action needed. */
 }
 
 /* Rewinds the sequencer to the top of the loaded song. Clearing g_finished

@@ -73,8 +73,8 @@
  * unaffected by the slicing: N one-shot calls of length k are equivalent to
  * one call of length N*k except that modulation now refreshes between
  * them, so gain smoothing and the GAIN_CEILING clamp keep working exactly
- * as before, just with finer-grained inputs. */
-#define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
+ * as before, just with finer-grained inputs. Defined in voice.h since
+ * voice.c's EG2 stepping shares this exact cadence. */
 
 static int16_t sat_add_i16(int32_t a, int32_t b) {
     int32_t s = a + b;

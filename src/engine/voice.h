@@ -20,6 +20,13 @@
 #endif
 #define RENDER_RATE (BASE_RATE * RESAMPLE_FACTOR)
 
+/* Sub-block modulation granularity shared by render.c's LFO stepping and
+ * voice.c's EG2 stepping -- both must advance modulation at the same
+ * cadence, so this is the one definition both include instead of two
+ * separately-maintained copies. See render.c's render_frames for why this
+ * cadence exists at all. */
+#define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
+
 /* RESAMPLE_FACTOR is an INTEGER multiplier, never a rate ratio. Writing
  * ((double)48000/(double)BASE_RATE) here does not give you a 48kHz engine, it
  * gives you a silently detuned one: RENDER_RATE becomes a double, every

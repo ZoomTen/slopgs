@@ -92,17 +92,20 @@ void voice_pool_reset(void) {
 }
 
 /* SPEC.md S3.3.3: cents-to-Q12-ratio via the T2/T3 table decomposition.
- * The +-4800 clamp below is NOT a reimplementation shortcut -- SPEC.md
+ * The +-CENTS_CLAMP clamp below is NOT a reimplementation shortcut -- SPEC.md
  * S3.3.3 confirms it byte-for-byte in the real driver's CentsToRatio
  * (0x18e2c-0x18e6c, "clamp(cents, -4800, 4800) ... two-sided, sign-aware
  * clamp", matching T3's +-48-semitone table domain exactly). Left as-is
  * even after adding RPN1/RPN2 into the cents sum: the reference file's
  * actual RPN2 usage (+-1200/+-2400 cents) plus ordinary bend/base_cents
  * stays far under 4800, and raising this clamp would deviate from a
- * confirmed hardware behaviour, not fix a bug. */
+ * confirmed hardware behaviour, not fix a bug. Also applied to EG2's pitch
+ * contribution in voice_step_eg2 -- same hardware bound, same table domain. */
+#define CENTS_CLAMP 4800
+
 static int32_t cents_to_ratio_q12(int32_t cents) {
-    if (cents > 4800) cents = 4800;
-    if (cents < -4800) cents = -4800;
+    if (cents > CENTS_CLAMP) cents = CENTS_CLAMP;
+    if (cents < -CENTS_CLAMP) cents = -CENTS_CLAMP;
     if (cents >= -100 && cents <= 100) {
         return g_table_cents[cents + 100];
     }
@@ -258,6 +261,12 @@ static double lfo_freq_from_tc(int32_t tc) {
 #define RELEASE_FLOOR_S 0.060
 #endif
 
+/* The fast/choke-release time-constant clamp, SPEC.md S5.6's measured 70.0ms
+ * figure (see the file header comment above). Overridable -D. */
+#ifndef FAST_RELEASE_S
+#define FAST_RELEASE_S 0.070
+#endif
+
 /* Audible-level floor for release finish detection, linear. GAIN_CEILING
  * (~0.5) is a voice's structural maximum gain, so 1e-4 here is -74dB below
  * a full-scale voice -- SPEC.md's -80dB `[A:0x19733]` constant read against
@@ -344,9 +353,10 @@ static double exp_coef_scaled(double seconds, double mult) {
  * changing any rendered sample. SPEC.md S6.6 explicitly marks the envelope
  * generator's own cadence `[O]` and warns against inferring it from the
  * mixer's ramp_period, so this is a documented choice, not a recovered one.
- * MUST stay equal to render.c's LFO_UPDATE_FRAMES: same base, same scaling,
- * but two separate defines -- change one and change the other. */
-#define EG2_BLOCK_FRAMES (64 * RESAMPLE_FACTOR)
+ * Currently tied to render.c's LFO_UPDATE_FRAMES (voice.h) via this alias --
+ * kept as its own name since EG2's cadence has been a live open question
+ * (see above) and may need to diverge from the LFO's again. */
+#define EG2_BLOCK_FRAMES LFO_UPDATE_FRAMES
 #define EG2_BLOCK_RATE ((double)RENDER_RATE / (double)EG2_BLOCK_FRAMES)
 
 /* EG2 segment shape. EG1's segments are exponential in AMPLITUDE because that
@@ -363,6 +373,10 @@ static double exp_coef_scaled(double seconds, double mult) {
 #ifndef EG2_LINEAR_SEGMENTS
 #define EG2_LINEAR_SEGMENTS 1
 #endif
+
+/* "Close enough" threshold for snapping a decaying/releasing envelope level
+ * to its target (sustain level or zero) instead of asymptoting forever. */
+#define ENV_SNAP_EPSILON 0.0005
 
 static double eg2_coef(double seconds) {
     if (seconds <= 0.0) return 0.0;
@@ -393,7 +407,7 @@ static int32_t voice_step_eg2(Voice *v) {
 #else
             v->eg2_level = v->eg2_sustain_level + (v->eg2_level - v->eg2_sustain_level) * v->eg2_decay_coef;
 #endif
-            if (v->eg2_level - v->eg2_sustain_level < 0.0005) {
+            if (v->eg2_level - v->eg2_sustain_level < ENV_SNAP_EPSILON) {
                 v->eg2_level = v->eg2_sustain_level;
                 v->eg2_stage = ENV_SUSTAIN;
             }
@@ -407,15 +421,15 @@ static int32_t voice_step_eg2(Voice *v) {
 #else
             v->eg2_level *= v->eg2_release_coef;
 #endif
-            if (v->eg2_level < 0.0005) { v->eg2_level = 0.0; v->eg2_stage = ENV_IDLE; }
+            if (v->eg2_level < ENV_SNAP_EPSILON) { v->eg2_level = 0.0; v->eg2_stage = ENV_IDLE; }
             break;
         case ENV_IDLE:
         default:
             return 0;
     }
     double c = v->eg2_depth_cents * v->eg2_level;
-    if (c > 4800.0) c = 4800.0;
-    if (c < -4800.0) c = -4800.0;
+    if (c > (double)CENTS_CLAMP) c = (double)CENTS_CLAMP;
+    if (c < -(double)CENTS_CLAMP) c = -(double)CENTS_CLAMP;
     return (int32_t)c;
 }
 
@@ -872,8 +886,8 @@ static void start_release(Voice *v, int fast) {
     v->held = 0;
     v->sustain_deferred = 0;
     v->env_stage = ENV_RELEASE;
-    double rel_s = fast ? 0.070 : timecents_to_seconds(v->artic->eg1_release_tc);
-    if (fast && rel_s > 0.070) rel_s = 0.070;
+    double rel_s = fast ? FAST_RELEASE_S : timecents_to_seconds(v->artic->eg1_release_tc);
+    if (fast && rel_s > FAST_RELEASE_S) rel_s = FAST_RELEASE_S;
     if (!fast && rel_s < RELEASE_FLOOR_S) rel_s = RELEASE_FLOOR_S;
     v->env_release_coef = exp_coef_scaled(rel_s, RELEASE_RATE_MULT);
     /* EG2 releases on BOTH note-off paths. SPEC.md Part 7 records that the
