@@ -42,28 +42,45 @@
  * 27.8 ms with a 12.5 ms mean, half a segment, which is where a uniformly
  * placed note-off inside one lands.
  *
- * THE CORPUS SWEEP says 128 (5.8 ms), and that is what ships. 63 items,
- * mean spectral residual / mean envelope r, against -31.1483 / 0.9238 for the
+ * THE CORPUS SWEEP says 128 (5.8 ms), and 512 ships anyway. 63 items, mean
+ * spectral residual / mean envelope r, against -31.1483 / 0.9238 for the
  * one-pole this replaces:
  *
- *      128 fr   -31.1897 / 0.9249   <- ships, 23 items better, 22 worse
+ *      128 fr   -31.1897 / 0.9249      the corpus optimum
  *      256 fr   -31.1552 / 0.9249      (one +10.5 dB outlier on probe 37)
  *      384 fr   -31.0757 / 0.9243
- *      512 fr   -30.9116 / 0.9227      the directly-measured value
+ *      512 fr   -30.9116 / 0.9227   <- ships, the directly-measured value
  *      768 fr   -30.1227 / 0.9219
  *     1024 fr   -29.3281 / 0.9160
  *
- * They disagree because we cannot match the reference's grid PHASE -- it is a
- * property of the machine that recorded it. A note-off is misplaced by up to
- * one segment in EITHER direction against the reference, so the corpus prefers
- * a segment short enough to keep that error small over one that is the right
- * length in the wrong place. The gating tests improve at every length tested
- * (sine-gate -25.00 -> -26.20, sine2 -25.50 -> -27.89 at 128), so the mechanism
- * is not in question here; only how far to apply it is.
+ * THIS IS A DELIBERATE GATE FAILURE, recorded rather than papered over: by
+ * CLAUDE.adoc's rule (targeted probe improves AND corpus mean does not regress)
+ * 128 is what should ship, and 512 costs 0.24 dB of corpus mean. It ships
+ * because three separate things say the corpus is the instrument that is wrong
+ * here, not the value:
  *
- * If a future capture ever pins the recorder's buffer size, set this to it and
- * accept the corpus cost -- -D is one flag. Do not re-fit it against the
- * corpus and call the result a measurement.
+ *   - 512's mean is dragged down by exactly TWO sparse single-note probes,
+ *     08_reverb +9.45 dB and 03_velocity +7.10, with nothing else above +3.04.
+ *     Why those two move that far is NOT diagnosed -- it is the one piece of
+ *     evidence that would settle this, and it is still owed.
+ *   - 512 wins every item that exercises the gain path this models: 25_pan_law
+ *     -12.17 dB, warm-echo -5.42, sine-gate -3.20, 32_ramp_shape -2.83,
+ *     24_gain_staging -1.60, 46_noteoff_grid -1.52, 28_expression_gate -1.34,
+ *     07_pan_volume -1.28.
+ *   - on the dropout metric the ranking inverts: field-only `dead` totals are
+ *     2260 ms for the one-pole, 3975 for 512, 5450 for 128. The corpus optimum
+ *     is the WORST of the three at inventing digital silence the reference does
+ *     not have, which the spectral mean does not see at all.
+ *
+ * The two sources can disagree at all because we cannot match the reference's
+ * grid PHASE -- that is a property of the machine that recorded it. A note-off
+ * is misplaced by up to one segment in EITHER direction, so a short segment
+ * scores better by under-applying the mechanism rather than by being right.
+ * Note that the gating tests improve at every length tested, so what is in
+ * question is how far to apply this, never whether.
+ *
+ * If a future capture pins the recorder's buffer size, set this to it. Do not
+ * re-fit it against the corpus and call the result a measurement.
  *
  * Matches smf.c's SERVICE_BLOCK_FRAMES deliberately: same buffer, two halves of
  * one mechanism, and the sweep moved them together.
@@ -72,7 +89,7 @@
  * in that sweep the block ends the segment first, so the cap would be dead
  * code. Add it if the block ever grows past 1103 frames. */
 #ifndef GAIN_SEGMENT_FRAMES
-#define GAIN_SEGMENT_FRAMES (128u * RESAMPLE_FACTOR)
+#define GAIN_SEGMENT_FRAMES (512u * RESAMPLE_FACTOR)
 #endif
 
 /* SUPERSEDED 2026-07-28, kept only as the record of what this replaced.

@@ -1579,28 +1579,36 @@ Corpus, 63 items, against the one-pole build: mean spectral residual -31.1483 ->
 -31.1897, mean envelope r 0.9238 -> 0.9249. Gating tests, which is what started
 all of this: sine-gate -25.00 -> -26.20, sine2 -25.50 -> -27.89.
 
-**The segment LENGTH is unresolved and the two sources disagree.** Direct
-measurement puts it at ~512 frames (23.2 ms) -- see the probe numbers above.
-The corpus sweep puts it at 128 (5.8 ms): -31.1897/0.9249 at 128, -31.1552/
-0.9249 at 256, -31.0757 at 384, -30.9116 at 512, -30.1227 at 768, -29.3281 at
-1024. 128 ships because that is what the gate in CLAUDE.adoc says to do, NOT
-because it is believed to be the true value.
+**The segment LENGTH ships at the measured value against the corpus gate, and
+that is a deliberate, recorded gate failure.** Direct measurement puts the
+segment at ~512 frames (23.2 ms) -- see the probe numbers above. The corpus
+sweep puts it at 128 (5.8 ms): -31.1897/0.9249 at 128, -31.1552/0.9249 at 256,
+-31.0757 at 384, -30.9116 at 512, -30.1227 at 768, -29.3281 at 1024. By
+xref:../CLAUDE.adoc[CLAUDE.adoc]'s rule 512 should not ship; it costs 0.24 dB of
+corpus mean. It ships because three things say the corpus is the instrument that
+is wrong here rather than the value:
 
-They can disagree because the reference's grid PHASE is a property of the
-machine that recorded it and cannot be matched, so a note-off is misplaced by up
-to one segment in either direction; a shorter segment keeps that error small at
-the cost of under-applying the mechanism. At 512 the mean is dragged negative by
-just two sparse single-note probes -- `08_reverb` +9.45 dB and `03_velocity`
-+7.10 dB, with nothing else above +3.04 -- while 512 wins on every item that
-exercises the gain path: `25_pan_law` -12.17, `warm-echo` -5.42, `sine-gate`
--3.20, `32_ramp_shape` -2.83, `24_gain_staging` -1.60, `46_noteoff_grid` -1.52,
-`28_expression_gate` -1.34, `07_pan_volume` -1.28. Why those two sparse probes
-move that far at 512 is NOT diagnosed, and it is the single piece of evidence
-that would settle 128 vs 512. Do that before re-fitting anything.
+* 512's mean is dragged down by exactly TWO sparse single-note probes,
+  `08_reverb` +9.45 dB and `03_velocity` +7.10, with nothing else above +3.04.
+  **Why those two move that far is not diagnosed.** That is the single piece of
+  evidence that would settle 128 vs 512 and it is still owed -- do it before
+  re-fitting anything.
+* 512 wins every item that exercises the gain path this models: `25_pan_law`
+  -12.17 dB, `warm-echo` -5.42, `sine-gate` -3.20, `32_ramp_shape` -2.83,
+  `24_gain_staging` -1.60, `46_noteoff_grid` -1.52, `28_expression_gate` -1.34,
+  `07_pan_volume` -1.28.
+* On the dropout metric the ranking inverts. Field-only `dead` totals: 2260 ms
+  for the one-pole build, 3975 for 512, 5450 for 128. The corpus optimum is the
+  WORST of the three at inventing digital silence the reference does not have,
+  and the spectral mean does not see that at all. Both new builds are worse than
+  the one-pole on this, which is its own unexplained item.
 
-**Also not clean:** at 128 the field-only `dead` total goes 2260 ms -> 5450 ms
--- we invent more digital-silence dropouts than the one-pole build did. The mean
-does not show it. Unexplained.
+The two sources can disagree at all because the reference's grid PHASE is a
+property of the machine that recorded it and cannot be matched, so a note-off is
+misplaced by up to one segment in either direction. A shorter segment scores
+better by under-applying the mechanism, not by being right. The gating tests
+improve at every length tested, so what is open is how far to apply this, never
+whether.
 
 [#item22]
 == CC121 (Reset All Controllers) does not reset Channel Volume -- RESOLVED 2026-07-26 by `[M: probe 37]`, SHIPPED
