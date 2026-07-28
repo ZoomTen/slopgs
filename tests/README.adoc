@@ -39,4 +39,10 @@
 |same as sine-gate
 |same as sine-gate
 
+|doomdrum
+|Doom E1M1
+|cymbal cutting behavior
+|cutting completely
+|cymbal still retains tail
+
 |===
