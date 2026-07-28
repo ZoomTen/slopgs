@@ -32,6 +32,8 @@ in this page via <code>msgs.wasm</code> + <code>gm.dls</code>. Per-item table be
       regression: "all the notes crashing into each other", expect: "notes reasonably separating from each other" },
     { stem: "sine2", from: "Carve Your Own Path by Abstract 64 (Zumi's cover)", tests: "gating behavior + expression + pitch bend",
       regression: "same as sine-gate", expect: "same as sine-gate" },
+    { stem: "doomdrum", from: "Doom E1M1", tests: "cymbal cutting behavior",
+      regression: "cutting completely", expect: "cymbal still retains tail" },
   ];
   const items = TESTS.map((t) => ({
     title: t.stem,
