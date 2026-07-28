@@ -190,6 +190,46 @@ are history, not current measurements.
 
 '''
 
+[#item21-addendum-doomdrum]
+== 2026-07-29 — Item 21 addendum: `tests/doomdrum.mid` reproduces the still-open level-scaling gap on a cymbal same-note retrigger -- OPEN, no fix attempted
+
+Fresh repro for xref:item21-reap[Item 21]'s closing line ("Implementing that
+level scaling is the remaining step on this item"), found via the
+`dist/compare-field.html` spectrogram tool on `tests/doomdrum.flac` vs a
+slopgs render, not by a corpus sweep.
+
+**Symptom.** 8.60-9.75s window: residual -13.7 dB, envelope `r` 0.917, pair
+rms -22.8 dB (reference) / -24.1 dB (slopgs). A visibly darker patch in the
+slopgs spectrogram sits at roughly 8.8-9.0s, inside that window; the
+same sub-window read alone (8.614-9.764s slopgs / 8.595-9.746s reference)
+measures Δ rms -1.5 dB, Δ peak -1.0 dB against the reference.
+
+**Cause, traced in `tests/doomdrum.mid`.** ch9 fires note 49 (Crash Cymbal
+1, vel 71) and note 57 (Crash Cymbal 2, vel 61) together at t=8.721s, then
+retriggers both, vel 23, at t=8.929s -- 208 ms later, while the first hit is
+still ringing. Both crash regions carry `usKeyGroup==0` (checked directly
+against `dist/gm.dls`'s standard-kit region table), so key-group choke
+(SPEC.adoc xref:SPEC.adoc#s3-8-1[S3.8.1]) never applies here. What fires
+instead is the same-note retrigger scan in `voice_note_on`
+(`src/engine/voice.c:1070`-`1075`): a note-on for a (channel, note) already
+sounding fast-releases the prior voice through the same `start_release(v,
+1)` path as the key-group choke and the reserve top-up.
+
+That fast-release is where Item 21's open gap bites: `FAST_RELEASE_S`
+(`src/engine/voice.c:301`-`303`, 14.29 ms) clamps the segment uniformly
+regardless of the voice's envelope level at the moment of retrigger, where
+the driver's `0x19834` clamps a duration `0x197dc` has ALREADY scaled by
+that level (xref:item21-reap[Item 21 addendum, "reap"]). The loud
+(vel 71) crash retriggered only 208 ms in is exactly the case that gap
+predicts will drain differently from the reference -- and the darker patch
+lands within a few tens of ms of the 8.929s retrigger.
+
+**Status:** corroborating evidence only. No fix attempted here; Item 21's
+remaining step (level-scaling the fast-release clamp before applying it) is
+unchanged.
+
+'''
+
 [#item25]
 == 2026-07-28 — GM System Off cannot both call `ResetDevice` and leave the GS-mode flag untouched -- OPEN, not resolved here
 
