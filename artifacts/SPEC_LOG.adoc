@@ -190,6 +190,71 @@ are history, not current measurements.
 
 '''
 
+[#item25]
+== 2026-07-28 — GM System Off cannot both call `ResetDevice` and leave the GS-mode flag untouched -- OPEN, not resolved here
+
+**Path:** `SPEC.adoc` xref:SPEC.adoc#s4-5[S4.5] (SysEx table, GM System Off row) and
+xref:SPEC.adoc#s4-6-4[S4.6.4] (reset-state summary, GS-mode row) vs.
+xref:SPEC.adoc#s4-6-1[S4.6.1] (`ResetDevice`'s own field table).
+
+xref:SPEC.adoc#s4-5[S4.5]'s GM System Off row (`F0 7E <any> 09 02 F7`) states both
+things at once: "Calls `ResetDevice`" and "GS-mode flag **untouched**",
+the latter cited to `[A:0x136f3]` (`je 0x136fc` skips the dedicated clear
+when sub-ID2 `!= 1`). But xref:SPEC.adoc#s4-6-1[S4.6.1] lists
+`device+0xf54` (GS-mode flag) `= 0` among ``ResetDevice``'s two
+device-global writes, cited to `[A:0x123c5]` and described as
+unconditional. If `ResetDevice` really is called on the Off path, the flag
+is already zero by the time the skipped clear at `0x136f5` would have run,
+and "untouched" is true only of that one instruction, not of the message.
+
+The two readings cannot both stand:
+
+* If `[A:0x123c5]` is unconditional and `ResetDevice` is called on the
+  sub-ID2 `== 2` path, then GM System Off **does** clear GS mode, and
+  xref:SPEC.adoc#s4-6-4[S4.6.4]'s "unchanged (System Off)" cell is wrong —
+  that is a *net-effect* column, so it must account for the callee's
+  writes, not just the caller's.
+* If GM System Off does **not** clear GS mode, then `ResetDevice` is not
+  actually called on that path (or its `0xf54` store is gated), and
+  xref:SPEC.adoc#s4-5[S4.5]'s "Calls `ResetDevice`" is the wrong half —
+  which would in turn put every other GM-System-Off cell in
+  xref:SPEC.adoc#s4-6-4[S4.6.4] (Volume 100, Pan 64, tuning grid zeroed, …)
+  in doubt, since all of them are inherited from `ResetDevice`.
+
+**Secondary observation, same passage.** xref:SPEC.adoc#s4-5[S4.5]'s
+converging-triggers paragraph says the shared tail at `0x137fa` is always
+taken "because the gating flag was just set to `1` two instructions earlier
+in **both callers** `[A:0x13807]`". That holds for GS Reset (`0x137f4` sets
+the flag) but not for GM System On, which *clears* it at `0x136f5`. Either
+the tail's gate is not the GS-mode flag, or it is not always true on the
+GM path. A future pass at these addresses should settle this at the same
+time.
+
+**Not resolved here, and no SPEC.adoc passage changed.** Deciding between
+the readings needs the binary; this entry records the contradiction and
+what would settle it, per the rule that SPEC.adoc carries no unresolved
+alternatives.
+
+**Where a future RE pass should look.** `0x136d5`–`0x136fc` (the
+Universal Non-Realtime `09 xx` branch), specifically whether the
+`call 0x12354` at `0x136e1` is reached on the sub-ID2 `== 2` path or only
+on `== 1`; and `0x123be`–`0x123d7`, to confirm the `0xf54` store at
+`0x123c5` sits outside any branch.
+
+**Falsifiable without the binary.** GS Reset, then CC0 `= 8` on a channel,
+then GM System Off, then Program Change 80 and a note. Bank 8 program 80 is
+Sine Wave and bank 0 program 80 is Square Wave in `gm.dls`, so the two
+readings are audibly distinct: a Sine Wave means GS mode survived GM System
+Off, a Square Wave means it did not. Worth a probe in `make_probes.py` when
+a reference render can be captured.
+
+**Downstream.** `impl-chart/CHART.adoc` currently follows the reading
+xref:SPEC.adoc#s4-5[S4.5] states explicitly (GM System Off leaves GS mode
+as it was), in both its Bank Select warning and its SysEx table. If this
+item resolves the other way, both passages need replacing.
+
+'''
+
 [#item21]
 == 2026-07-28 — Ordinary-note-off release is too short against isolate references -- fitted floor SHIPPED, superseded 2026-07-28: the real defect is in the GAIN path, see the resolution addendum below
 
