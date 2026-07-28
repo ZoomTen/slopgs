@@ -13,6 +13,7 @@ heading:
   h1_font_size: $base_font_size * 2.2
   h2_font_size: $base_font_size * 1.5
   h3_font_size: $base_font_size * 1.2
+  h4_font_size: $base_font_size * 1.1
 block:
   margin_bottom: 2
 list:

@@ -65,8 +65,16 @@ fitted values. The numbers are stable ids, not positions in the document.
 
 [NOTE]
 --
-When making ANY correction to the spec, you must FIRST write to `SPEC_LOG.adoc`
-and then COMPLETELY REPLACE, not append to, the corresponding passage(s) in `SPEC.adoc` and/or `CHART.adoc`.
+This applies when a *behavioral finding changes* — a claim in `SPEC.adoc` is
+now known to be wrong, incomplete, or superseded. In that case you must FIRST
+write the correction to `SPEC_LOG.adoc`, and only then COMPLETELY REPLACE, not
+append to, the corresponding passage(s) in `SPEC.adoc` and/or `CHART.adoc`.
+
+It does NOT apply when `SPEC.adoc` is unchanged and another document is merely
+being brought back into agreement with it — e.g. fixing a `CHART.adoc` claim
+that never matched the SPEC in the first place. That is a documentation fix:
+edit the document and stop. `SPEC_LOG.adoc` records driver-vs-observed
+discrepancies and `[F]` justifications, nothing else.
 --
 
 `impl-chart/CHART.adoc`:: A user-facing *MIDI Implementation Chart* that matches the `SPEC.adoc`.
