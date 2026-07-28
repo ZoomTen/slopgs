@@ -66,8 +66,17 @@ fitted values. The numbers are stable ids, not positions in the document.
 [NOTE]
 --
 When making ANY correction to the spec, you must FIRST write to `SPEC_LOG.adoc`
-and then COMPLETELY REPLACE, not append to, the corresponding passage(s) in `SPEC.adoc`.
+and then COMPLETELY REPLACE, not append to, the corresponding passage(s) in `SPEC.adoc` and/or `CHART.adoc`.
 --
+
+`impl-chart/CHART.adoc`:: A user-facing *MIDI Implementation Chart* that matches the `SPEC.adoc`.
++
+Because it describes the practical MIDI implementation (i.e. what a musician
+should expect when using this synth), it must be free of any internal code details.
+It is as current as `SPEC.adoc` is, and so `CHART.adoc` must be updated whenever
+behavior in `SPEC.adoc` does.
++
+Any assets/images you may have created should be in the same `impl-chart/` directory.
 
 `make_probes.py`:: Script to generate MIDIs that aim to test a
 specific aspect of the engine.

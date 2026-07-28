@@ -1,0 +1,48 @@
+extends: default
+page:
+  size: A4
+  columns: 2
+  column_gap: 12
+  margin: [0.5in, 0.45in, 0.6in, 0.45in]
+base:
+  font_size: 8
+  line_height: 1
+  line_height_length: 9
+  text_align: left
+heading:
+  h1_font_size: $base_font_size * 2.2
+  h2_font_size: $base_font_size * 1.5
+  h3_font_size: $base_font_size * 1.2
+block:
+  margin_bottom: 2
+list:
+  item_spacing: 2
+description_list:
+  term_spacing: 2
+table:
+  cell_padding: 2
+toc:
+  line_height: 1.15
+admonition:
+  border_width: 0.75
+  border_color: $base_border_color
+  note_background_color: E7F2FA
+  tip_background_color: E7F7EC
+  warning_background_color: FFF8E1
+  important_background_color: FBEAEA
+  caution_background_color: FFF1E0
+  label:
+    text_transform: uppercase
+    font_style: bold
+role:
+  lead:
+    font_size: $base_font_size
+font:
+  catalog:
+    merge: true
+    Noto Sans:
+      normal: GEM_FONTS_DIR/notosans-regular-subset.ttf
+      bold: GEM_FONTS_DIR/notosans-bold-subset.ttf
+      italic: GEM_FONTS_DIR/notosans-italic-subset.ttf
+      bold_italic: GEM_FONTS_DIR/notosans-bold_italic-subset.ttf
+base_font_family: Noto Sans

@@ -1,0 +1,916 @@
+= slopgs — MIDI Implementation Chart
+:doctype: article
+:toc:
+:sectnums:
+
+This document describes the MIDI behavior of the `slopgs` MIDI implementation,
+an emulation of the Microsoft GS Wavetable Synth.
+
+Updates along with `SPEC.adoc`.
+
+[#s1]
+== Receive data
+
+In every byte pattern below, `n` is the MIDI channel nibble (`0`–`F`,
+`0`=channel 1 … `F`=channel 16).
+
+
+[#s1-1]
+=== Channel Voice Message
+
+`8n kk vv` — Note off::
+* `kk` = note number (`00`–`7F`, 0–127)
+* `vv` = release velocity (`00`–`7F`)
++
+Received, **ignored**
+
+`9n kk vv` — Note on::
+* `kk` = note number (0–127)
+* `vv` = velocity (`01`–`7F`, 1–127)
++
+Sets loudness on a fixed curve
+(perceptually, amplitude scales with the square of velocity/127)
+
+`An kk vv` — Polyphonic Key Pressure (aftertouch)::
+**Not recognized.** Received, no audible effect.
+
+`Bn cc vv` — Control Change::
+See <<scc,Control Change>>.
+
+`Cn pp` — Program Change::
+* `pp` = program number (`00`–`7F`, 0–127)
++
+Combines with whatever Bank Select value is currently in
+effect (<<scc,Control Change>>) to select an instrument.
+
+`Dn vv` — Channel Pressure (aftertouch)::
+**Not recognized.** Received, no audible effect.
+
+`En ll mm` — Pitch Bend Change::
+* `ll` = LSB
+* `mm` = MSB
+* Combine to a 14-bit value `mm` × 128 + `ll`.
+* Center is `00 40` (8192, no bend)
+* Applied continuously to every sounding note on the channel — a bend
+arriving mid-note is heard *immediately*, not just on the next note. Range
+is set by RPN0, default ±2 semitones (<<scc,Control Change>>).
+
+[#scc]
+=== Control Change
+
+Only the controllers below are recognized. **Every other CC number
+ is received and produces no effect, silently — never an error.**
+
+`Bn 00 mm` — Bank Select MSB::
+See Bank Select LSB.
+
+`Bn 20 ll` — Bank Select LSB::
+* Received and stored, but has **no effect until a GS Reset <<s1-4,System Exclusive>> has been
+received at least once**.
+* Takes effect on *next Program Change*, and _only_ after the SysEx.
+
+`Bn 01 vv` — Modulation Wheel:: Recognized.
+
+`Bn 06 mm` — Data Entry MSB::
+See Data Entry LSB.
+
+`Bn 26 ll` — Data Entry LSB::
+Recognized only together with RPN 0/1/2 selection, below; meaningless on
+their own.
+
+`Bn 07 vv` — Channel Volume:: Recognized. Default `64` (100).
+
+`Bn 0A vv` — Pan:: Recognized. Default `40` (64, center).
+
+`Bn 0B vv` — Expression:: Recognized. Default `7F` (127).
+
+`Bn 40 vv` — Hold 1 (Sustain)::
+Recognized.
+* `00`–`3F` = off
+* `40`–`7F` = on (default)
+
+`Bn 5B vv` — Effects 1 Depth (Reverb Send)::
+**Not recognized.** Received w/o effect.
+
+`Bn 5D vv` — Effects 3 Depth (Chorus Send)::
+**Not recognized.** Received w/o effect.
+
+`Bn 62 ll` — NRPN LSB::
+See NRPN MSB.
+
+`Bn 63 mm` — NRPN MSB::
+Recognized only as "deselect the current RPN". **No NRPN parameter is ever addressable** — Data Entry sent after an NRPN
+selection has no effect.
++
+Sending either, with any value, immediately clears whatever RPN was previously selected to Null.
+
+
+`Bn 64 ll` — RPN LSB::
+See RPN MSB.
+
+`Bn 65 mm` — RPN MSB::
+Selects a Registered Parameter for the following Data Entry (CC6/CC38)
+messages to target:
++
+[options="header",cols="1,1,1"]
+|===
+| RPN (MSB,LSB) | Parameter | Applied
+| `00 00`
+| Pitch Bend Sensitivity. Data Entry MSB = semitones (0–24); LSB ignored. Default 2 semitones.
+| Live — affects notes already sounding.
+| `01 00`
+| Channel Fine Tuning, ±100 cents (14-bit Data Entry).
+| **Latched at Note On.** Changing it while a note is held does not retune that note.
+| `02 00`
+| Channel Coarse Tuning, ±64 semitones (Data Entry MSB only; LSB ignored).
+| **Latched at Note On**, same as Fine Tuning.
+| `7F 7F`
+| Null (no parameter selected).
+| —
+| Others
+| Any
+| Stored, but *no effect*
+|===
+
+
+`Bn 78 00` — All Sound Off::
+Recognized. Releases (does not hard-cut) every sounding note on the
+channel, **bypassing** a held sustain pedal.
+
+`Bn 79 00` — Reset All Controllers::
+Recognized
+Bank/Program and the RPN/NRPN selection are left untouched,
+otherwise re-arms:
++
+[options="header",cols="1,4"]
+|===
+|Parameter
+|Value
+|Channel Volume|100
+|Pan|64 (center)
+|Expression|127
+|Pitch Bend|8192 (center)
+|Modulation|0
+|Sustain pedal|Released
+|===
+
+[WARNING]
+--
+Reset All Controllers (CC121), GS Reset, GM System On/Off and System Reset
+(`FF`) *DO NOT reset* RPN0/1/2 or which RPN is currently selected — the
+selection and tuning survive every reset path.
+--
+
+`Bn 7A 00` — Local Control::
+**Not applicable** — `slopgs` has no local keyboard to disconnect.
+Received, no effect.
+
+`Bn 7B 00` — All Notes Off::
+Recognized. Releases every sounding note on the channel, **honoring** a
+held sustain pedal (notes under a held pedal stay held).
+
+`Bn 7C 00` — Omni Mode Off::
+See Omni Mode On.
+
+`Bn 7D 00` — Omni Mode On::
+**Not recognized.** Received, no mode change (<<s1-2,Channel Mode
+Message>>).
+
+`Bn 7E mm` — Mono Mode On (Poly Off)::
+Recognized. Switches the channel to mono and silences every
+currently-sounding note on it (implicit all-notes-off, per the MIDI
+spec).
++
+`mm` (requested mono voice count) is **ignored** — the channel
+always behaves as if `mm`=1.
+
+`Bn 7F 00` — Poly Mode On::
+Recognized. Switches the channel to poly and silences every
+currently-sounding note on it (implicit all-notes-off).
+
+[#s1-2]
+=== Channel Mode Message
+
+Mode is only ever Omni Off (each channel answers exactly the Part(s)
+mapped to it — see Basic Channel in the <<s3,chart>>, below). Omni On/Off
+messages are received but never change this. Mono/Poly are switchable
+per-channel via CC126/CC127 (<<scc,Control Change>>); a channel is
+otherwise Poly by default.
+
+[#s1-3]
+=== System Common Message
+
+Song Position Pointer, Song Select and Tune Request: **not recognized.**
+`slopgs` renders a Standard MIDI File on its own clock and has no use for
+sequencer-sync messages.
+
+[#s1-4-rt]
+=== System Real Time Message
+
+`F8` Timing Clock, `FA` Start, `FB` Continue, `FC` Stop::
+**Not recognized.**
+
+`FE` Active Sensing::
+**Not recognized** — received, no effect, and no 300 ms watchdog timeout
+is armed by receiving it (irrelevant, since `slopgs` never transmits it
+either).
+
+`FF` Reset::
+Recognized. Restores every power-on default:
++
+[options="header",cols="1,4"]
+|===
+|Parameter
+|Value
+|Bank/Program|0 / 0 / 0
+|Channel Volume|100
+|Pan|64 (center)
+|Expression|127
+|Pitch Bend|8192 (center)
+|Modulation|0
+|Per-Part tuning grid|Flat (0)
+|GS mode|Cleared (Bank Select inert until the next GS Reset)
+|===
+
+[WARNING]
+--
+Same exception as Reset All Controllers (CC121, <<scc,Control Change>>):
+the currently-selected RPN/NRPN parameter and RPN0/1/2's tuned values
+survive a Reset unchanged.
+--
+
+[#s1-4]
+=== System Exclusive Message
+
+Every recognized SysEx message below uses Roland's `DT1` ("Data set 1")
+envelope, one parameter address per message:
+
+[cols="1,2a"]
+|===
+| `F0 41 dev 42 12 aa bb cc dd`...`dd sum F7`
+|
+Roland GS-family message.
+
+* `dev` = device ID — **not checked**
+* `aa bb cc` = 21-bit parameter address.
+* `dd...dd` = data bytes for that address.
+* `sum` = checksum — **not checked**
+| `F0 7E dev 09 01 F7`
+| GM System On (Universal Non-Realtime).
+
+`dev` not checked.
+| `F0 7E dev 09 02 F7`
+| GM System Off (Universal Non-Realtime).
+
+`dev` not checked.
+| `F0 7F dev 04 01 ll mm F7`
+| Master Volume (Universal Realtime).
+
+`dev` not checked. **Only `mm` (MSB) is used; `ll` (LSB) is never read.**
+|===
+
+Recognized `DT1` addresses (`aa bb cc`):
+
+[options="header",cols="2,3,3a"]
+|===
+| Address | Parameter | Effect
+| `40 00 7F`
+| GS Reset
+| Full device reset, **and** sets GS mode (Bank Select CC0/CC32 start taking effect).
+| `40 1n 02`
+| RCV CHANNEL (GS Mode)
+| Remaps which incoming channel Part `n` listens to. Persists until a Reset.
+| `40 1n 15`
+| USE RHYTHM PART (GS Mode)
+| Nonzero = Part `n` treats its Program Change as a drum-kit selection instead of a melodic instrument. Part 10 (channel 10) defaults to this.
+| `40 1n` _any other_
+| anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, TVF/TVA modifiers, controller-destination depths, …)
+| **Not individually implemented.**
+
+Every one of these addresses is instead treated as a write into Part `n`'s 12-note Scale Tuning table (below), regardless of which parameter the address nominally names. A sequence intended to set, e.g., Reverb Macro or Part Level on real GS hardware will instead corrupt that Part's tuning.
+| `40 1n 40`–`4B`
+| Scale Tuning, one signed cents offset per semitone class (C…B), applied to Part `n`
+| Recognized as such — it's the same fallthrough as the row above, landing on its real address.
+|===
+
+**Not recognized**:
+
+* Reset to GS Standard Mode
+* System Parameters (Master Tune, Master
+Volume-via-`DT1`, Master Key-Shift, Master Pan — address family `40 00
+00`–`06`)
+* Display Data (address family `10 00 xx`, Model ID `45`)
+* Drum Setup Parameters (address family `41 xx xx` — per-drum-instrument
+key/level/pan/reverb/chorus edits)
+* Bulk Dump (address families `48
+xx xx`/`49 xx xx`)
+
+Any `DT1` (or `RQ1`)
+message with an address outside the table above, or with a manufacturer
+ID other than `41`/`7E`/`7F`, is accepted and silently dropped.
+
+[#s3]
+== MIDI Implementation Chart
+
+Basic Channel:: The MIDI channel(s) each of the 16 Parts answers to.
+
+Mode:: Refers to the MIDI Mode messages (Omni On/Off, Mono/Poly).
+`slopgs` always behaves as Omni Off; only the Mono/Poly half of Mode is
+switchable, per channel.
+
+Note Number / True Voice:: The range of note numbers accepted, and the
+range actually reproduced. Note number 60 is middle C.
+
+Velocity:: Whether Note On and Note Off messages' velocity byte affects
+anything.
+
+After Touch:: `Key's` = polyphonic (per-note) aftertouch, `Ch's` = channel
+(monophonic) aftertouch.
+
+Control Change:: See <<scc,Control Change>> for the full per-controller
+list — this row just points there.
+
+Program Change:: The program numbers a Program Change message can select
+(raw message value — one less than the corresponding instrument number as
+usually printed on an instrument list).
+
+System Exclusive:: See <<s1-4,System Exclusive Message>> for the full
+address table.
+
+System Common, System Real Time:: Sequencer/drum-machine sync messages.
+Not used, except Reset (`FF`).
+
+[#s3-1]
+=== Implementation Chart
+
+[options="header",cols="2,1,1,2"]
+|===
+| Func | Transmit | Accept | Remarks
+
+| Basic Channel +
+Default
+| ×
+| 1 – 16
+| Part _n_ listens on channel _n_ by default.
+
+| Basic Channel +
+Changed
+| ×
+| 1 – 16, each
+| Via GS RCV CHANNEL.
+
+| Mode +
+Default
+| ×
+| Mode 3
+| Omni Off, Poly.
+
+| Mode +
+Messages
+| ×
+| Mono, Poly (CC126/127)
+| Omni On/Off received, no effect.
+
+| Mode +
+Altered
+| ×
+| Mode 3, 4 (m=1)
+|
+
+| Note Number
+| ×
+| 0 – 127
+| Depends on the loaded `gm.dls`.
+
+| True Voice
+| ×
+| 0 – 127
+| Depends on the loaded `gm.dls`.
+
+| Pitch Bender
+| ×
+| O
+| 14-bit, continuous.
+
+| Control Change
+| ×
+| see below
+| Its own table, directly below this one.
+
+| Prog Change
+| ×
+| O
+|
+
+| True #
+| ×
+| 0 – 127
+|
+
+| System Exclusive
+| ×
+| O
+a|
+
+* GM On/Off
+* GS Reset
+* RCV CHANNEL
+* USE RHYTHM PART
+* Master Volume
+* Scale Tuning
+* *Device ID and checksum unchecked*
+
+| System Common
+| ×
+| ×
+|
+
+| System Real Time
+| ×
+| ×
+| Except Reset — see Aux Messages, below.
+
+4+^| *Aux Messages*
+
+| Local ON/OFF
+| ×
+| ×
+|
+
+| All Notes OFF
+| ×
+| O (CC123)
+|
+
+| Active Sense
+| ×
+| ×
+|
+
+| Reset
+| ×
+| O (`FF`)
+|
+
+4+^| *Velocity*
+
+| Note ON
+| ×
+| O
+|
+
+| Note OFF
+| ×
+| ×
+|
+
+4+^| *After Touch*
+
+| Key's
+| ×
+| ×
+|
+
+| Ch's
+| ×
+| ×
+|
+
+|===
+
+[#s3-2]
+=== Control Change
+
+[options="header",cols="1,1,1,2"]
+|===
+| CC | Transmit | Accept | Remarks
+
+| Bank Select +
+0 / 32
+| ×
+| cond.
+| No effect until a GS Reset has been received.
+
+| Mod Wheel +
+1
+| ×
+| O
+|
+
+| Data Entry +
+6 / 38
+| ×
+| O
+| Only meaningful with RPN, below.
+
+| Channel Volume +
+7
+| ×
+| O
+| Default 100.
+
+| Pan +
+10
+| ×
+| O
+| Default 64 (center).
+
+| Expression +
+11
+| ×
+| O
+| Default 127.
+
+| Hold 1 +
+64
+| ×
+| O
+|
+
+| Reverb Send +
+91
+| ×
+| ×
+| No reverb processor exists.
+
+| Chorus Send +
+93
+| ×
+| ×
+| No chorus processor exists.
+
+| NRPN +
+98 / 99
+| ×
+| cond.
+| Only deselects the current RPN; no NRPN parameter is ever addressable.
+
+| RPN +
+100 / 101
+| ×
+| O
+| Pitch Bend Sensitivity / Fine Tune / Coarse Tune only.
+
+| All Sound Off +
+120
+| ×
+| O
+| Bypasses a held sustain pedal.
+
+| Reset All Ctrl +
+121
+| ×
+| O
+| Bank/Program and RPN selection untouched.
+
+| Local Control +
+122
+| ×
+| ×
+| No local keyboard to disconnect.
+
+| All Notes Off +
+123
+| ×
+| O
+| Honors a held sustain pedal.
+
+| Omni Off +
+124
+| ×
+| ×
+|
+
+| Omni On +
+125
+| ×
+| ×
+|
+
+| Mono On +
+126
+| ×
+| O
+| Also silences the channel (implicit all-notes-off).
+
+| Poly On +
+127
+| ×
+| O
+| Also silences the channel (implicit all-notes-off).
+
+| Other +
+—
+| ×
+| ×
+| No effect, no error.
+
+|===
+
+[NOTE]
+--
+* `O` : recognized/handled.
+* `×` : received (or n/a) with no effect.
+* `cond.` : recognized, but only under a stated condition — see Remarks.
+
+Mode 1: Omni On, Poly. +
+Mode 2: Omni On, Mono. +
+Mode 3: Omni Off, Poly. +
+Mode 4: Omni Off, Mono.
+--
+
+[#s4]
+== Specifications
+
+Number of Parts:: 16.
+Maximum Polyphony:: 54 voices (48 sustained under continuous overload)
++
+An
+automatic accelerated-release policy engages once demand exceeds the
+pool, freeing voices faster than a plain steal-oldest policy would).
+Effects:: None.
+Wavetable source:: A DLS-1 sample collection. (Depicted here is the standard `gm.dls`.)
+Output format:: 22050 Hz, stereo, 16-bit signed PCM.
+
+[#s5]
+== Presets
+
+[NOTE]
+--
+All tables in this section depicts Microsoft's `gm.dls`, `slopgs` does not provide one. Your chosen DLS file will vary.
+--
+
+[#s5-1]
+=== Instruments
+
+[cols="1,3,5",options="header"]
+|===
+| Program | Name (bank 0) | Variants (bank MSB: name)
+
+3+^| **Piano**
+| 0 | Piano 1 | 8: Piano 1 +
+16: Piano 1d
+| 1 | Piano 2 | 8: Piano 2
+| 2 | Piano 3 | 8: Piano 3
+| 3 | Honky-tonk | 8: Honky-tonk
+| 4 | E.Piano 1 | 8: Detuned EP 1 +
+16: E.Piano 1v +
+24: 60's E.Piano
+| 5 | E.Piano 2 | 8: Detuned EP 2 +
+16: E.Piano 2v
+| 6 | Harpsichord | 8: Coupled Hps. +
+16: Harpsichord +
+24: Harpsi.o
+| 7 | Clav. | —
+
+3+^| **Chromatic Percussion**
+| 8 | Celesta | —
+| 9 | Glockenspiel | —
+| 10 | Music Box | —
+| 11 | Vibraphone | 8: Vibraphone
+| 12 | Marimba | 8: Marimba
+| 13 | Xylophone | —
+| 14 | Tubular-bell | 8: Church Bell +
+9: Carillon
+| 15 | Santur | —
+
+3+^| **Organ**
+| 16 | Organ 1 | 8: Detuned Or.1 +
+16: 60's Organ 1 +
+32: Organ 4
+| 17 | Organ 2 | 8: Detuned Or.2 +
+32: Organ 5
+| 18 | Organ 3 | —
+| 19 | Church Org.1 | 8: Church Org.2 +
+16: Church Org.3
+| 20 | Reed Organ | —
+| 21 | Accordion Fr | 8: Accordion It
+| 22 | Harmonica | —
+| 23 | Bandoneon | —
+
+3+^| **Guitar**
+| 24 | Nylon-str.Gt | 8: Ukulele +
+16: Nylon Gt.o +
+32: Nylon Gt.2
+| 25 | Steel-str.Gt | 8: 12-str.Gt +
+16: Mandolin
+| 26 | Jazz Gt. | 8: Hawaiian Gt.
+| 27 | Clean Gt. | 8: Chorus Gt.
+| 28 | Muted Gt. | 8: Funk Gt. +
+16: Funk Gt.2
+| 29 | Overdrive Gt | —
+| 30 | DistortionGt | 8: Feedback Gt.
+| 31 | Gt.Harmonics | 8: Gt. Feedback
+
+3+^| **Bass**
+| 32 | Acoustic Bs. | —
+| 33 | Fingered Bs. | —
+| 34 | Picked Bs. | —
+| 35 | Fretless Bs. | —
+| 36 | Slap Bass 1 | —
+| 37 | Slap Bass 2 | —
+| 38 | Synth Bass 1 | 1: SynthBass101 +
+8: Synth Bass 3
+| 39 | Synth Bass 2 | 8: Synth Bass 4 +
+16: Rubber Bass
+
+3+^| **Strings**
+| 40 | Violin | 8: Slow Violin
+| 41 | Viola | —
+| 42 | Cello | —
+| 43 | Contrabass | —
+| 44 | Tremolo Str | —
+| 45 | PizzicatoStr | —
+| 46 | Harp | —
+| 47 | Timpani | —
+
+3+^| **Ensemble**
+| 48 | Strings | 8: Orchestra
+| 49 | Slow Strings | —
+| 50 | Syn.Strings1 | 8: Syn.Strings3
+| 51 | Syn.Strings2 | —
+| 52 | Choir Aahs | 32: Choir Aahs 2
+| 53 | Voice Oohs | —
+| 54 | SynVox | —
+| 55 | OrchestraHit | —
+
+3+^| **Brass**
+| 56 | Trumpet | —
+| 57 | Trombone | 1: Trombone 2
+| 58 | Tuba | —
+| 59 | MutedTrumpet | —
+| 60 | French Horns | 1: Fr.Horn 2
+| 61 | Brass 1 | 8: Brass 2
+| 62 | Synth Brass1 | 8: Synth Brass3 +
+16: AnalogBrass1
+| 63 | Synth Brass2 | 8: Synth Brass4 +
+16: AnalogBrass2
+
+3+^| **Reed**
+| 64 | Soprano Sax | —
+| 65 | Alto Sax | —
+| 66 | Tenor Sax | —
+| 67 | Baritone Sax | —
+| 68 | Oboe | —
+| 69 | English Horn | —
+| 70 | Bassoon | —
+| 71 | Clarinet | —
+
+3+^| **Pipe**
+| 72 | Piccolo | —
+| 73 | Flute | —
+| 74 | Recorder | —
+| 75 | Pan Flute | —
+| 76 | Bottle Blow | —
+| 77 | Shakuhachi | —
+| 78 | Whistle | —
+| 79 | Ocarina | —
+
+3+^| **Synth Lead**
+| 80 | Square Wave | 1: Square +
+8: Sine Wave
+| 81 | Saw Wave | 1: Saw +
+8: Doctor Solo
+| 82 | Syn.Calliope | —
+| 83 | Chiffer Lead | —
+| 84 | Charang | —
+| 85 | Solo Vox | —
+| 86 | 5th Saw Wave | —
+| 87 | Bass & Lead | —
+
+3+^| **Synth Pad**
+| 88 | Fantasia | —
+| 89 | Warm Pad | —
+| 90 | Polysynth | —
+| 91 | Space Voice | —
+| 92 | Bowed Glass | —
+| 93 | Metal Pad | —
+| 94 | Halo Pad | —
+| 95 | Sweep Pad | —
+
+3+^| **Synth Effects**
+| 96 | Ice Rain | —
+| 97 | Soundtrack | —
+| 98 | Crystal | 1: Syn Mallet
+| 99 | Atmosphere | —
+| 100 | Brightness | —
+| 101 | Goblin | —
+| 102 | Echo Drops | 1: Echo Bell +
+2: Echo Pan
+| 103 | Star Theme | —
+
+3+^| **Ethnic**
+| 104 | Sitar | 1: Sitar 2
+| 105 | Banjo | —
+| 106 | Shamisen | —
+| 107 | Koto | 8: Taisho Koto
+| 108 | Kalimba | —
+| 109 | Bagpipe | —
+| 110 | Fiddle | —
+| 111 | Shanai | —
+
+3+^| **Percussive**
+| 112 | Tinkle Bell | —
+| 113 | Agogo | —
+| 114 | Steel Drums | —
+| 115 | Woodblock | 8: Castanets
+| 116 | Taiko | 8: Concert BD
+| 117 | Melo. Tom 1 | 8: Melo. Tom 2
+| 118 | Synth Drum | 8: 808 Tom +
+9: Elec Perc.
+| 119 | Reverse Cym. | —
+
+3+^| **Sound Effects**
+| 120 | Gt.FretNoise | 1: Gt.Cut Noise +
+2: String Slap
+| 121 | Breath Noise | 1: Fl.Key Click
+| 122 | Seashore | 1: Rain +
+2: Thunder +
+3: Wind +
+4: Stream +
+5: Bubble
+| 123 | Bird | 1: Dog +
+2: Horse-Gallop +
+3: Bird 2
+| 124 | Telephone 1 | 1: Telephone 2 +
+2: DoorCreaking +
+3: Door +
+4: Scratch +
+5: Wind Chimes
+| 125 | Helicopter | 1: Car-Engine +
+2: Car-Stop +
+3: Car-Pass +
+4: Car-Crash +
+5: Siren +
+6: Train +
+7: Jetplane +
+8: Starship +
+9: Burst Noise
+| 126 | Applause | 1: Laughing +
+2: Screaming +
+3: Punch +
+4: Heart Beat +
+5: Footsteps
+| 127 | Gun Shot | 1: Machine Gun +
+2: Lasergun +
+3: Explosion
+
+|===
+
+[#s5-kits]
+=== Drums
+
+[NOTE]
+--
+For a Part in rhythm mode
+(see USE RHYTHM PART, <<s1-4,System Exclusive Message>>), note numbers
+select individual drum/percussion sounds instead of a pitched instrument
+— but which sound each note number produces differs per drum kit (<<s5-kits,Drum kits>>).
+--
+
+Available kits:
+
+[options="header"]
+|===
+| Program | Kit
+| 0 | Standard
+| 8 | Room
+| 16 | Power
+| 24 | Electronic
+| 25 | TR-808
+| 32 | Jazz
+| 40 | Brush
+| 48 | Orchestra
+| 56 | SFX
+|===
+
+Standard kit maps to:
+
+[cols="1,3,1,3",options="header"]
+|===
+| Note | Sound | Note | Sound
+| 35 | Acoustic Bass Drum | 59 | Ride Cymbal 2
+| 36 | Bass Drum 1 | 60 | Hi Bongo
+| 37 | Side Stick | 61 | Low Bongo
+| 38 | Acoustic Snare | 62 | Mute Hi Conga
+| 39 | Hand Clap | 63 | Open Hi Conga
+| 40 | Electric Snare | 64 | Low Conga
+| 41 | Low Floor Tom | 65 | High Timbale
+| 42 | Closed Hi-Hat | 66 | Low Timbale
+| 43 | High Floor Tom | 67 | High Agogo
+| 44 | Pedal Hi-Hat | 68 | Low Agogo
+| 45 | Low Tom | 69 | Cabasa
+| 46 | Open Hi-Hat | 70 | Maracas
+| 47 | Low-Mid Tom | 71 | Short Whistle
+| 48 | Hi-Mid Tom | 72 | Long Whistle
+| 49 | Crash Cymbal 1 | 73 | Short Guiro
+| 50 | High Tom | 74 | Long Guiro
+| 51 | Ride Cymbal 1 | 75 | Claves
+| 52 | Chinese Cymbal | 76 | Hi Wood Block
+| 53 | Ride Bell | 77 | Low Wood Block
+| 54 | Tambourine | 78 | Mute Cuica
+| 55 | Splash Cymbal | 79 | Open Cuica
+| 56 | Cowbell | 80 | Mute Triangle
+| 57 | Crash Cymbal 2 | 81 | Open Triangle
+| 58 | Vibraslap | |
+|===
