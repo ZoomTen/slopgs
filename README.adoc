@@ -21,8 +21,12 @@ When submitting issues, use the `compare-*.html` tools to help.
 
 == How to work with this thing
 
-=== Files
+=== Things to get
 
+. A C compiler (tested: GCC) - compiling `msgs-render` tool.
+. Clang - compiling `msgs.wasm`
+. Asciidoc (optional) - compiling docs
+. Python - running the probe-generator program.
 . `dist/gm.dls` - from your `C:\WINDOWS\system32`
 . `field/*.mid` - any real MIDI you want to test.
 . `field/*.flac` - you ought to provide the reference renderings, counterpart to their `.mid`
