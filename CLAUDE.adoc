@@ -30,11 +30,8 @@ behavior.
 It must also not read as a set of stapled-together reports: no "this pass" /
 "an earlier pass" / "the companion section"/  "not retained"/ script names / dates.
 +
-Use code blocks only for: pseudocode, instruction traces, array dumps. Use tables
+Use code blocks only for: pseudocode, array dumps. Use tables
 for obviously-tabular data.
-+
-Any provenance, logs, explanatory behavior MUST be written in the
-accompanying `SPEC_LOG`.
 +
 Behavioral claims in this file were implied by:
 +
@@ -44,6 +41,25 @@ Behavioral claims in this file were implied by:
 * `[I]` inferred
 * `[O]` open, to be resolved
 * `[F]` empirical fit, also to be resolved
++
+**`[A] findings` are written as pseudocode, never as a disassembly listing.** Give
+the algorithm in C-like pseudocode with real field names, and cite the VMAs in
+trailing comments on the lines they came from:
++
+[source,c]
+----
+clamp = (unsigned)sampleRate / 70; // 0x1987f, 0x19882
+if (seg->releaseDuration > clamp)  // 0x1988a - 0x19899
+    seg->releaseDuration = clamp;  // 0x1989b
+----
++
+Not `mov`/`imul`/`jne` transcribed from `objdump`. Registers and mnemonics are
+your scratch work, not the finding — a reader cannot tell from them whether
+you understood the code, and neither can you. Name a bare VMA inline
+(`` `idiv 0x7f` at `0x1992a` ``) when one instruction *is* the point.
++
+Any provenance, logs, explanatory behavior MUST be written in the
+accompanying `SPEC_LOG`.
 
 `SPEC_LOG.adoc`:: Meant to document apparent discrepancies
 between what was implied by the driver code vs. what is actually
@@ -62,13 +78,39 @@ reference-capture ceiling MUST go here, not SPEC.
 Two numbering series run through the entries and are cited by number:
 **items** (`item1`…) are discrepancies and gaps, **entries** (`entry1`…) are
 fitted values. The numbers are stable ids, not positions in the document.
++
+``SPEC.adoc``'s pseudocode rule applies here too, and for the same reason:
+code in an entry is there to make the finding checkable, not to prove you
+read the binary. Unlike `SPEC.adoc`, this file may also show measurement
+output — profiles, per-item score tables, A/B builds — since that is exactly
+the provenance it exists to hold. Prefer a table to a code block for those.
 
 [NOTE]
 --
 This applies when a *behavioral finding changes* — a claim in `SPEC.adoc` is
-now known to be wrong, incomplete, or superseded. In that case you must FIRST
-write the correction to `SPEC_LOG.adoc`, and only then COMPLETELY REPLACE, not
-append to, the corresponding passage(s) in `SPEC.adoc` and/or `CHART.adoc`.
+now known to be wrong, incomplete, or superseded. When it does, the four
+artifacts are written in **exactly this order**, and each one is finished
+before the next is touched:
+
+. `SPEC_LOG.adoc` — the finding, its evidence, and the measurements.
+. `SPEC.adoc` — COMPLETELY REPLACE, not append to, the passage(s) the finding
+  invalidates. Same for any table, open-item list or appendix entry that
+  repeated the old reading; grep for it, a superseded claim usually has
+  copies.
+. The engine under `src/` — implement, then run the corpus gate.
+. `impl-chart/CHART.adoc` — only if a musician would notice.
+
+Do NOT reorder this because the code change is small or obvious. Writing the
+log first is what forces you to say what you actually know, and the SPEC edit
+is what finds the other passages that were wrong for the same reason — both of
+which routinely change what the engine edit should be. Landing the code first
+means the docs get written to justify the diff.
+
+The one thing that legitimately precedes step 1 is **measurement**: you cannot
+write down a number you have not taken. Explore, disassemble, build scratch
+variants and score them freely — but scratch builds are throwaway. Revert them
+before step 1 and reapply the change properly at step 3, so nothing ships that
+was never written down.
 
 It does NOT apply when `SPEC.adoc` is unchanged and another document is merely
 being brought back into agreement with it — e.g. fixing a `CHART.adoc` claim
