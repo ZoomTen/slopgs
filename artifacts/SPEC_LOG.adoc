@@ -403,11 +403,16 @@ carries 33.0 ms of sound where the reference is already silent, down from
 to digital zero, no level change beforehand)" above and "to digital zero
 inside one 2 ms bin" for the fix were measured at 2 ms hop resolution, and
 neither is wrong at that resolution. A later, per-sample look at a different
-cut — probe 49's GM-System-Off cut, xref:#item33[Item 33] — shows the
-reference's collapse actually spans about 68 us at 44100 Hz (not truly
-instantaneous), while our engine's is a single-sample step. This refines the
-resolution of the measurement, not the fix: the fix (removing the ~46 ms
-fade and the ~+9 dB bump) still stands and is still SHIPPED.
+cut — probe 49's GM-System-Off cut, xref:#item33[Item 33] — first read the
+reference's collapse as spanning about 68 us at 44100 Hz against our
+engine's single-sample step, roughly a factor of two apart; that reading was
+methodologically wrong (a 22050 Hz step compared directly to a 44100 Hz
+capture of one) and was retracted 2026-07-30. The corrected, like-for-like
+measurement finds the reference's collapse and our engine's hard cut agree
+to within the engine's own time quantum (one sample at 22050 Hz, 45.4 us) —
+see xref:#item33[Item 33]'s retraction for the corrected trajectory. This
+refines the resolution of the measurement, not the fix: the fix (removing
+the ~46 ms fade and the ~+9 dB bump) still stands and is still SHIPPED.
 
 === What changed
 
@@ -602,7 +607,7 @@ still unexplained and still not attributable between "the driver applies the
 reset out-of-band" and "the capture chain delivered the SysEx early".
 
 [#item33]
-=== Item 33 — the reference's GM-System-Off cut passes through a ~68 us transition; our engine's is a single-sample step. OPEN
+=== Item 33 — the reference's GM-System-Off cut and our engine's hard cut agree to within the engine's own sample resolution; no ramp defect. RETRACTED 2026-07-30
 
 Probe 49's held Sine Wave note gives the first per-sample look at the
 GM-System-Off cut itself (as opposed to the ≤2 ms-resolution USE RHYTHM PART
@@ -662,6 +667,87 @@ factor of two in step size.
 **Status: OPEN, no fix attempted.** A fix means a one-to-two-sample gain
 ramp in the voice teardown — a render-loop change needing maintainer review —
 and it is not being made here.
+
+**Retracted 2026-07-30** -- the comparison above was methodologically wrong,
+not the raw numbers. Two errors, both in the comparison:
+
+. **Not like for like.** Our engine's step was measured at its native
+  22050 Hz while the reference's step was measured on a 44100 Hz capture that
+  is itself an upsampled 2x version of a 22050 Hz render (established above,
+  "Measurement ceiling"). A single-sample step at 22050 Hz necessarily reads
+  as a smaller, smeared step once interpolated to 44100 Hz. Comparing the two
+  rates directly, as this item did, compares a quantity to a blurred version
+  of itself.
+. **The "ramp" signature is an interpolation artefact, not evidence of a
+  ramp.** This item read the reference's "intermediate sample then a small
+  decaying alternating tail" as evidence of a gain ramp in the driver. Our
+  own hard single-sample cut, upsampled 22050 -> 44100, produces the same
+  signature:
++
+[options="header"]
+|===
+| Source | Consecutive samples at 44100 Hz
+| Ours, hard cut, upsampled | 6048, 5545, 5778, 6337, 5478, 2711, 0, -720, 0, 377, 0
+| Reference, native 44100 Hz | 3698, 4476, 5363, 5171, 3387, 981, -499, -513, 109, 335, 38
+|===
++
+An intermediate value followed by an alternating decaying tail is what any
+band-limited interpolator does to a step discontinuity. It is not evidence of
+a ramp.
+
+Also worth noting, because it should have raised doubt at the time:
+xref:SPEC.adoc#s4-6-2[S4.6.2] has GM System Off and USE RHYTHM PART both
+reaching the SAME bulk voice-reclaim routine `0x123de` via the shared reset
+tail (xref:#item32[Item 32]'s root-cause paragraph above names `0x123de` as
+that shared tail for both device-reset paths and USE RHYTHM PART). "The
+GM-System-Off cut ramps but the USE RHYTHM PART cut does not" was never a
+coherent hypothesis about the driver, since the two cuts run through the
+same driver code.
+
+**The corrected measurement.** Both signals measured identically at
+44100 Hz. The tone is least-squares-fitted before the transition (261.71 Hz)
+and the actual samples divided by the extrapolated sine, giving a
+phase-independent GAIN trajectory rather than a raw step size, which on a
+truncated sine depends on where in the cycle the cut happens to land.
+Trajectories aligned on the last sample still at full gain:
+
+[options="header"]
+|===
+| Source | Last full | +1 | +2 | +3
+| Reference (real MSGS capture) | 1.00 | 0.60 | 0.17 | -0.08
+| Our engine, existing hard cut | 1.00 | 0.52 | 0.00 | -0.15
+|===
+
+The reference carries ONE extra intermediate sample, at gain 0.17, where our
+engine has already reached exactly zero. Everything else agrees closely. One
+sample at 44100 Hz is 22.7 us, which is HALF A SAMPLE at the engine's
+22050 Hz render rate — below the engine's time quantum. It cannot be
+expressed.
+
+**Robust against the unknown capture-chain interpolator.** Our hard cut was
+upsampled by four different interpolator settings plus a hand-rolled linear
+interpolation, and every one gives the same trajectory to three decimals
+(1.00 / 0.52 / 0.00). The residual one-sample difference is the same order
+as, and not separable from, the choice of interpolator in the capture chain.
+
+**Why the proposed ramp would make the match WORSE, not better.** The
+smallest ramp the engine can express is one sample at 22050 Hz, i.e. gain
+1.00 -> 0.50 -> 0. Interpolated to 44100 Hz that reads approximately
+1.00 / 0.75 / 0.50 / 0.25 / 0 — a four-sample collapse, materially SLOWER
+than the reference's three-sample 1.00 / 0.60 / 0.17 / 0. The existing hard
+cut is marginally FASTER than the reference; a one-sample ramp would
+overshoot in the opposite direction, and by more. The hard cut is the closer
+of the two options actually available to this engine.
+
+**Verdict: no defect, no code change.** Our engine's cut matches the
+reference to within the engine's own time resolution and within the
+capture-upsampling ceiling this item itself documented. What SURVIVES: the
+audible click is real, is the reference's own behaviour, and our engine
+reproduces it. What is WITHDRAWN: the "roughly twice the step, about +6 dB
+more impulsive" reading and its "reproduces the click and overshoots it by
+roughly a factor of two" conclusion above — both were artefacts of comparing
+a 22050 Hz step against a 44100 Hz capture of one. No gain-ramp is warranted;
+implementing the one proposed above would regress the match.
 
 '''
 
