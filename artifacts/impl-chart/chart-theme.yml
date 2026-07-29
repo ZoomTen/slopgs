@@ -24,6 +24,8 @@ block:
   margin_bottom: 6
 prose:
   margin_bottom: 6
+link:
+  font_color: $base_font_color
 list:
   item_spacing: 2
 description_list:
