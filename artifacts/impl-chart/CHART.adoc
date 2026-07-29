@@ -8,6 +8,17 @@ an emulation of the Microsoft GS Wavetable Synth.
 
 Updates along with `SPEC.adoc`.
 
+
+[#s4]
+== Basic Specifications
+
+Number of Parts:: 16.
+Maximum Polyphony:: 54 voices (48 sustained under continuous overload)
+Effects:: None.
+Wavetable source:: A DLS-1 sample collection. (Depicted here is the standard `gm.dls`.)
+Output format:: 22050 Hz, stereo, 16-bit signed PCM.
+
+
 [#s1]
 == Receive data
 
@@ -19,7 +30,9 @@ In every byte pattern below, `n` is the MIDI channel nibble (`0`–`F`,
 === Channel Voice Message
 
 `8n kk vv` — Note off::
-Releases the note on its patch's own release curve.
+Releases the note on its patch's own release curve, at the same rate in
+decibels per second no matter how far the note had already decayed — so a
+note released late fades out sooner, not more slowly.
 +
 * `kk` = note number (`00`–`7F`, 0–127)
 * `vv` = release velocity (`00`–`7F`) — **ignored**
@@ -27,6 +40,11 @@ Releases the note on its patch's own release curve.
 `9n kk vv` — Note on::
 * `kk` = note number (0–127)
 * `vv` = velocity (`01`–`7F`, 1–127) - fixed curve. Perceptually, amplitude scales with the square of velocity/127
++
+Velocity is not only a volume control: on patches whose sample collection
+asks for it, a harder-struck note also *attacks* faster. In `gm.dls` 27 of
+the 235 instruments do. Note number behaves the same way for decay — see
+<<quirks-envelopes,Envelopes>>.
 
 `An kk vv` — Polyphonic Key Pressure (aftertouch)::
 **Not recognized.** Received, no audible effect.
@@ -700,18 +718,26 @@ On boot, the parts-channels mapping are set as follows:
 
 These mappings can be changed via the <<rolandsysex,Roland SysEx Messages>> RCV CHANNEL and USE RHYTHM PART.
 
-[#s4]
-== Specifications
+== Miscellaneous Quirks
 
-Number of Parts:: 16.
-Maximum Polyphony:: 54 voices (48 sustained under continuous overload)
-+
-An automatic accelerated-release policy engages from the 49th simultaneous
-voice — not at 54 — freeing voices faster than a plain steal-oldest policy
+=== Polyphony
+
+An automatic accelerated-release policy engages from the **49th simultaneous
+voice** — not at 54 — freeing voices faster than a plain steal-oldest policy
 would.
-Effects:: None.
-Wavetable source:: A DLS-1 sample collection. (Depicted here is the standard `gm.dls`.)
-Output format:: 22050 Hz, stereo, 16-bit signed PCM.
+
+A voice cut this way, or cut by a drum kit's exclusive-key group,
+reaches silence within 14 ms of the cut however long its patch's own release
+is; it fades, never clicks off.
+
+[#quirks-envelopes]
+=== Envelopes
+
+Amplitude fades at a constant rate in decibels, so a note fades
+at the same slope whatever level it is released from, and a patch's authored
+decay and release times mean "the time to fall 96 dB". Both are also
+*scaled per note* by the sample collection: higher notes decay faster, and on
+some patches harder-struck notes attack faster.
 
 [#s5]
 == Presets

@@ -141,35 +141,29 @@ static double timecents_to_seconds(int32_t tc) {
     return rt_pow(2.0, t / 1200.0);
 }
 
-/* Decay-time key-follow, SPEC.md S2.4.3 `[A:0x15868]`/`[A:0x1585b]` (the
- * usSource==3 KEYNUMBER rows) -- higher notes decay faster. `kf` is the
- * stored high word of lScale: the full-scale timecent offset, normalized by
- * DLS-1's own key/128 KEYNUMBER scaling, so the per-note offset is
- * kf*note/128 timecents == kf*note*512 in lScale's 1/65536-timecent units.
- * A sentinel decay (nothing authored) stays a sentinel.
+/* The one duration-scaling rule the note-setup segment configurator applies,
+ * SPEC.adoc S2.4.3 / S5.1.2 `[A:0x198e1]`,`[A:0x1991a]`. Two art1 rows use
+ * it: usSource==3 KEYNUMBER -> EG decay (higher notes decay faster, 169 of
+ * gm.dls's 235 instruments) and usSource==2 KEYONVELOCITY -> EG attack
+ * (louder notes attack faster, 27 instruments). `depth` is the stored high
+ * word of lScale -- the full-scale offset in cents -- and `src` is the raw
+ * key or velocity. A sentinel duration (nothing authored) stays a sentinel.
  *
- * 169 of gm.dls's 235 instruments carry the 0x0207 row and this project used
- * to drop every one of them, so those notes decayed 3-5x too slowly. Two
- * things that were open before this landed and are now closed by it:
- *
- *  - SPEC_GAPS.md's "EG1 decay still ~2.9x too slow for Piano 1 note 60,
- *    unresolved". That gap ruled key-follow out on the strength of a
- *    `scale*(60-keynum)` reading, which is zero at note 60; the DLS-1
- *    normalization is key/128, not 60-relative. Piano 1's own -3979 kf then
- *    predicts 7.34 dB/s at note 60 against that entry's own measured
- *    reference 7.14 dB/s (this project shipped 2.50 dB/s).
- *  - FITTED.md Entry 1's rejected global DECAY_RATE_MULT=2.85. That was this
- *    same effect at note 60 (2^(1865/1200) = 2.945x) frozen into a constant,
- *    which is exactly why it regressed every other key and did not ship.
- *
- * The key/128 normalization itself is `[I]`, from the DLS-1 spec: the
- * driver's own consumption code is unrecovered (`[O]`, SPEC.md Part 5
- * +0x13c). Swept against key/127 on the full corpus (mean spectral residual
- * -28.18 dB vs -28.05 dB); /128 wins, and is the natural >>7 for integer
- * code. See probe 35 for the direct per-key measurement. */
-static int32_t decay_tc_keyfollow(int32_t tc, int16_t kf, int note) {
-    if (tc == (int32_t)0x80000000 || kf == 0) return tc;
-    return tc + (int32_t)kf * (int32_t)note * 512; /* 65536/128 == 512 */
+ * /127, not the DLS-1 spec's /128: `0x198b6` computes the term with an
+ * `imul` by the source byte and an `idiv` by 0x7f, truncating toward zero.
+ * That divisor was `[I]` and swept as /128 before the configurator was
+ * disassembled; probe 35 measures 126.5 +/- 0.8 and cannot separate the two.
+ * The term ALONE is then clamped to +/-4800 cents by the 2^(x/1200)
+ * evaluator 0x18e1c that consumes it (`[A:0x18e2c]`,`[A:0x18e63]`) -- the
+ * clamp is on the offset, not on the summed duration, which is why it is
+ * applied here and not after the sum. The driver multiplies the duration by
+ * 2^(term/1200) rather than summing timecents; identical quantity. */
+static int32_t scale_tc_by_source(int32_t tc, int16_t depth, int src) {
+    if (tc == (int32_t)0x80000000 || depth == 0) return tc;
+    int32_t cents = (int32_t)depth * (int32_t)src / 127;
+    if (cents > 4800) cents = 4800;
+    if (cents < -4800) cents = -4800;
+    return tc + cents * 65536;
 }
 
 /* LFO rate, SPEC.md LFO section `[M: probe 06]` -- derived, not fit: the
@@ -218,7 +212,7 @@ static double lfo_freq_from_tc(int32_t tc) {
  * external-convention fit, not a byte-confirmed formula -- upgrade path is
  * locating the real consumption code if it ever becomes available. (The
  * "~2.9x still off for the EG1 decay segment" caveat that used to sit here
- * was decay key-follow, now supplied per-key by decay_tc_keyfollow above.) */
+ * was decay key-follow, now supplied per-key by scale_tc_by_source above.) */
 /* Rate multipliers, overridable with -D for sweeps.
  *
  * DECAY_RATE_MULT is `[M: probe 35]`, not a fit. Once key-follow supplied the
@@ -292,12 +286,14 @@ static double lfo_freq_from_tc(int32_t tc) {
  * cadence scores -24.00 with this value against -17.25 with 70 ms, restoring
  * S5.5's measured "exactly one batch per saturation".
  *
- * NOT the whole story: `0x19834` clamps a duration that `0x197dc`'s formula
- * already scaled by the voice's current level, so the driver's fast release is
- * shorter still for a quiet voice. We apply the clamp only. Probe 18's
- * reference choke falls (90%->10%) measure 30-52 ms against our 67-96 ms at
- * 70 ms; that measurement is contaminated by the closed hat sounding through
- * it, so it bounds the direction rather than the value. Overridable -D. */
+ * This is a bound on TIME TO SILENCE, not on rate: `0x19834` clamps a
+ * duration that `0x197dc`'s formula already scaled by the voice's current
+ * level, so a choked voice reaches -96dB within 14.29 ms of the choke from
+ * wherever it happened to be. start_release() below turns that back into a
+ * rate. Probe 18's reference choke falls (90%->10%) measure 30-52 ms against
+ * our 67-96 ms at 70 ms; that measurement is contaminated by the closed hat
+ * sounding through it, so it bounds the direction rather than the value.
+ * Overridable -D. */
 #ifndef FAST_RELEASE_S
 #define FAST_RELEASE_S (1.0 / 70.0)
 #endif
@@ -311,6 +307,21 @@ static double lfo_freq_from_tc(int32_t tc) {
 #define AUDIBLE_FLOOR 0.0001
 #endif
 
+/* The full span of the driver's envelope scale, SPEC.adoc S3.4.2
+ * `[A:0x1685e]`. Both EGs carry their level as a position on a normalized dB
+ * scale whose ends are fixed by Table C (0x1a9d8): 1000 == 0dB, 0 == -96dB.
+ * Every segment is a straight line on that scale, so an authored duration
+ * always means "traverse 96dB", and a release from a partway-down level
+ * covers proportionally less of it in proportionally less time -- which is
+ * exactly what a fixed-rate exponential does, so nothing here has to track
+ * the level explicitly (SPEC.adoc S5.6).
+ *
+ * Was 100dB, which is where the 4.2%-too-fast release tails came from.
+ * Probe 35 had already measured the decay segment at 96.5dB and left it [O]
+ * against the 96.33dB 16-bit floor; it is neither, it is 96 by construction
+ * and it governs the release as well as the decay. */
+#define ENV_SPAN_DB 96.0
+
 /* mult is a rate multiplier, 1.0 = the calibration documented above.
  * FITTED.md Entry 1 fit 2.85 for the decay segment against probe 04 and did
  * not ship it; re-tested 2026-07-25 under the corrected harness aligner
@@ -322,7 +333,7 @@ static double exp_coef_scaled(double seconds, double mult) {
     if (seconds <= 0.0) return 0.0;
     double samples = seconds * (double)RENDER_RATE;
     if (samples < 1.0) samples = 1.0;
-    return rt_pow(10.0, (-5.0 * mult) / samples);
+    return rt_pow(10.0, (-(ENV_SPAN_DB / 20.0) * mult) / samples);
 }
 
 
@@ -340,7 +351,7 @@ static double exp_coef_scaled(double seconds, double mult) {
  * here -- see FITTED.md before re-attempting this.
  *
  * SUPERSEDED 2026-07-26: do not re-attempt it. The 2.85x was decay-time
- * KEY-FOLLOW at note 60 mistaken for a constant -- see decay_tc_keyfollow
+ * KEY-FOLLOW at note 60 mistaken for a constant -- see scale_tc_by_source
  * above, which now supplies it per-key from gm.dls's own data. That is why
  * the constant fixed note 60 and regressed everything else. */
 
@@ -921,8 +932,25 @@ static void start_release(Voice *v, int fast) {
     v->held = 0;
     v->sustain_deferred = 0;
     v->env_stage = ENV_RELEASE;
-    double rel_s = fast ? FAST_RELEASE_S : timecents_to_seconds(v->artic->eg1_release_tc);
-    if (fast && rel_s > FAST_RELEASE_S) rel_s = FAST_RELEASE_S;
+    double authored_s = timecents_to_seconds(v->artic->eg1_release_tc);
+    double rel_s = authored_s;
+    if (fast) {
+        /* SPEC.adoc S5.6 `[A:0x197dc]`,`[A:0x19834]`: both configurators set
+         * relDur = authored * level/1000 with the level on the 96dB scale,
+         * and the fast one then caps relDur at FAST_RELEASE_S. The scaling
+         * alone is a no-op for us -- it is what makes the driver's release a
+         * fixed dB RATE, which exp_coef_scaled already is -- so the whole
+         * mechanism reduces to what the cap becomes once the scaling is
+         * undone: a voice `lvl` of the way up the scale has only 96*lvl dB to
+         * fall, so covering it in FAST_RELEASE_S means a rate of
+         * FAST_RELEASE_S/lvl. Quiet voices get a gentler ramp over the same
+         * short window, never a steeper one, and the patch's own release is
+         * the floor (min(authored, ...) is the cap failing to bind). */
+        double lvl = 1.0 + 20.0 * rt_log10(v->env_level > 1e-12 ? v->env_level : 1e-12) / ENV_SPAN_DB;
+        if (lvl > 1.0) lvl = 1.0;
+        rel_s = (lvl > 1e-6) ? FAST_RELEASE_S / lvl : authored_s;
+        if (rel_s > authored_s) rel_s = authored_s;
+    }
     if (!fast && rel_s < RELEASE_FLOOR_S) rel_s = RELEASE_FLOOR_S;
     v->env_release_coef = exp_coef_scaled(rel_s, RELEASE_RATE_MULT);
     /* EG2 releases on BOTH note-off paths. SPEC.md Part 7 records that the
@@ -996,13 +1024,16 @@ static void start_release(Voice *v, int fast) {
  * 80 held note-ons instead of 48: one batch too many is still being marked,
  * because 14.29 ms of drain does not fit inside an 11.6 ms block.
  *
- * The driver's does fit, and `[A:0x197dc]` says why: `0x19834` clamps a
- * duration that has ALREADY been scaled by the voice's current level, and
- * Branch B's comparator (`0x12426`) picks the QUIETEST released voice first --
- * so the voices it marks drain in a fraction of the clamp. Implementing that
- * level scaling is the remaining step, and is the thing to do before touching
- * this cadence again. Until then it stays at the fitted period, which with the
- * corrected clamp scores -31.1584 / -24.14, the best of anything measured. */
+ * That explanation was tried and is WRONG. The level scaling is implemented
+ * now (start_release, `[A:0x197dc]`) on the theory that Branch B's comparator
+ * picks the QUIETEST released voice first, so its victims would drain in a
+ * fraction of the clamp. At the true 256-frame cadence the selftest still
+ * reports 43/48, byte-for-byte the same as before: the saturation test holds
+ * all 80 notes, so Branch B never has a released voice to prefer and every
+ * victim it marks is at full level, where the clamp binds and the scaling is
+ * a no-op. Whatever the cadence gap is, it is not drain time. Until it is
+ * found this stays at the fitted period, which scores -31.1584 / -24.14, the
+ * best of anything measured. */
 #ifndef TOPUP_INTERVAL_FRAMES
 #define TOPUP_INTERVAL_FRAMES (2048 * RESAMPLE_FACTOR) /* ~92.9ms */
 #endif
@@ -1207,9 +1238,10 @@ void voice_note_on(int channel, int note, int velocity) {
      * probe 14, 5x too quiet at 4 ms in. */
 
     /* Envelope (EG1, amplitude), SPEC.md S3.4 */
-    double attack_s = timecents_to_seconds(r->artic->eg1_attack_tc);
+    double attack_s = timecents_to_seconds(
+        scale_tc_by_source(r->artic->eg1_attack_tc, r->artic->eg1_attack_vel_tc, velocity));
     double decay_s = timecents_to_seconds(
-        decay_tc_keyfollow(r->artic->eg1_decay_tc, r->artic->eg1_decay_kf_tc, note));
+        scale_tc_by_source(r->artic->eg1_decay_tc, r->artic->eg1_decay_kf_tc, note));
     /* SPEC.md S5.1.2 [A:0x18d3d-0x18d49 / 0x18b4a-0x18b8b]: at CONSUMPTION
      * time the real driver does not read the raw sustain permille as a
      * linear-amplitude fraction (that reading is only the on-disk STORAGE
@@ -1280,7 +1312,7 @@ void voice_note_on(int channel, int note, int velocity) {
     if (v->eg2_sustain_level > 1.0) v->eg2_sustain_level = 1.0;
     double eg2_atk_s = timecents_to_seconds(r->artic->eg2_attack_tc);
     double eg2_dec_s = timecents_to_seconds(
-        decay_tc_keyfollow(r->artic->eg2_decay_tc, r->artic->eg2_decay_kf_tc, note));
+        scale_tc_by_source(r->artic->eg2_decay_tc, r->artic->eg2_decay_kf_tc, note));
     if (eg2_atk_s <= 0.0) {
         v->eg2_level = 1.0;
         v->eg2_stage = (eg2_dec_s > 0.0) ? ENV_DECAY : ENV_SUSTAIN;

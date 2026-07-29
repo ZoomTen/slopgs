@@ -40,10 +40,14 @@ typedef struct Artic {
     int16_t lfo_pitch_cc1_cents;      /* src=1(LFO), ctrl=0x0081(CC1/modwheel),
                                           dest=0x0003(PITCH): CC1-scaled pitch-LFO
                                           depth, same formula/clamp */
+    int16_t eg1_attack_vel_tc;      /* src=2(VELOCITY) -> dest 0x0206:
+                                          attack-time velocity scaling, high
+                                          word of lScale, full-scale
+                                          (velocity 127) cent offset */
     int16_t eg1_decay_kf_tc, eg2_decay_kf_tc; /* src=3(KEYNUMBER) -> dest
                                           0x0207/0x030b: decay-time key-follow,
                                           high word of lScale, full-scale
-                                          (key 128) timecent offset */
+                                          (key 127) cent offset */
 } Artic;
 
 typedef struct Region {

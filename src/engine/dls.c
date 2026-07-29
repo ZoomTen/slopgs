@@ -142,6 +142,7 @@ static void artic_defaults(Artic *a) {
     a->lfo_delay_tc = (int32_t)0x80000000;
     a->lfo_pitch_inherent_cents = 0;
     a->lfo_pitch_cc1_cents = 0;
+    a->eg1_attack_vel_tc = 0;
     a->eg1_decay_kf_tc = 0;
     a->eg2_decay_kf_tc = 0;
 }
@@ -200,15 +201,18 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
                     a->vel_to_atten_depth = (int16_t)v;
                 }
             }
-            /* dest 0x0206/0x030a (velocity->EG attack) not modeled: not
-             * authored anywhere impactful for gm.dls's amplitude EG in the
-             * common case; documented in SPEC_GAPS.md. */
+            /* SPEC.adoc S2.4.3 "Source = 2" table: velocity->EG1 attack, the
+               same duration-scaling rule as the key-follow row below and
+               consumed by the same configurator (voice.c's
+               scale_tc_by_source). 27 of gm.dls's 235 instruments author a
+               non-zero one -- louder notes attack faster on those patches. */
+            else if (udest == 0x0206) a->eg1_attack_vel_tc = (int16_t)(lscale >> 16);
         } else if (usrc == 3) { /* KEYNUMBER, SPEC.md S2.4.3 "Source = 3" table.
                                    169 of gm.dls's 235 instruments carry the
                                    0x0207 row -- every acoustic patch, most
                                    synth leads/pads/SFX not; dropping it made
                                    those notes decay 3-5x too slowly (see
-                                   voice.c's decay_tc_keyfollow). */
+                                   voice.c's scale_tc_by_source). */
             if (udest == 0x0207) a->eg1_decay_kf_tc = (int16_t)(lscale >> 16);
             else if (udest == 0x030b) a->eg2_decay_kf_tc = (int16_t)(lscale >> 16);
         } else if (usrc == 5) { /* EG2 */

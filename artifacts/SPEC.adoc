@@ -1114,6 +1114,18 @@ than recovered:
 | 0x030a (EG2 attack) | high word of `lScale` | WORD wave+0x18 | `0x1588e`
 |===
 
+The two attack rows are consumed at note setup exactly as the key-follow rows
+below are, by the same configurator and with the same divisor and clamp
+`[A:0x198e1]`:
+
+----
+attack_tc = authored_attack_tc + clamp(vel_tc * velocity / 127, -4800, +4800)
+----
+
+**27 of ``gm.dls``'s 235 instruments author a non-zero `0x0206` row**
+`[D:gm.dls]` — louder notes attack faster on those patches. Eight author
+`0x030a`, reaching the pitch envelope the same way.
+
 **Source = 3 (KEYNUMBER):**
 
 [options="header"]
@@ -1124,17 +1136,20 @@ than recovered:
 |===
 
 [#s2-4-3-2]
-==== Runtime decay key-follow — `[M: field/town.mid]`, normalization `[I]`
+==== Runtime decay key-follow — `[A:0x1991a]`
 
-The parsing above is `[A]`. The consumption is `[O]` — the driver stores the
-full-scale high word and the code that reads it was not located. The
-behavioural model that reproduces the reference renders is:
+Both the parsing and the consumption are `[A]`: the driver stores the
+full-scale high word into the EG record's `+0x1a`, and the note-setup
+configurator `0x198b6` (xref:s5-1-2[§5.1.2]) reads it there.
 
 ----
-decay_tc = authored_decay_tc + kf_tc * key / 128
+decay_tc = authored_decay_tc + clamp(kf_tc * key / 127, -4800, +4800)
 ----
 
-applied at note-on to both EG1 and EG2. Higher notes decay faster.
+applied at note-on to both EG1 and EG2. Higher notes decay faster. The
+division truncates toward zero, and the driver applies the term as a
+duration multiplier `2^(term/1200)` rather than by summing timecents; the
+two are the same quantity.
 
 * **169 of ``gm.dls``'s 235 instruments carry the `0x0207` row** (scales
   −4800..+2400, median −3979; 29 also carry `0x030b`) `[D:gm.dls]`. The 66
@@ -1170,18 +1185,21 @@ applied at note-on to both EG1 and EG2. Higher notes decay faster.
   The source is the **absolute** key, not 60-relative: both forms give the
   same slope, but 60-relative predicts absolute rates ~2.9× off (2.50 vs.
   7.34 dB/s at Piano 1 note 60), and the reference matches the absolute-key
-  form to 3.5% `[M: probe 35]`. `/127` vs. `/128` is **not** separated by
-  this measurement — the measured divisor is 126.5 ± 0.8, and the two differ
-  by 0.8% in slope and 1.4% in offset at key 96. `/128` is the natural `>>7`
-  for integer code and is what this specification prescribes `[I]`.
-* **Decay rate scale — `[M: probe 35]`.** With the per-key duration correct,
-  a single uniform scale factor remains across all 17 measured notes: the
-  decay segment traverses **96.5 dB over `seconds`**, not the 100 dB that
-  xref:s3-4-2[§3.4.2]'s release calibration uses (sd 0.005, three
-  instruments, rates spanning 3.8–27 dB/s, no trend against key or
-  instrument). The fast release (xref:part5[Part 5] xref:s5-6[§5.6]) still
-  matches 100 dB. That 96.5 ≈ 96.33 dB, the 16-bit floor, is **`[O]`** — it
-  is 1.4 sd from the measurement and not confirmed.
+  form to 3.5% `[M: probe 35]`. The divisor is **127**, `[A:0x1992a]`: the
+  note-setup configurator computes the term with an `idiv` by `0x7f`,
+  truncating toward zero. The measurement cannot separate 127 from 128 (it
+  gives 126.5 ± 0.8, and the two predictions differ by 0.8% in slope); the
+  instruction can and does.
+* **Term clamp — `[A:0x18e2c]`.** The key-follow *term alone*, before it is
+  added to the authored duration, is clamped to `[-4800, +4800]` cents by the
+  `2^(x/1200)` evaluator that consumes it. At ``gm.dls``'s steepest authored
+  depth this bites above key 127, so it is inert for real key ranges, but it
+  is the term and not the sum that is bounded.
+* **Decay rate scale.** The decay segment traverses **96 dB over `seconds`**,
+  the full span of the envelope's normalized scale (xref:s3-4-2[§3.4.2]).
+  Corroborated independently at 96.5 ± 0.5 dB by probe 35 across all 17
+  measured notes (three instruments, rates spanning 3.8–27 dB/s, no trend
+  against key or instrument).
 
 **Source = 5 (EG2):**
 
@@ -2306,9 +2324,35 @@ required for correct truncated results on this file.**
 [#s3-4-2]
 ==== Shape and cadence
 
-Amplitude (EG1) release is exponential in shape: the driver's own timing
-formula (xref:s3-4-1[§3.4.1]) establishes an exponential *time* law `[A]`,
-and an exponential fits rendered release tails to `R² = 0.999` `[M]`.
+**Both envelopes carry their level as a position on a normalized 96 dB
+scale**, `1000` = 0 dB down to `0` = −96 dB `[A:0x1685e]`. Every segment is a
+straight line on that scale, which makes decay, sustain and release linear in
+dB and therefore exponential in amplitude — an exponential fits rendered
+release tails to `R² = 0.999` `[M]`, and the driver's own timing formula
+(xref:s3-4-1[§3.4.1]) establishes the matching exponential *time* law `[A]`.
+The attack is the exception: it advances linearly in *amplitude* and is
+converted onto the dB scale by Table C (xref:t4[T.4]), which is exactly the
+`ratio → 1000·(1 + 20·log10(ratio)/96)` map.
+
+The evaluator is `0x18a7a` `[A]`, which returns that level for any time and
+is used by every consumer of an envelope:
+
+[options="header"]
+|===
+| segment | value returned | VMA
+| attack | `TableC[(elapsed·1000/attackDuration) / 5]` | `0x18ad3`–`0x18b24`
+| decay | `1000 − (1000 − sustain)·elapsed/decayDuration` | `0x18b4a`–`0x18b8b`
+| sustain | `sustain`, the authored permille, verbatim | `0x18c0b`
+| release | `L₀·(releaseDuration − elapsed)/releaseDuration` | `0x18c46`–`0x18c7f`
+| past release | `0` | `0x18d03`
+|===
+
+`L₀` is the level at release onset. Because the release duration is scaled by
+`L₀` when the segment is configured (xref:s5-6[§5.6]), the release **rate** is
+a constant `96 dB / authoredRelease` regardless of the level the note is
+released from — and likewise the decay rate is `96 dB / authoredDecay`
+regardless of the sustain level it stops at (xref:s5-1-2[§5.1.2]).
+
 Rates are per-patch, taken from the DLS articulation's authored
 attack/decay/release timecents (xref:s2-4-3[§2.4.3]).
 
@@ -2550,21 +2594,20 @@ The key-group choke, and the voice-steal reclaim path (both routed through
 ----
 19aa4: voice->0x138 = 1; // always
        if (voice->0x134==0 && voice->0x140==0) { // idle/already-released fast path
-           ClampedRelease(voice+0x68, region->0x0); // call 0x19834
+           ClampedRelease(voice+0x68, device->sampleRate); // call 0x19834
        } else {
            Release(voice+0x38); // pitch EG: plain, call 0x197dc, unclamped
-           ClampedRelease(voice+0x68, region->0x0); // amplitude EG: call 0x19834, CLAMPED
+           ClampedRelease(voice+0x68, device->sampleRate); // amplitude EG: call 0x19834, CLAMPED
            voice->0x134 = 0; voice->0x140 = 0;
        }
 ----
 
-`0x19834` shares its first half with `0x197dc` (seed release-entry timestamp,
-compute release rate from the region's authored release time) but adds an
-unconditional maximum-duration clamp (`0x1987d`–`0x1989f`): the release
-duration is forced to complete within `region->0x0 / 70` (units not
-independently resolved — flagged `[O]` for the exact real-time magnitude,
-`[A]` for the clamp's existence and its choke/steal-specificity) if that
-bound is smaller than the DLS-authored release time. **`0x19a2c` never
+`0x19834` shares its first half with `0x197dc` (seed the release-onset
+timestamp, scale the authored release duration by the segment's current
+level) but adds an unconditional maximum-duration clamp
+(`0x1987d`–`0x1989f`): the release duration is forced to complete within
+`device->sampleRate / 70` samples — 315 samples, **14.29 ms**, at 22050 Hz —
+if that bound is smaller than the level-scaled authored release. **`0x19a2c` never
 reaches `0x19834`; `0x19aa4` never reaches the unclamped amplitude path.**
 This is deliberate, not incidental: `0x19aa4` is also the routine used when
 the driver must forcibly steal a voice because both the 48-slot primary and
@@ -2660,11 +2703,6 @@ if (region.keyGroup != 0) {
   region-selection gate (`0x1473e`, must be `>0`) — confirmed load-bearing
   for region selection; its deeper meaning (candidate: wave-data readiness)
   is not recovered.
-* **`[O]`** The exact real-time magnitude of the choke/steal release-time
-  clamp (`region->0x0 / 70` at `0x19834`) — the clamp's existence and
-  choke/steal-specificity are `[A]`; ``region+0x0``'s own identity (a small
-  duration constant vs. the region's own "next" list-pointer) was not
-  resolved.
 * **`[O]`** How `0x19c12`–``0x19c2a``'s two-table read reconciles with the
   measured pan curve (xref:s3-6[§3.6]). The instructions are `[A]`; the
   behaviour they produce is not what the reference renders show.
@@ -3567,9 +3605,9 @@ convention assigns at each call site (x86 `__thiscall`/`__fastcall`).
 | `+0x30` | DWORD | Output gain accumulator, channel B | `0x16ffc` | `0x16eca` `[A]`
 | `+0x34` | DWORD | Phase step (per-sample pitch increment); also written once at note setup, at `0x18f83` inside `0x18ef4` (the same instruction sequence uses `voice+0x28` only as a scratch accumulator for the intermediate ratio·rate/renderRate computation, never as a persistent field — see the render section's phase-increment composition, xref:s6-5[§6.5]) | `0x17007` (scalar-path render write-back), `0x18f83` (note setup) | `0x16ecd` `[A]`
 | `+0x44` | DWORD | Phase accumulator (12-bit fraction + integer sample index); zeroed at note setup (`voice->0x44 = 0`) at `0x18f7d` | `0x17003` | `0x16ec3` `[A]`
-| `+0x68` | 0x28 bytes | Release-envelope-segment sub-object (own `+0x10`/`+0x14` = current ramp rate 64-bit; own `+0x28`/`+0x2c` = target) — configured by `0x197dc` (note-off, normal rate) or `0x19834` (fast/choke, rate-clamped) | see xref:s5-6[§5.6] | —
+| `+0x68` | 0x28 bytes | Amplitude-EG (EG1) record — own `+0x10`/`+0x14` = release duration in samples, own `+0x28`/`+0x2c` = release-onset timestamp; full layout in xref:s5-1-2[§5.1.2]. Configured by `0x197dc` (note-off) or `0x19834` (fast/choke, duration-clamped) | see xref:s5-6[§5.6] | —
 | `+0x38` | 0x28 bytes | Attack/hold-envelope-segment sub-object, same layout as `+0x68` | see xref:s5-6[§5.6] | —
-| `+0x104` | DWORD | Pointer to a per-channel/per-note runtime sub-object; `[ptr+0x0]` and `[ptr+0x4]` are read by the release-ramp configurators, `[ptr+0x18]`/`[ptr+0x1c]` by the DSP-advance routine `0x19644` | note setup (`0x19ba7`) | `0x19ac7`,`0x19b1b`,`0x196f0`,`0x19743` `[A]`; exact field semantics of the pointed-to object beyond these four offsets: `[O]`
+| `+0x104` | DWORD | Pointer to the **device** object: `[ptr+0x0]` is the 22050 Hz render rate the fast-release clamp divides (xref:s5-6[§5.6]), `[ptr+0x4]` a gain term read by the DSP-advance routine, `[ptr+0x18]`/`[ptr+0x1c]` its next-event ceiling | note setup (`0x19ba7`), from ``0x19b54``'s first argument | `0x19ac7`,`0x19b1b`,`0x196f0`,`0x19743` `[A]`; layout beyond these offsets: `[O]` (xref:o12[O12])
 | `+0x108`/`+0x10c` | QWORD | Envelope-scheduling timestamp pair (running "next segment-boundary" bookkeeping consumed by the DSP-advance routine `0x19644`) | `0x194cc`/`0x194d2`,`0x19c56`/`0x19c5f`, others | `0x195c4`+ region, `0x196cd`+ region `[A]`; precise scheduling semantics beyond "a 64-bit timestamp pair used by envelope advance": `[O]`
 | `+0x118`/`+0x11c` | QWORD | Second 64-bit timestamp pair, same family as `+0x108`/`+0x10c`, used in the same advance routine | `0x197b5`/`0x197bb`,`0x19a8c`/`0x19a93`,`0x19b3b`/`0x19b42` | `0x19683`/`0x19686` `[A]`
 | `+0x120`/`+0x124` | QWORD | Voice creation/reference timestamp (absolute; the 64-bit clock used everywhere else in the compares below) | note setup (`0x19d4e`/`0x19d83`) | `0x12455`/`0x12465` (top-up selector), `0x124dc`/`0x124ec` (note-on steal), `0x19653`/`0x1965b` (DSP advance), `0x19a3d`/`0x19a43` & `0x19aeb`/`0x19ae5` (release-target compute) `[A]`
@@ -3641,37 +3679,37 @@ offsets read relative to the copy's own base (`articBlock+0x20`):
 | `+0x00`/`+0x04` | `+0x20`/`+0x24` | EG1 attack duration
 | `+0x08`/`+0x0c` | `+0x28`/`+0x2c` | EG1 decay duration
 | `+0x10`/`+0x14` | `+0x30`/`+0x34` | EG1 release duration
-| `+0x18` (WORD pair) | `+0x38` | velocity→attack/decay duration scales — see below
-| `+0x1c` (WORD, low half) | `+0x3c` | EG1 sustain, permille
+| `+0x18` (WORD) | `+0x38` | velocity→attack duration scale, cents at velocity 127 — see below
+| `+0x1a` (WORD) | `+0x3a` | key→decay duration scale, cents at key 127 — see below
+| `+0x1c` (WORD, low half) | `+0x3c` | EG1 sustain, permille on the 96 dB scale
 |===
 
 `0x198b6` `[A:0x198b6]`, in full:
 
 [source,c]
 ----
-// this = &voice->_0x68; src = articBlock+0x20; velA/velB are two WORD-ish
-// note-on arguments; both trace toward the note's velocity, [I]
+// this = &voice->_0x68; src = articBlock+0x20; key and velocity are the two
+// trailing WORD arguments, [I] as to which byte of the note-on each is
 this->_0x28 = -1; this->_0x2c = 0x7fffffff; // 0x198c5/0x198d6: "not yet
-                                                   // computed" sentinels for
-                                                   // a lazily-cached bound,
-                                                   // §5.1's own "+0x108/+0x10c"
-                                                   // scheduling family
-this->_0x20 = regionArg1; this->_0x24 = regionArg2; // per-note args, distinct
-                                                      // from the copy below
+                                                   // released" sentinel — the
+                                                   // release-onset timestamp
+                                                   // §3.4.2's evaluator tests
+                                                   // the current time against
+this->_0x20 = regionArg1; this->_0x24 = regionArg2; // segment start timestamp
 memcpy(this, src, 8 * sizeof(DWORD)); // 0x198df: the table above
 
 // Velocity-scale attack duration (usSource=2 KEYONVELOCITY -> usDestination
 // 0x0206 EG1 ATTACK; gm.dls authors this for 27 instruments, §2.11):
-int16 velScaleAttack = (int16)this->_0x18_low_word;
-int32 attackFactorQ12 = TableLookup_0x18e1c((velScaleAttack * velA) / 127);
+int16 attackScale = (int16)this->_0x18;
+int32 attackFactorQ12 = Pow2Cents_0x18e1c((attackScale * velocity) / 127);
 int64 attack = (int64)(this->_0x00_0x04) * attackFactorQ12 / 0x1000; // _allmul/_alldiv
 this->_0x00 = (int32)attack; // 0x1990e-0x1991e
 
-// Velocity-scale decay duration identically, using the WORD pair's high half
-// and velB (usSource=2 -> usDestination 0x0207 EG1 DECAY; gm.dls authors no
-// such connection, so this term is inert for this collection):
-int16 velScaleDecay = (int16)this->_0x18_high_word; // at copied-offset +0x1a
-int32 decayFactorQ12 = TableLookup_0x18e1c((velScaleDecay * velB) / 127);
+// Key-scale decay duration identically (usSource=3 KEYNUMBER -> usDestination
+// 0x0207 EG1 DECAY; 169 of gm.dls's 235 instruments author it, §2.4.3). This
+// is the consumption site for §2.4.3's runtime decay key-follow:
+int16 decayScale = (int16)this->_0x1a;
+int32 decayFactorQ12 = Pow2Cents_0x18e1c((decayScale * key) / 127);
 int64 decay = (int64)(this->_0x08_0x0c) * decayFactorQ12 / 0x1000;
 this->_0x08 = (int32)decay; // 0x19944-0x19957
 
@@ -3685,11 +3723,25 @@ this->_0x08 = (int32)decayToSustain; // OVERWRITES the decay
                                                      // this shorter value
 ----
 
-(`TableLookup_0x18e1c` reads the 256-entry WORD table at `0x1a9d8`, which is
-**all-zero** in this build `[A]`, so the velocity term above is `0` whenever
-no `usSource=2` connection scales that dimension. The structurally identical
-table at `0x1a7d8` feeding ``voice+0x8``'s LFO path is likewise all-zero. Both
-are inert in this binary.)
+`Pow2Cents_0x18e1c` evaluates `2^(cents/1200)` in 1/4096 fixed point
+`[A:0x18e1c]`, splitting its argument across two runtime-built DWORD tables —
+`0x1ad00` (indices −100…100, `trunc(pow(2, i/1200)·4096)`) and `0x1af58`
+(indices −48…48, `trunc(pow(2, i/12)·4096)`), both built at
+`0x16700`–`0x167ab`:
+
+----
+cents = clamp(cents, -4800, +4800);              // 0x18e2c, 0x18e63
+oct   = (cents / 100) / 12;
+semi  = (cents / 100) % 12;
+frac  =  cents % 100;
+return (tab1200[frac] << oct) * tab12[semi] >> 12;   // 0x18e44 - 0x18e59
+----
+
+The `[-4800, +4800]` clamp applies to the scaling **term**, not to the
+resulting duration. Note that every table this driver indexes lives in
+`PAGEDATA` and is zero on disk until the init builders run
+(xref:t4[T.4], xref:t5[T.5]) — on-disk emptiness is never evidence that a
+table's consumer is inert.
 
 **Then, every render block, ``voice+0x68``'s own advance routine consumes
 this rescaled duration.** The wrapper `0x18d28` `[A:0x18d28]` (called from
@@ -4038,6 +4090,22 @@ Both segments are configured through the **same** function, `0x197dc`, which
 applies the region's own authored release rate toward the target time — an
 ordinary, patch-defined release. Note-off never touches `+0x138`.
 
+`0x197dc` does two things `[A]`:
+
+[source,c]
+----
+// 0x197dc __thiscall ConfigureSegment(seg, targetLo, targetHi)
+L = EvalEnvelope(seg, target, &seg->0x28, curve = 1);  // 0x197f3 -> 0x18a7a
+seg->releaseDuration = seg->releaseDuration * L / 1000; // 0x19801 mul, 0x19815 div
+seg->0x28/0x2c = target;                                // release-onset timestamp
+----
+
+`L` is the segment's level at the release instant, on the 96 dB scale of
+xref:s3-4-2[§3.4.2]. Scaling the duration by it is what makes the release a
+constant **rate** of `96 dB / authoredRelease` rather than a constant
+duration: a note released while it is already half-way down its decay has
+half as far to travel and is given half as long to travel it.
+
 **Fast-release / choke, `0x19aa4`** — 3 call sites: the reserve top-up's
 Branch B (`0x12bc0`), the same-note retrigger scan inside note-on
 (`0x12ec6`), and the exclusive-key-group choke walk (`0x12f39`)
@@ -4047,34 +4115,70 @@ Branch B (`0x12bc0`), the same-note retrigger scan inside note-on
 ----
 // 0x19aa4 __thiscall ScheduleFastRelease(voice, absTimeLo, absTimeHi)
 voice->0x138 = 1; // 0x19ab6 — UNCONDITIONAL, before any branch
-if (voice->0x134 != 0 || voice->0x140 != 0) {
-    // cheap path: reapply the EXISTING target through the CLAMPED configurator
-    ReconfigureSegment(&voice->0x68, voice->0x128, voice->0x12c); // 0x19ade -> 0x19834
+if (voice->0x134 == 0 && voice->0x140 == 0) { // 0x19aaf/0x19abc, 0x19abe/0x19ac5
+    // cheap path: the voice is ALREADY released. Re-clamp it in place, against
+    // the target it was released toward, without disturbing anything else.
+    ReconfigureSegment(&voice->0x68, voice->0x128, voice->0x12c,
+                       device->sampleRate);              // 0x19ade -> 0x19834
     return;
 }
-// full path: compute a new target the same way note-off does
+// full path: the voice is still held. Compute a new target as note-off does
 target = compute_release_target(voice->0x120/0x124, absTimeLo, absTimeHi);
 ConfigureSegment(&voice->0x38, target); // 0x19b16 -> 0x197dc  (SAME configurator as note-off, for this segment)
-ReconfigureSegment(&voice->0x68, target); // 0x19b28 -> 0x19834  (DIFFERENT configurator — rate-clamped)
+ReconfigureSegment(&voice->0x68, target,
+                   device->sampleRate); // 0x19b28 -> 0x19834  (DIFFERENT configurator — clamped)
 voice->0x134 = 0;
 voice->0x140 = 0;
 voice->0x128/0x12c = target;
 ----
 
 `0x19834` is a distinct function from `0x197dc`, used **only** by
-``0x19aa4``'s two paths, never by note-off. It divides an internal value by the
-literal constant `0x46` (decimal 70) and clamps the release segment's own
-current rate against the result, replacing it with the faster of the two if
-the existing rate would not reach the target quickly enough
-(`0x1987f`,`0x19882`,`0x1989b`) `[A]`. This is the mechanism behind "fast,
-rate-clamped release": regardless of the patch's authored release time, a
-choked/fast-released voice's release segment is forced to run at least as
-fast as this clamp. **Measured** `[M]`, from probe `18_key_groups`, two
-independent cases (a hi-hat choked 0.15s after onset, and the same choked
-0.8s after onset): both reach full silence in **70.0 ms** from the choking
-note's own onset, exactly matching the divisor constant `70` found in
-`0x19834` — a striking, though not independently proven-in-units,
-correspondence between the disassembly constant and the measured duration.
+``0x19aa4``'s two paths, never by note-off. It is ``0x197dc``'s body plus one
+step `[A]`:
+
+[source,c]
+----
+// 0x19834 __thiscall ReconfigureSegment(seg, targetLo, targetHi, sampleRate)
+L = EvalEnvelope(seg, target, &seg->0x28, curve = 1);   // 0x1984d -> 0x18a7a
+seg->releaseDuration = seg->releaseDuration * L / 1000; // as 0x197dc
+
+clamp = (unsigned)sampleRate / 70;                      // 0x1987f, 0x19882
+if (seg->releaseDuration > clamp)                       // 0x1988a - 0x19899
+    seg->releaseDuration = clamp;                       // 0x1989b, 0x1989f
+
+seg->0x28/0x2c = target;
+----
+
+The clamped quantity is a **duration in samples**, so at the device's 22050 Hz
+(xref:s5-2[§5.2]) the bound is `22050/70` = **315 samples = 14.29 ms**. A
+choked voice therefore reaches silence within 14.29 ms of the choke no matter
+what its patch authored — and *sooner* than that if its own level-scaled
+release was already shorter, which is what makes this a bound on time-to-
+silence rather than on rate. Expressed as a rate against
+xref:s3-4-2[§3.4.2]'s constant-rate model, the fast release runs at
+
+----
+fast_release_seconds = min(authoredRelease, 14.29 ms / L)
+----
+
+so a quiet voice is given a gentler ramp over the same short window, and the
+patch's own release is the floor.
+
+The `sampleRate` argument reaches `0x19834` as `[[voice+0x104]]`
+(`0x19ac7`, `0x19b1b`); `voice+0x104` is the **device object**, stored at
+note setup from ``0x19b54``'s first argument (`0x19ba7`) which its only
+caller `0x12fea` supplies, and `device+0x0` is written `22050` at
+`0x12b3e` `[A]`.
+
+**Measured** `[M]`, from probe `18_key_groups`, two independent cases (a
+hi-hat choked 0.15s after onset, and the same choked 0.8s after onset): both
+reach full silence in **70.0 ms** from the choking note's own onset. That is
+4.9× the instruction-level bound and the two have not been reconciled; the
+probe's choke falls are masked by the choking note sounding through them, so
+the figure bounds the mechanism's direction rather than its value and the
+measurement needs redoing on an isolated choke. The numerical coincidence
+with the divisor `70` is not evidence — the divisor divides a sample rate and
+is dimensionless.
 (A "0.35s" cut-completion figure does not match direct measurement for this
 mechanism; it is most likely a conflation with the
 `probes/18_key_groups.manifest.tsv` annotation "LONG WHISTLE (0.354s sample)", which
@@ -4258,11 +4362,19 @@ deferral is honored (CC123) or bypassed (CC120), not about release-vs-cut.
 [#s5-12]
 === Open items
 
-* The object pointed to by voice `+0x104` is the articulation block, not a
-  separate structure: `+0x40` is LFO_FREQUENCY and `+0x20` onward is the EG1
-  attack/decay/release/sustain block (xref:s2-4-3[§2.4.3],
-  xref:s5-1-1[§5.1.1], xref:s5-1-2[§5.1.2]). **`[O]`**: `+0x0`, which feeds
-  `voice+0x38` (EG2), is not laid out field-by-field.
+* Voice `+0x104` points to the **device object**, stored at note setup from
+  ``0x19b54``'s first argument (`0x19ba7`) which its only caller `0x12fea`
+  supplies `[A]`. Exercised fields: `+0x0` the render sample rate, 22050
+  (`0x12b3e`, read by the fast-release clamp, xref:s5-6[§5.6]); `+0x4` and
+  `+0x8` configuration flags gating a per-note attenuation lookup
+  (`0x19be1`, `0x19bea`); `+0xc` a flag gating a channel-volume term
+  (`0x19b72`); `+0x18`/`+0x1c` a 64-bit ceiling clamped onto the voice's
+  next-event time (`0x19cc7`), also read by the DSP-advance routine
+  (`0x196f0`). **`[O]`**: the object's layout beyond those five offsets. The
+  articulation block is a *different* argument of the same call, passed as
+  `artic`, `artic+0x20` and `artic+0x40` at `0x19c45`/`0x19c50`/`0x19c9d`;
+  `[O]` there is `artic+0x0`, the EG2 record feeding `voice+0x38`, which is
+  not laid out field-by-field.
 * **`[O]`** The scheduling semantics of the `+0x118`/`+0x11c` 64-bit
   timestamp pair beyond "consumed by the DSP-advance routine ``0x19644``".
   (`+0x108`/`+0x10c` is resolved: it is the lazily-cached segment bound of
@@ -4271,9 +4383,11 @@ deferral is honored (CC123) or bypassed (CC120), not about release-vs-cut.
   list. Nothing in the code states an intent, and no measurement can
   distinguish one. The *mechanics* are fully resolved
   (xref:s5-2[§5.2]–xref:s5-5[§5.5]).
-* **`[O]`** The numeric time unit of ``0x19834``'s divisor constant `70`
-  (xref:s5-6[§5.6]). The instructions do not prove it is milliseconds; the
-  measured 70.0 ms cut time corroborates it without settling the conversion.
+* **`[O]`** Why probe 18 measures a 70.0 ms choke fall where the clamp bounds
+  it at 14.29 ms (xref:s5-6[§5.6]). The unit question is settled — the
+  divisor `70` divides the sample rate, so the bound is 315 samples — but the
+  measurement is 4.9× that and was taken through a masking note. Needs an
+  isolated choke to redo.
 * **`[O]`** `rgnh+0xa` as the source of `region+0x31` (xref:s5-8[§5.8]) is
   `[I]` from the standard DLS `RGNHEADER` layout; only the field-level copy
   `chunkData+0x12 → region+0x31` is `[A]`.
@@ -5385,13 +5499,13 @@ even though the exact instruction is unlocated.
 *Significance.* **Behaviourally significant if real content uses it** — niche in practice.
 
 [#o12]
-==== The layout of the object at voice `+0x104` beyond its four exercised offsets, and the scheduling semantics of the `+0x118`/`+0x11c` timestamp pair
+==== The layout of the device object at voice `+0x104` beyond its five exercised offsets, and the scheduling semantics of the `+0x118`/`+0x11c` timestamp pair
 
-*Known.* The object is the articulation block: `+0x40` is LFO_FREQUENCY, `+0x20` onward the EG1 block (xref:s5-1-2[§5.1.2]). The timestamp pairs are read and written by the envelope-advance machinery.
+*Known.* The object is the device, not the articulation block: `+0x0` is the 22050 Hz render rate, `+0x4`/`+0x8`/`+0xc` are configuration flags, `+0x18`/`+0x1c` a 64-bit next-event ceiling (xref:s5-12[§5.12]). The articulation block is a separate note-setup argument, `+0x40` LFO_FREQUENCY and `+0x20` onward the EG1 record (xref:s5-1-2[§5.1.2]). The timestamp pairs are read and written by the envelope-advance machinery.
 
-*Not known.* The layout of `+0x0` (which feeds EG2) field-by-field; the exact algorithm the `+0x118` pair implements.
+*Not known.* The device object's remaining fields; the layout of `artic+0x0` (which feeds EG2) field-by-field; the exact algorithm the `+0x118` pair implements.
 
-*How it would be settled.* A full instruction trace of `0x19644` and its callees.
+*How it would be settled.* A full instruction trace of `0x19644` and its callees, and of the device constructor at `0x12ad0`–`0x12b63`.
 
 *Significance.* Cosmetic for the pool/steal/choke/note-off mechanics; matters only for sample-accurate envelope timing beyond xref:s5-1-2[§5.1.2].
 
@@ -5811,14 +5925,26 @@ open question, not asserted as settled.
 [#t4]
 === Table C — `0x1a9d8`, 201 × int16, indices 0..200
 
+**Linear-amplitude ratio → position on the envelope's normalized 96 dB
+scale.** The index is a ratio in 1/200ths, the value is that ratio's dB
+expressed as `1000` = 0 dB down to `0` = −96 dB. It is the converter that
+puts the linearly-advancing attack segment onto the dB scale the rest of the
+envelope machinery runs on (xref:s3-4-2[§3.4.2]), and it is the origin of the
+96 dB span itself.
+
 **Built at runtime** (402 on-disk bytes, all zero — verified directly:
 `Table C: VMA 0x1a9d8, 402 bytes on disk, all-zero: True`). Builder is PAGE
 `0x1685e`–`0x168b7`. Instruction-exact formula:
 
 ----
 t[0] = 0                                              (explicit zeroing)
-t[i] = trunc(1000 + ((i/200.0)**2 * 10000.0) * (1/96.0))    for i = 1..200
+t[i] = trunc(1000 + log10((i/200.0)**2) * 10000.0 * (1/96.0))   for i = 1..200
+     = trunc(1000 * (1 + 20*log10(i/200.0) / 96))
 ----
+
+The `log10` is the `fldlg2`/`fyl2x` pair at `0x16880`–`0x16884`; the squaring
+at `0x1687c`–`0x1687e` is what turns the `10000 * (1/96)` scale factor into
+`1000/96` per dB.
 
 **Why bit-exact constants matter:**
 an initial pass using idealized Python constants (`1/200 = 0.005` exactly,

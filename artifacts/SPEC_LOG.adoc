@@ -18,7 +18,7 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item24`) are discrepancies and gaps between
+throughout: **items** (`item1`…`item31`) are discrepancies and gaps between
 `SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
@@ -187,6 +187,363 @@ before/after tables in Entries 1–6. Those tables are kept as recorded; they
 are history, not current measurements.
 
 '''
+
+'''
+
+[#item26]
+== 2026-07-29 — The amplitude/pitch EG runs on a 96 dB normalized scale, so the release traverses 96 dB, not 100 — `[A:0x1685e]`,`[A:0x18a7a]`. SHIPPED
+
+Found while chasing xref:#item21-addendum-doomdrum[Item 21's doomdrum
+addendum]. `tests/doomdrum.mid`'s tails decayed measurably faster than the
+reference on every hit, not only on the retriggered one that entry named.
+
+**What the EG's numbers mean.** Table C (`0x1a9d8`, 201 × int16, built by
+`0x1685e`–`0x168b7`) is not a shape LUT. Replaying the builder with the exact
+`.rdata` float32 constants — `0x11d04` = 1/200, `0x11d00` = 10000.0,
+`0x11cfc` = 1/96, `0x11ce8` = 1000.0 — gives
+
+----
+t[0] = 0
+t[i] = trunc(1000 + log10((i/200)^2) * 10000 * (1/96))       // i = 1..200
+     = trunc(1000 * (1 + 20*log10(i/200) / 96))
+----
+
+which is a **linear-amplitude ratio → normalized-dB position** converter over
+exactly **96 dB**: `1000` is 0 dB, `0` is −96 dB. (`fldlg2`/`fyl2x` at
+`0x16880`–`0x16884` is the `log10` that
+xref:SPEC.adoc#t4[SPEC.adoc T.4]'s transcription of this formula had dropped;
+the published table values are unaffected and were reproduced exactly.)
+
+**Where that scale is used.** `0x18a7a`, the EG evaluator both release
+configurators call, returns a level in those units on every branch `[A]`:
+
+[options="header"]
+|===
+| branch | VMA | returned level
+| attack | `0x18ad3`–`0x18b24` | `TableC[(elapsed*1000/attackDur) / 5]` — the conversion into the dB scale
+| decay | `0x18b4a`–`0x18b8b` | `1000 - (1000-sustain)*elapsed/decayDur`, already in the scale
+| sustain | `0x18c0b` | the stored `+0x1c` sustain permille verbatim
+| release | `0x18c46`–`0x18c7f` | `L0 * (relDur - elapsed) / relDur`, a straight line from the level at release onset down to `0`, i.e. to −96 dB
+|===
+
+So every EG segment is a straight line on a 96 dB scale, and a release that
+reaches zero in `relDur` traverses `96 * L0/1000` dB in that time.
+
+**Consequence for the release rate.** `0x197dc` sets
+`relDur = relDur * L0 / 1000` before the segment runs (see
+xref:#item21-resolved-2[the next entry]), so the *rate* is a constant
+`96 dB / authoredRelease`, independent of level. `src/engine/voice.c`'s
+`exp_coef_scaled` used `10^(-5/samples)`, i.e. **100 dB** over the authored
+release — 4.2% too fast. This is the same 96 dB that
+xref:SPEC.adoc#s2-4-3[S2.4.3]'s probe-35 decay measurement had already
+found empirically as "96.5 dB over `seconds`, `[O]` whether it is the 96.33
+dB 16-bit floor". It is neither fitted nor the 16-bit floor: it is 96 exactly,
+by construction, and it applies to the release as well as the decay.
+
+**Measured, `tests/doomdrum.mid`.** Per-hit least-squares fit of the 50 ms
+RMS envelope in dB over +0.30 s…+1.50 s after each of the eight hits,
+reference vs. render, after `score.py`'s own alignment:
+
+[options="header"]
+|===
+| hit (s) | ref dB/s | 100 dB build | 96 dB build
+| 0.00 | −35.19 | −37.31 | −35.85
+| 2.18 | −35.16 | −36.96 | −35.51
+| 4.36 | −35.12 | −36.83 | −35.39
+| 6.54 | −35.20 | −37.40 | −35.95
+| 8.72 | −34.05 | −35.00 | −33.78
+| 10.91 | −34.10 | −34.83 | −33.61
+| 13.09 | −34.26 | −35.29 | −34.07
+| 15.27 | −34.04 | −35.00 | −33.77
+|===
+
+Mean absolute slope error 1.43 → 0.51 dB/s. Corpus gate: `doomdrum` −13.66 →
+−14.06 dB with its invented-silence column 1680 → 1155 ms, corpus mean
+−23.39 → −23.41 dB, and `warm-echo` −38.89 → −38.76 dB (the only item that
+moves the wrong way, by 0.13 dB).
+
+**Not fixed by this.** The same measurement shows a level offset of
+−4.1…−5.3 dB in `doomdrum`'s tail that the slope correction does not touch;
+see xref:#item31[Item 31].
+
+'''
+
+[#item21-resolved-2]
+== 2026-07-29 — Item 21's remaining step, the level-scaled fast release, is `[A:0x197dc]`/`[A:0x19834]` and reduces to one line. SHIPPED — but it does NOT unblock the top-up cadence, and the reason given for expecting it to was wrong
+
+xref:#item21-reap[Item 21's last addendum] closed with "implementing that
+level scaling is the remaining step on this item". It is implemented here.
+
+**The two configurators.** `0x197dc` (ordinary note-off) and `0x19834`
+(fast/choke) share their first 0x43 bytes verbatim:
+
+----
+// 0x197dc __thiscall ConfigureSegment(seg, targetLo, targetHi)
+// 0x19834 __thiscall ReconfigureSegment(seg, targetLo, targetHi, sampleRate)
+L = EvalEnvelope(seg, target, &seg->0x28, curve = 1);   // 0x18a7a
+seg->relDur = seg->relDur * L / 1000;   // 0x1049c multiply, 0x10490 divide
+
+if (this is 0x19834) {                  // 0x19877 onward, absent from 0x197dc
+    clamp = (unsigned)sampleRate / 70;              // 0x1987f, 0x19882
+    if (seg->relDur > clamp) seg->relDur = clamp;   // 0x1988a - 0x1989f
+}
+
+seg->0x28/0x2c = target;                // release-onset timestamp
+----
+
+`L` is on the 96 dB scale of xref:#item26[Item 26], so `relDur = authored *
+L/1000` makes the *rate* level-independent — which an exponential release
+already reproduces. **On the ordinary note-off path there was therefore
+nothing to implement**; the level scaling is only observable through
+``0x19834``'s clamp, which caps the *time to silence* rather than the rate.
+In rate terms the whole mechanism collapses to
+
+----
+fast_release_seconds = min(authored_release_seconds, FAST_RELEASE_S / L)
+----
+
+with `L` the voice's level as a fraction of the 96 dB span. A quiet voice
+gets a *slower* ramp (it has less distance to cover in the same 14.29 ms),
+never a faster one, and the patch's own release is the floor on the rate.
+
+**The cadence claim in xref:#item21-reap[Item 21's addendum] was wrong.**
+That entry expected level scaling to let the driver's true once-per-block
+top-up cadence hold, because "Branch B's comparator picks the QUIETEST
+released voice first, so the voices it marks drain in a fraction of the
+clamp". Measured directly, with `TOPUP_INTERVAL_FRAMES` at the true
+`256*RESAMPLE_FACTOR` cadence:
+
+[options="header"]
+|===
+| build | `--selftest` saturation | corpus mean
+| before, topup 2048 | 48/48 | −23.39
+| before, topup 256 | **43/48** | −23.39
+| level-scaled, topup 2048 | 48/48 | −23.40
+| level-scaled, topup 256 | **43/48** | −23.40
+|===
+
+Identical. The saturation test holds all 80 notes, so Branch B never has a
+released voice to prefer and every victim it marks is at full level, where
+the clamp dominates and the scaling is a no-op. The cadence gap is not a
+drain-time problem and is not this item's; `TOPUP_INTERVAL_FRAMES` stays at
+its fitted 2048 and the cadence remains **`[O]`**.
+
+**Item 21 is closed.** The level scaling ships (it is `[A]`, it costs one
+line, and it is the correct model even though this corpus cannot see it);
+the top-up cadence is tracked separately from here on.
+
+'''
+
+[#item27]
+== 2026-07-29 — Decay key-follow divides by **127**, not 128, and the key-follow term alone is clamped to ±4800 cents — `[A:0x1992a]`,`[A:0x18e2c]`. SHIPPED
+
+xref:SPEC.adoc#s2-4-3[S2.4.3]'s runtime decay key-follow carried the
+normalization as `[I]` from the DLS-1 spec ("key/128 … the driver's own
+consumption code is unrecovered"), with probe 35 measuring the divisor as
+126.5 ± 0.8 and explicitly unable to separate 127 from 128. The consumption
+code is `0x198b6`, the note-setup segment configurator, and it settles both
+questions.
+
+`0x198b6` copies the articulation block's 32-byte EG record into the voice's
+segment object (`rep movsd`, 8 dwords, `0x198df`) and then rescales two of
+the three durations:
+
+----
+// attack, 0x198e1 - 0x19918
+cents = (int16)seg->0x18 * (WORD)velocity / 127;      // imul, then idiv 0x7f
+seg->attackDur = seg->attackDur * Pow2Cents(cents) / 4096;
+
+// decay, 0x1991a - 0x19952
+cents = (int16)seg->0x1a * (WORD)key / 127;           // imul, then idiv 0x7f
+seg->decayDur  = seg->decayDur  * Pow2Cents(cents) / 4096;
+
+// decay-to-sustain rescale, 0x19953 - 0x19984 (already in SPEC.adoc)
+seg->decayDur  = seg->decayDur * (1000 - (int16)seg->0x1c) / 1000;
+----
+
+`idiv 0x7f` is 127, and it truncates toward zero. `Pow2Cents` is `0x18e1c`,
+which clamps its argument to `[-4800, +4800]` (`0x18e2c` against `0x12c0`,
+`0x18e63` against `0xffffed40`) before evaluating — so the clamp is on the
+**key-follow term alone**, not on the summed duration.
+
+The EG record's own layout follows from the same copy `[A]`:
+
+[options="header"]
+|===
+| offset | size | field
+| `+0x00` | 8 | attack duration, samples
+| `+0x08` | 8 | decay duration, samples
+| `+0x10` | 8 | release duration, samples
+| `+0x18` | WORD | attack scaling depth, cents at full velocity
+| `+0x1a` | WORD | decay scaling depth, cents at key 127
+| `+0x1c` | WORD | sustain level, permille on the 96 dB scale
+| `+0x20` | 8 | segment start timestamp
+| `+0x28` | 8 | release-onset timestamp (`0x7fffffff_ffffffff` until released)
+|===
+
+Effect is small — for `gm.dls`'s median `−3979` depth the two divisors differ
+by 0.8% of a duration — and the corpus registers it as noise: mean −23.41 →
+−23.40 dB, `doomdrum` −14.06 → −14.02 dB. It ships because it is `[A]`
+against an `[I]`, not because it measures better.
+
+'''
+
+[#item28]
+== 2026-07-29 — `0x18e1c` reads `0x1ad00`/`0x1af58`, not `0x1a9d8`; it is a 2^(x/1200) evaluator and the velocity→attack term it feeds is LIVE, not inert — `[A:0x18e1c]`,`[A:0x16700]`. SHIPPED
+
+xref:SPEC.adoc#s5-1-2[S5.1.2]'s parenthetical read `TableLookup_0x18e1c` as
+"reads the 256-entry WORD table at `0x1a9d8`, which is **all-zero** in this
+build `[A]`, so the velocity term above is `0`", and extended the same
+conclusion to `0x1a7d8`. Every part of that is wrong.
+
+`0x18e1c` reads two DWORD tables, `0x1ad00` and `0x1af58`, and evaluates
+`2^(cents/1200)` in 1/4096 fixed point by splitting the cents `[A]`:
+
+----
+cents = clamp(cents, -4800, +4800);              // 0x18e2c, 0x18e63
+oct   = (cents / 100) / 12;
+semi  = (cents / 100) % 12;
+frac  =  cents % 100;
+return (tab1200[frac] << oct) * tab12[semi] >> 12;   // 0x18e44 - 0x18e59
+----
+
+`tab1200` (`0x1ad00`, indices −100…100) and `tab12` (`0x1af58`, indices
+−48…48) are built at `0x16700`–`0x167ab` as `trunc(pow(2.0, i/1200)*4096)`
+and `trunc(pow(2.0, i/12)*4096)` — `0x11cd0` = 2.0, `0x11cd4` = 1200.0,
+`0x11cc8` = 12.0, `0x11ccc` = 4096.0.
+
+**"All-zero on disk" proves nothing about any of these tables.** All of them
+live in `PAGEDATA` and are built at driver init: `0x1a9d8` by `0x1685e`
+(xref:#item26[Item 26]), `0x1ad00`/`0x1af58` by `0x16700`, and `0x1a7d8` by
+`0x1691e`–`0x1695c`, which is a 256-entry `fsin` table scaled by `0x11ce4` =
+100.0 — the LFO sine xref:SPEC.adoc#t5[T.5] already documents, not an inert
+duplicate of anything.
+
+So the velocity→EG1-attack connection (`usSource=2` → `usDestination=0x0206`)
+is fully live, applied exactly as the decay key-follow is:
+`attackDur *= 2^((depth * velocity / 127) / 1200)`. **27 of ``gm.dls``'s 235
+instruments carry a non-zero one** `[D:gm.dls]`, so this is not a theoretical
+path. Implemented in `src/engine/dls.c` (`eg1_attack_vel_tc`) and
+`src/engine/voice.c` (`scale_tc_by_source`).
+
+Corpus is unmoved (mean −23.40 dB, every item unchanged): none of the seven
+`tests/` items uses one of the 27 instruments. It is live and verified
+separately — renders of `artifacts/probes/01_programs.mid`, which sweeps
+programs, differ with and without it.
+
+**Still `[O]`:** the matching `usSource=2` → `0x030a` (velocity → EG2
+attack), 8 connections in `gm.dls`, reaching the pitch envelope through the
+same `0x198b6` call on `voice+0x38`. Not implemented.
+
+'''
+
+[#item29]
+== 2026-07-29 — `voice+0x104` is the DEVICE object, not the articulation block; `0x19834`'s clamp argument is the sample rate and its segment durations are in samples — `[A:0x12b3e]`,`[A:0x12fea]`
+
+Three statements in `SPEC.adoc` follow from a single mis-identification.
+
+`0x19aa4` passes ``0x19834``'s fourth argument as `[[voice+0x104]]`
+(`0x19ac7`, `0x19b1b`). `voice+0x104` is written at `0x19ba7` from
+`SetupNote`'s **first** argument, and `SetupNote`'s only call site,
+`0x12fea`, passes the device object `esi`. That object's `+0x0` is written
+`0x5622` = **22050** at `0x12b3e`, in the same constructor that sets the
+pool's `+0xf50` = 0x30 and `+0xf52` = 6 `[A]`.
+
+Corrections:
+
+* xref:SPEC.adoc#s5-6[S5.6]'s pseudocode passes `region->0x0`. It is
+  `device->sampleRate`.
+* xref:SPEC.adoc#s5-12[S5.12] / xref:SPEC.adoc#o12[O12] state "the object
+  pointed to by voice `+0x104` is the articulation block: `+0x40` is
+  LFO_FREQUENCY and `+0x20` onward is the EG1 block". Those offsets are real
+  but belong to a *different* `SetupNote` argument, `[ebp+0xc]`, which
+  `0x19c45`/`0x19c50`/`0x19c9d` pass as `artic`, `artic+0x20` and
+  `artic+0x40`. `voice+0x104` is the device: `+0x0` sample rate, `+0x4`
+  and `+0x8` configuration flags read at `0x19be1`/`0x19bea`, `+0xc` read at
+  `0x19b72`, `+0x18`/`+0x1c` a 64-bit ceiling clamped onto the voice's
+  next-event time at `0x19cc7`. O12 as written is void; what remains open is
+  the device object's layout beyond those five offsets.
+* xref:SPEC.adoc#s5-12[S5.12]'s open item "the numeric time unit of
+  ``0x19834``'s divisor constant `70`" is **closed**. The divisor divides the
+  sample rate, so it is dimensionless and the segment durations it is
+  compared against are in samples: 22050/70 = **315 samples = 14.29 ms**.
+  This is the reading `src/engine/voice.c`'s `FAST_RELEASE_S` already ships;
+  it now has a second, independent derivation.
+
+The measured 70.0 ms full-silence figure in xref:SPEC.adoc#s5-6[S5.6]
+`[M: probe 18]` is **not** reconciled by this and is not evidence for a
+70 ms clamp: it is 4.9× the instruction-level value. That probe's choke
+falls are contaminated by the choking note sounding through them (recorded
+in xref:#item21-reap[Item 21's addendum]), so the discrepancy stands as a
+measurement to redo, not as a conflict in the disassembly.
+
+'''
+
+[#item30]
+== 2026-07-29 — `0x19aa4`'s cheap/full path test is inverted in S5.6's pseudocode — `[A:0x19aaf]`
+
+xref:SPEC.adoc#s5-6[S5.6] renders `ScheduleFastRelease` as taking the cheap
+path (reapply the existing target through the clamped configurator) when
+`voice->0x134 != 0 || voice->0x140 != 0`. The instructions read the other
+way `[A]`:
+
+----
+voice->0x138 = 1;                                  // 0x19ab6, unconditional
+if (voice->0x134 != 0) goto full;                  // 0x19aaf, 0x19abc
+if (voice->0x140 != 0) goto full;                  // 0x19abe, 0x19ac5
+// both zero: cheap path at 0x19ac7
+----
+
+Both fields are zeroed by ordinary note-off (`0x19a2c`), so the cheap path is
+the *already-released* case — re-clamping a voice that is mid-release — and
+the full path is the still-held case. `SPEC.adoc`
+xref:SPEC.adoc#s3-8-2[S3.8.2] already renders the same routine correctly, so
+this was an internal inconsistency between two passages describing one
+function, not a uniformly wrong reading. The corrected form is what
+`src/engine/voice.c` already implements by collapsing the two paths, so
+nothing in the engine changes; the pseudocode does.
+
+'''
+
+[#item31]
+== 2026-07-29 — `tests/doomdrum.mid`: the drum tail sits ~4.6 dB below the reference at a matched decay rate — OPEN
+
+What is left of xref:#item21-addendum-doomdrum[the doomdrum addendum] after
+xref:#item26[Item 26] fixes the slope. The addendum attributed the
+mismatch to the 8.929 s cymbal same-note retrigger; it is not that. The
+deficit is present after **every** hit in the file, including the five that
+contain no cymbal at all.
+
+**Measured.** After `score.py` alignment, per-hit 50 ms RMS envelopes:
+the render sits −4.10…−5.31 dB below the reference at +0.4 s after each of
+the eight hits, while the fitted decay slopes over +0.30…+1.50 s now agree
+to 0.51 dB/s. The offset is a step, not an accumulation: it is fully
+established by +0.10 s and flat thereafter.
+
+**Isolated to one voice.** The tail is dominated by note 41 (Low Floor Tom,
+`usKeyGroup` 0, looping region, sustain 0). Complex demodulation at its
+70.24 Hz fundamental over +0.3…+1.0 s: the pitch matches to +2.1 cents and
+the level is −4.9…−5.4 dB on all four measured hits, i.e. a pure amplitude
+offset on that voice, not a detuning or a wrong sample. Band energy over
+the same window: 60–120 Hz −5.14 dB, and the (55 dB quieter) 500–2000 Hz
+region −11 dB.
+
+**Where the step lands.** The render tracks the reference to +0.06 s, then
+loses ~5 dB between +0.06 s and +0.10 s. The three note-offs of the first
+hit are at +0.121/+0.143/+0.150 s, so the step is *before* the note-off, in
+the decay segment, not at the release transition. The instrument's decay is
+2885 tc with a −4786 key-follow, i.e. 1352 tc = 2.19 s at key 41, and
+96 dB/2.19 s = 43.8 dB/s over 0.107 s is 4.7 dB — the size of the offset. The
+reading that fits is that the reference's amplitude has barely decayed at
+all by the time note-off lands, which none of the mechanisms in
+xref:SPEC.adoc#s5-1-2[S5.1.2] predicts.
+
+**Not yet excluded:** a delay before the decay segment starts; the wave-level
+`wsmp` attenuation being combined differently from
+xref:SPEC.adoc#s3-5[S3.5]'s "region overrides wave" for a region whose own
+`lAttenuation` is 0 (key 41's is, key 36's is −25 dB); the looping region's
+loop point. Ruled out: pitch, key-follow divisor
+(xref:#item27[Item 27] moves it by 0.7% of a duration), and the release rate.
 
 '''
 
