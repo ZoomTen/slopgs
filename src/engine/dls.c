@@ -51,7 +51,7 @@ static void wave_defaults(Wave *w) {
     w->loop_end = 0;
     w->fine_tune = 0;
     w->attenuation_tenth_db = 0;
-    w->unity_note = 60;
+    w->unity_note = DLS_DEFAULT_UNITY_NOTE;
     w->no_loop = 1;
 }
 
@@ -171,28 +171,28 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
         int32_t lscale = rd_i32(block + 8);
         block += 12;
 
-        if (usrc == 0) {
+        if (usrc == ART_SRC_NONE) {
             switch (udest) {
-                case 0x0002: case 0x0004: /* PAN, coarse-pan-ish */
-                    if (udest == 0x0002) a->pan_cb = (int16_t)((lscale << 4) / 125);
+                case ART_DST_PAN_COARSE: case ART_DST_PAN:
+                    if (udest == ART_DST_PAN_COARSE) a->pan_cb = (int16_t)((lscale << 4) / 125);
                     else a->pan_cb = (int16_t)((lscale >> 12) / 125);
                     break;
-                case 0x0104: a->lfo_freq_tc = lscale; break;
-                case 0x0105: a->lfo_delay_tc = lscale; break;
-                case 0x0206: a->eg1_attack_tc = lscale; break;
-                case 0x0207: a->eg1_decay_tc = lscale; break;
-                case 0x0208: a->eg1_sustain_permille = (int16_t)(uint16_t)(lscale & 0xFFFF); break;
-                case 0x020a: a->eg1_sustain_permille = (int16_t)(uint16_t)((lscale >> 16) & 0xFFFF); break;
-                case 0x0209: a->eg1_release_tc = lscale; break;
-                case 0x030a: a->eg2_attack_tc = lscale; break;
-                case 0x030b: a->eg2_decay_tc = lscale; break;
-                case 0x030c: a->eg2_sustain_permille = (int16_t)(uint16_t)(lscale & 0xFFFF); break;
-                case 0x030e: a->eg2_sustain_permille = (int16_t)(uint16_t)((lscale >> 16) & 0xFFFF); break;
-                case 0x030d: a->eg2_release_tc = lscale; break;
+                case ART_DST_LFO_FREQUENCY: a->lfo_freq_tc = lscale; break;
+                case ART_DST_LFO_DELAY: a->lfo_delay_tc = lscale; break;
+                case ART_DST_EG1_ATTACKTIME: a->eg1_attack_tc = lscale; break;
+                case ART_DST_EG1_DECAYTIME: a->eg1_decay_tc = lscale; break;
+                case ART_DST_EG1_SUSTAINLEVEL_LO: a->eg1_sustain_permille = (int16_t)(uint16_t)(lscale & 0xFFFF); break;
+                case ART_DST_EG1_SUSTAINLEVEL_HI: a->eg1_sustain_permille = (int16_t)(uint16_t)((lscale >> 16) & 0xFFFF); break;
+                case ART_DST_EG1_RELEASETIME: a->eg1_release_tc = lscale; break;
+                case ART_DST_EG2_ATTACKTIME: a->eg2_attack_tc = lscale; break;
+                case ART_DST_EG2_DECAYTIME: a->eg2_decay_tc = lscale; break;
+                case ART_DST_EG2_SUSTAINLEVEL_LO: a->eg2_sustain_permille = (int16_t)(uint16_t)(lscale & 0xFFFF); break;
+                case ART_DST_EG2_SUSTAINLEVEL_HI: a->eg2_sustain_permille = (int16_t)(uint16_t)((lscale >> 16) & 0xFFFF); break;
+                case ART_DST_EG2_RELEASETIME: a->eg2_release_tc = lscale; break;
                 default: break;
             }
-        } else if (usrc == 2) { /* KEYONVELOCITY */
-            if (udest == 0x0001) {
+        } else if (usrc == ART_SRC_KEYONVELOCITY) {
+            if (udest == ART_DST_ATTENUATION) {
                 if (lscale == (int32_t)0x80000000) a->vel_to_atten_depth = (int16_t)0xda80;
                 else {
                     int32_t v = (int32_t)(((int64_t)lscale * 10) >> 16);
@@ -206,35 +206,35 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
                consumed by the same configurator (voice.c's
                scale_tc_by_source). 27 of gm.dls's 235 instruments author a
                non-zero one -- louder notes attack faster on those patches. */
-            else if (udest == 0x0206) a->eg1_attack_vel_tc = (int16_t)(lscale >> 16);
-        } else if (usrc == 3) { /* KEYNUMBER, SPEC.md S2.4.3 "Source = 3" table.
+            else if (udest == ART_DST_EG1_ATTACKTIME) a->eg1_attack_vel_tc = (int16_t)(lscale >> 16);
+        } else if (usrc == ART_SRC_KEYNUMBER) { /* SPEC.md S2.4.3 "Source = 3" table.
                                    169 of gm.dls's 235 instruments carry the
-                                   0x0207 row -- every acoustic patch, most
-                                   synth leads/pads/SFX not; dropping it made
-                                   those notes decay 3-5x too slowly (see
+                                   EG1_DECAYTIME row -- every acoustic patch,
+                                   most synth leads/pads/SFX not; dropping it
+                                   made those notes decay 3-5x too slowly (see
                                    voice.c's scale_tc_by_source). */
-            if (udest == 0x0207) a->eg1_decay_kf_tc = (int16_t)(lscale >> 16);
-            else if (udest == 0x030b) a->eg2_decay_kf_tc = (int16_t)(lscale >> 16);
-        } else if (usrc == 5) { /* EG2 */
-            if (udest == 0x0003) a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
-        } else if (usrc == 1) { /* LFO -> PITCH, SPEC.md S2.4.3 "Source = 1" table,
+            if (udest == ART_DST_EG1_DECAYTIME) a->eg1_decay_kf_tc = (int16_t)(lscale >> 16);
+            else if (udest == ART_DST_EG2_DECAYTIME) a->eg2_decay_kf_tc = (int16_t)(lscale >> 16);
+        } else if (usrc == ART_SRC_EG2) {
+            if (udest == ART_DST_PITCH) a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
+        } else if (usrc == ART_SRC_LFO) { /* LFO -> PITCH, SPEC.md S2.4.3 "Source = 1" table,
                                     `[M: probe 06]` for the rate/depth model this
-                                    feeds (voice.c). usDestination==0x0001
+                                    feeds (voice.c). usDestination==ART_DST_ATTENUATION
                                     (tremolo/attenuation) is intentionally left
                                     unparsed -- out of scope, SPEC_GAPS.md. */
-            if (udest == 0x0003) {
+            if (udest == ART_DST_PITCH) {
                 int16_t v = clamp_cents(lscale >> 16);
-                if (uctrl == 0x0000) a->lfo_pitch_inherent_cents = v;
-                else if (uctrl == 0x0081) a->lfo_pitch_cc1_cents = v;
+                if (uctrl == ART_CTRL_NONE) a->lfo_pitch_inherent_cents = v;
+                else if (uctrl == ART_CTRL_CC1) a->lfo_pitch_cc1_cents = v;
                 /* any other usControl: dropped, matches SPEC.md S2.4.4 (gate
                    only accepts exactly 0 or 0x81). */
             }
         }
-        /* usSource==3 (key-follow) to any destination other than the two decay
-         * rows above is still dropped -- SPEC.md S2.4.3's own "Source = 3"
-         * table lists only 0x0207/0x030b, and gm.dls authors nothing else.
-         * usSource==4 is correctly dropped per SPEC.md S2.4 (matches
-         * original's own quirk). */
+        /* usSource==ART_SRC_KEYNUMBER (key-follow) to any destination other
+         * than the two decay rows above is still dropped -- SPEC.md S2.4.3's
+         * own "Source = 3" table lists only those two, and gm.dls authors
+         * nothing else. usSource==4 is correctly dropped per SPEC.md S2.4
+         * (matches original's own quirk). */
     }
 }
 
@@ -249,7 +249,7 @@ static void region_defaults(Region *r) {
     r->loop_end = 0;
     r->fine_tune = 0;
     r->attenuation_tenth_db = 0;
-    r->unity_note = 60;
+    r->unity_note = DLS_DEFAULT_UNITY_NOTE;
     r->no_loop = 1;
     r->low_key = 0;
     r->high_key = 127;
@@ -299,7 +299,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen) {
         } else if (fourcc_is(p, 'w', 'l', 'n', 'k')) {
             if (size >= 0xc) {
                 uint32_t ulchannel = rd_u32(cdata + 4);
-                if (ulchannel == 1) {
+                if (ulchannel == WLNK_CHANNEL_LEFT) {
                     r->wave_pool_index = rd_u16(cdata + 8);
                 }
             }
