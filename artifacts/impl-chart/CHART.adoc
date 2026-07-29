@@ -71,8 +71,8 @@ GS Mode CCs are **dropped outright** if GS mode is off — the value is not
 stored, not queued, not remembered.
 
 GS mode is entered only by a GS Reset
-<<s1-4,System Exclusive>>, and is left again by GM System On or System
-Reset (`FF`)
+<<s1-4,System Exclusive>>, and is left again by GM System On, GM System Off
+or System Reset (`FF`)
 --
 
 `Bn 01 vv` — Modulation Wheel:: Recognized.
@@ -301,7 +301,8 @@ until the next GS Reset. `dev` not checked.
 | `F0 7E dev 09 02 F7`
 | GM System Off (Universal Non-Realtime).
 
-Full device reset. GS mode left as it was. `dev` not checked.
+Full device reset, and **clears GS mode** — exactly as GM System On does.
+`dev` not checked.
 | `F0 7F dev 04 01 ll mm F7`
 | Master Volume (Universal Realtime).
 
@@ -326,6 +327,9 @@ The addresses listed below are DT1 addresses, to be filled in the
 | `40 1n 15`
 | USE RHYTHM PART (GS Mode)
 | Nonzero = Part `n` switches to drum-kit ("rhythm") mode.
+
+**Also fires a Reset All Controllers on every channel** — all notes cut,
+controllers back to defaults. Bank/Program survive.
 | `40 1n 40`–`4B`
 | Scale Tuning
 

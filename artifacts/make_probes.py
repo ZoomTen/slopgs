@@ -2682,6 +2682,86 @@ def p46_noteoff_grid():
     return _write_manifest("46_noteoff_grid.mid", tr, man)
 
 
+def p47_gm_off_state():
+    """What GM System Off leaves behind: GS mode, and the instrument set.
+
+    SPEC.adoc S4.5 has System Off calling the same device reset System On does,
+    so it clears GS mode; S4.9 has it releasing the loaded collection, which is
+    `[I]` and is what this probe is really for. One case discriminates all
+    three possibilities at once. After a GS Reset, bank 8 is selectable, so
+    008:080 (Sine Wave) and 000:080 (Square Wave) are the two audible outcomes:
+
+      silent      -> the collection really was released
+      Sine Wave   -> GS mode survived System Off, and nothing was released
+      Square Wave -> GS mode cleared, but nothing was released
+
+    Cases 1 and 4 are positive controls: the same Sine Wave before the message
+    and after a System On has re-acquired, so a silent case 2 cannot be blamed
+    on the file.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    clock = t(0.5)
+
+    def sine_attempt():
+        """Ask for 008:080. Sine Wave only if GS mode is on AND a kit is loaded."""
+        nonlocal clock
+        tr.cc(clock, 0, 0, 8)
+        tr.cc(clock, 0, 32, 0)
+        tr.prog(clock, 0, 80)
+        tr.note(clock + t(0.1), t(1.0), 0, 60, 100)
+        clock += t(2.0)
+
+    sine_attempt()                                      # 1: control, Sine Wave
+    tr.sysex(clock, [0x7E, 0x7F, 0x09, 0x02, 0xF7])     # GM System Off
+    clock += t(0.5)
+    sine_attempt()                                      # 2: the discriminator
+    tr.sysex(clock, [0x7E, 0x7F, 0x09, 0x01, 0xF7])     # GM System On, re-acquires
+    clock += t(0.5)
+    sine_attempt()                                      # 3: Square Wave, GS is off
+    tr.sysex(clock, GS_RESET)                           # GS back on
+    clock += t(0.5)
+    sine_attempt()                                      # 4: control, Sine Wave again
+    return write("47_gm_off_state.mid", tr)
+
+
+def p48_rhythm_part_reset():
+    """USE RHYTHM PART falls into the shared reset tail (SPEC.adoc S4.5).
+
+    The message is aimed at block 5 -- a part nothing here plays on -- so any
+    effect on channels 1 and 2 is the tail's device-wide controller reset, not
+    the rhythm assignment. Two things to look for: the sustained notes cutting
+    off where the SysEx lands, and the retriggered pair coming back loud and
+    centred despite no controller being sent between them. Bank and Program are
+    expected to survive, so all four notes should stay Square Wave.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    clock = t(0.5)
+    for ch in (0, 1):
+        tr.prog(clock, ch, 80)                      # square wave: steady, easy to read
+        tr.cc(clock, ch, 7, 40)                     # volume well under the 100 default
+        tr.cc(clock, ch, 10, 0 if ch == 0 else 127) # hard left / hard right
+        tr.cc(clock, ch, 11, 60)                    # expression under the 127 default
+    clock += t(0.5)
+
+    def pair(on):
+        tr.at(clock, [(0x90 if on else 0x80), 60, 100 if on else 0])
+        tr.at(clock, [(0x91 if on else 0x81), 64, 100 if on else 0])
+
+    pair(True)
+    clock += t(1.5)
+    tr.sysex(clock, gs([0x40, 0x15, 0x15], [0x02]))  # block 5, an unrelated part
+    clock += t(1.5)
+    pair(False)                                      # may already be gone
+    clock += t(0.5)
+    pair(True)                                       # no controllers touched since
+    clock += t(1.5)
+    pair(False)
+    clock += t(0.5)
+    return write("48_rhythm_part_reset.mid", tr)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2693,7 +2773,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p35_decay_keyfollow, p36_kit_key_fallback, p37_rac_volume_order,
           p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
-          p44_release_shape, p45_release_from_level, p46_noteoff_grid]
+          p44_release_shape, p45_release_from_level, p46_noteoff_grid,
+          p47_gm_off_state, p48_rhythm_part_reset]
 
 
 def check(path):

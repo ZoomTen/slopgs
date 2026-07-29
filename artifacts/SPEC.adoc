@@ -3115,28 +3115,45 @@ All addresses below are relative to the SysEx buffer, byte 0 = the leading
 [options="header"]
 |===
 | Bytes | Message | Effect | Cited at
-| `F0 7E <any> 09 01 F7` | GM System On (Universal Non-Realtime, sub-ID1=`09`, sub-ID2=`01`) | Calls `ResetDevice`; **clears** the GS-mode flag | `[A:0x136a2]` (mfr `0x7E`), `[A:0x136d5]` (sub-ID1 `0x09`), `[A:0x136e1]` (`call 0x12354`), `[A:0x136f5]` (clear flag, gated on sub-ID2`==1`)
-| `F0 7E <any> 09 02 F7` | GM System Off | Calls `ResetDevice`; GS-mode flag **untouched** | same entry point; `[A:0x136f3]` (`je 0x136fc` skips the clear when sub-ID2`!=1`)
+| `F0 7E <any> 09 01 F7` | GM System On (Universal Non-Realtime, sub-ID1=`09`, sub-ID2=`01`) | Calls `ResetDevice`, which **clears** the GS-mode flag; then **acquires** the instrument collection (`0x150bc` with argument `1`, normally a no-op because the collection is already loaded) | `[A:0x136a2]` (mfr `0x7E`), `[A:0x136d5]` (sub-ID1 `0x09`), `[A:0x136e1]` (`call 0x12354`), `[A:0x13700]` (collection call, argument = sub-ID2`==1`). The dedicated clear at `[A:0x136f5]`, gated on sub-ID2`==1`, is redundant: `ResetDevice` zeroed the same field at `[A:0x123c5]`
+| `F0 7E <any> 09 02 F7` | GM System Off | Calls `ResetDevice`, which **clears** the GS-mode flag; then **releases** the instrument collection (`0x150bc` with argument `0`), tearing down every cached instrument handle (xref:s4-9[§4.9]) | same entry point. `[A:0x136e1]` is reached before the sub-ID2 byte is examined `[A:0x136eb]`, so `ResetDevice` runs on this path exactly as it does for System On; `[A:0x13700]` (collection call)
 | `F0 7F <any> 04 01 <lsb> <msb> F7` | Master Volume (Universal Realtime, sub-ID1=`04`, sub-ID2=`01`) | Only the **MSB** byte is used; the LSB is never read. MSB is looked up in the same 128-entry attenuation table as note-on velocity and stored to `device+0xf78` (device-global) | `[A:0x136a7]` (mfr `0x7F`), `[A:0x136ae]`/`[A:0x136b8]` (sub-IDs), `[A:0x136c2]` (reads byte 6 = MSB; byte 5 = LSB is never referenced), `[A:0x12d28]` (table lookup), `[A:0x12d2d]` (store)
 | `F0 41 <any> 42 12 40 00 7F 00 <chk> F7` | Roland GS Reset (`DT1`, address `40 00 7F`, data `00`) | Calls `ResetDevice`; **sets** the GS-mode flag to `1`; then calls `ResetAllChannelControllers` and `ResetAllProgramsAndRhythmGroups` | `[A:0x1369d]` (mfr `0x41`), `[A:0x13717]`/`[A:0x13721]` (model `0x42`/command `0x12`), `[A:0x1374a]` (address match `400 07F`), `[A:0x137ea]` (`call 0x12354`), `[A:0x137f4]` (set flag), `[A:0x137fa]`–`[A:0x13816]` (both reset calls, shared with GM On/Off)
 | `F0 41 <any> 42 12 40 1x 02 <data> <chk> F7` | RCV CHANNEL (per-Part MIDI-channel remap), gated on GS-mode flag | Writes `data` into `device+0x12fc+part*1` | `[A:0x13756]` (address match), `[A:0x137b7]` (gate test), `[A:0x137ae]` (store)
-| `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1` | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store)
+| `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1`, then enters the shared reset tail and calls `ResetAllChannelControllers` — releasing every sounding voice and resetting every controller on all 16 channels. It does **not** call `ResetAllProgramsAndRhythmGroups`, so Bank/Program survive | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store), `[A:0x137b5]` (`jmp` into the tail), `[A:0x13807]` (tail gate, false on this path)
 | `F0 41 <any> 42 12 40 1x yy ... F7` (any other address in the `40 1x` family), gated on GS-mode flag | Per-Part 12-entry tuning-grid write (xref:s4-2-2[§4.2.2], `device+0xfbc`) | 12 iterations, one per semitone class, each storing `byte - 0x40` | `[A:0x1376c]` (gate test), `[A:0x13797]` (store loop)
 | any other manufacturer ID / model ID / command ID / address | Unrecognized | No state change; function returns success (`1`), the buffer is consumed and dropped, no error is raised | `[A:0x13818]`
 |===
 
-GM System On/Off and GS Reset all converge on calling `ResetDevice`
-(`0x12354`); GM System On/Off and GS Reset additionally share one further
-tail (`0x137fa`) that unconditionally calls both `ResetAllChannelControllers`
-(`0x126c2`) and `ResetAllProgramsAndRhythmGroups` (`0x12780`) — confirmed by
-direct read: the gate condition on the second call is always true on
-this path because the gating flag was just set to `1` two instructions earlier in
-both callers `[A:0x13807]`. The only differences between the three
-converging triggers are: which reset flag-clears happen beforehand
-(`0xFF` also clears the GS-mode flag at its own site, `0x131ee`; GM System
-On clears it at `0x136f5`; GS Reset sets it at `0x137f4`), and the extra
-Master-Volume-related call `0x150bc` that only the `0xFF`/System-Reset path
-makes (`0x13218`).
+GM System On, GM System Off and GS Reset all converge on calling
+`ResetDevice` (`0x12354`). Three messages — those two plus USE RHYTHM PART —
+then enter a shared tail at `0x137fa`, reached by `jmp` from `0x13705` and
+`0x137b5` and by fallthrough from `0x137f4`. Nothing else reaches it.
+
+The tail calls `ResetAllChannelControllers` (`0x126c2`) unconditionally, then
+calls `ResetAllProgramsAndRhythmGroups` (`0x12780`) only if a register flag
+set by the caller is nonzero `[A:0x13807]`. That flag is not the GS-mode
+field: it is a local set to `1` at `[A:0x136e6]` on the GM path and at
+`[A:0x137f1]` on the GS Reset path, and left at its function-entry zero
+`[A:0x13683]` on the USE RHYTHM PART path. So both reset functions run for GM
+System On/Off and GS Reset, and only the first runs for USE RHYTHM PART.
+
+The differences between the three `ResetDevice` triggers are: which
+flag-writes happen around it (GS Reset sets the GS-mode flag afterwards at
+`[A:0x137f4]`; GM System On's clear at `[A:0x136f5]` and System Reset's at
+`[A:0x131ee]` are both redundant against ``ResetDevice``'s own
+`[A:0x123c5]`), and the argument each passes to the collection
+acquire/release `0x150bc` (xref:s4-9[§4.9]) — GM System On and System Reset
+pass `1`, GM System Off passes `0`, and GS Reset does not call it at all.
+
+System Reset (`0xFF`) does not use the shared tail. It calls `ResetDevice`
+`[A:0x131f5]`, then the two reset functions in the **opposite order** —
+`ResetAllProgramsAndRhythmGroups` first `[A:0x13202]`, then
+`ResetAllChannelControllers` `[A:0x1320f]` — and finally `0x150bc` with `1`
+`[A:0x13218]`. Because `ResetAllChannelControllers` cancels every pending
+queue node while `ResetAllProgramsAndRhythmGroups` schedules program and
+locale events, the two orderings do not leave the same set of events pending;
+which events survive each ordering is `[O]`.
 
 '''
 
@@ -3222,9 +3239,11 @@ Per channel (16 iterations):
 
 Net effect: every channel's Bank/Program resets to `(0,0,0)`, and the
 default rhythm/melodic instrument-locale notification is re-issued to
-match. ``0x151b0``'s own internal effect is **`[O]`**
-(it is called against the top-level, non-per-channel object at
-`device+0x20`, the same object also passed to `FindInstrument`, xref:s4-7[§4.7]/xref:s4-8[§4.8]) — `[O]`.
+match. `0x151b0` assigns that locale to the channel's slot in the
+instrument-handle cache, resolving a fresh handle from the loaded collection
+and demoting the old one to the channel's "previous" slot; it is a no-op if
+the locale is already current or if no collection is loaded
+(xref:s4-9-2[§4.9.2]).
 
 [#s4-6-4]
 ==== Reset-state summary table (every per-channel field, all three paths)
@@ -3249,7 +3268,8 @@ match. ``0x151b0``'s own internal effect is **`[O]`**
 | Mono flag | `0` (poly) | not touched | not touched | `0` | `0` | `0`
 | Sustain-pedal value (`+0xed0`) | not touched | not touched (but sentinel-`0xFE` release event queued) | not touched | effectively released via queued event | effectively released via queued event | not directly reset by System Reset's own calls beyond what `0x126c2` queues `[A]`
 | Master Volume attenuation | `0` hundredths of a dB (unity) | not touched | not touched | `0` | `0` | `0`
-| GS-mode flag | `0` | not touched | not touched | `1` (set after `ResetDevice` runs) | `0` (System On) / unchanged (System Off) | `0`
+| GS-mode flag | `0` | not touched | not touched | `1` (set after `ResetDevice` runs) | `0` (both System On and System Off) | `0`
+| Instrument collection | not touched | not touched | not touched | not touched | loaded (System On) / **released** (System Off), xref:s4-9[§4.9] | loaded
 |===
 
 Every hard-coded reset value in this table (`100`, `127`, `64`, `8192`,
@@ -3373,6 +3393,106 @@ carried here as `[M:probe]` (measured from rendered reference audio;
 
 '''
 
+[#s4-9]
+=== The instrument collection and its per-channel handle cache
+
+The object at `device+0x20` — the same one passed to `FindInstrument`
+(xref:s4-7[§4.7], xref:s4-8[§4.8]) — owns the loaded DLS collection and a
+16-slot cache of resolved instrument handles, one per channel. Its relevant
+fields:
+
+[options="header"]
+|===
+| Field | Meaning
+| `+0x00` | Head of the collection list `FindInstrument` scans
+| `+0x18` | Loaded flag: `1` once a collection is open, `0` otherwise
+| `+0x28` | The open collection
+| `+0x2c` | 16 slots of 8 bytes, `(handle, locale)`, indexed by channel
+| `+0xac` | 16 parallel slots holding each channel's **previous** `(handle, locale)`
+|===
+
+[#s4-9-1]
+==== Acquire and release, `0x150bc`
+
+One boolean argument selects the direction. The call is a no-op when the
+requested state already holds `[A:0x150cc]`.
+
+[source]
+----
+Collection(obj, wantLoaded):                        // 0x150bc
+    if (obj.loaded == wantLoaded) return;           // 0x150cc
+    if (wantLoaded) {
+        obj.collection = Open("\SystemRoot\System32\Drivers\gm.dls");
+                                                    // 0x150e6, name at 0x1506e
+        obj.slot[0] = NewInstrument(obj.collection, DRUM_BIT);   // 0x15107
+        for (i = 1; i < 16; i++)                                 // 0x15119
+            obj.slot[i] = NewInstrument(obj.collection, 0);
+        obj.loaded = 1;                             // 0x15135
+    } else {
+        for (i = 0; i < 16; i++) {                  // 0x1513e
+            Release(obj.slot[i]);     obj.slot[i].locale     = NONE;
+            Release(obj.prevSlot[i]); obj.prevSlot[i].locale = NONE;
+        }
+        Release(obj.collection);                    // 0x15193
+        obj.collection = 0;                         // 0x15198
+        obj.loaded     = 0;                         // 0x1519c
+    }
+----
+
+`DRUM_BIT` is `0x80000000`; `NONE` is the sentinel `0x40000000`. Opening
+walks a name-keyed list and reuses an existing entry before allocating
+`[A:0x164ee]`; releasing decrements a refcount and unlinks the collection
+from `obj+0x0` only when it reaches zero `[A:0x16066]`.
+
+The four call sites `[A]`:
+
+[options="header"]
+|===
+| Site | Argument | Effect
+| Device construction, `0x12b4c` | `1` `[A:0x12af6]` | Loads `gm.dls`. This is where the collection comes from
+| System Reset (`0xFF`), `0x13218` | `1` `[A:0x131d7]` | No-op while already loaded
+| GM System On/Off, `0x13700` | sub-ID2 `== 1` `[A:0x136eb]` | On: no-op. **Off: release**
+| Device teardown, `0x15323` | `0` | Release
+|===
+
+Nothing else in the driver opens or closes a collection.
+
+**GM System Off therefore unloads `gm.dls`.** With `obj+0x28` null and
+`obj+0x18` zero, no new instrument handle can be created `[A:0x14f6f]`,
+locale assignment short-circuits `[A:0x151c8]`, and ``FindInstrument``'s scan
+over `obj+0x0` finds nothing, so note-on exhausts its retry tiers and
+allocates no voice `[A:0x1302a]`. The device stays silent until a GM System
+On or a System Reset (`0xFF`) re-acquires — `[I]`, inferred from the
+teardown; the refcount at `[A:0x16066]` releases the collection only if no
+other reference is outstanding, and whether a sounding voice holds one is
+`[O]`.
+
+[#s4-9-2]
+==== Locale assignment, `0x151b0`
+
+Called from ``ShortMsg``'s Program-Change path and from
+`ResetAllProgramsAndRhythmGroups` (xref:s4-6-3[§4.6.3]), always with a
+channel index and a locale:
+
+[source]
+----
+SetSlotLocale(obj, chan, locale):                   // 0x151b0
+    if (obj.slot[chan].locale == locale) return 1;  // 0x151be, already current
+    if (obj.loaded == 0)                return 0;   // 0x151c8
+    if (obj.collection == 0)            return 0;   // 0x14f68
+    h = NewInstrument(obj.collection, locale);      // 0x14f79
+    if (h == 0)                         return 0;
+    Release(obj.prevSlot[chan]);                    // 0x14f96
+    obj.prevSlot[chan] = obj.slot[chan];            // 0x14f9e
+    obj.slot[chan]     = (h, locale);               // 0x14fb3
+    return 1;
+----
+
+Each channel keeps one previous instrument alongside its current one; a
+locale that is already current costs nothing.
+
+'''
+
 [#s4-10]
 === Open items
 
@@ -3403,10 +3523,16 @@ carried here as `[M:probe]` (measured from rendered reference audio;
    address family as the confirmed RCV-CHANNEL/USE-RHYTHM-PART GS
    addresses) rather than a directly-read label or an independently
    consulted Roland GS specification document.
-. ``0x151b0``'s exact internal effect (called from both ``ShortMsg``'s
-   Program-Change path and `ResetAllProgramsAndRhythmGroups`, always with
-   a channel index and a locale) was not traced; only its call sites and
-   arguments are confirmed.
+. Which pending events survive each of the two reset orderings. The shared
+   tail runs `ResetAllChannelControllers` before
+   `ResetAllProgramsAndRhythmGroups`; System Reset (`0xFF`) runs them in the
+   opposite order (xref:s4-5[§4.5]). Since the first cancels every pending
+   queue node and the second schedules program and locale events, the two
+   orderings leave different sets of events pending. Which ones, and whether
+   the difference is audible, is not traced.
+. Whether a sounding voice holds a reference on the loaded collection, and
+   so whether ``GM System Off``'s release actually unlinks it while notes are
+   still ringing (xref:s4-9-1[§4.9.1]).
 . The exact frame count per call to the per-buffer service routine
    (`0x13054`) — which bounds the real-world timing granularity of "due"
    event dispatch and controller-value promotion — is a caller-supplied

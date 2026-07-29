@@ -190,6 +190,257 @@ are history, not current measurements.
 
 '''
 
+[#item25-resolved]
+== 2026-07-29 — Item 25 RESOLVED by `[A:0x136e1]`: GM System Off *does* clear GS mode; the shared tail has a third entry nobody recorded; `0x150bc` is not what S4.5 said it was
+
+xref:#item25[Item 25] recorded a contradiction it could not decide without
+the binary: xref:SPEC.adoc#s4-5[S4.5] claimed GM System Off both "calls
+`ResetDevice`" and leaves the GS-mode flag "untouched", while
+xref:SPEC.adoc#s4-6-1[S4.6.1] listed `device+0xf54 = 0` among
+``ResetDevice``'s unconditional writes. The binary was disassembled at the two
+address ranges the entry nominated, plus the shared tail its secondary
+observation flagged. The first of the two readings is correct, and chasing the
+secondary observation turned up two further errors in the same passage.
+
+=== The Universal Non-Realtime branch
+
+`0x136d5`–`0x13705`:
+
+[source]
+----
+if (buf[3] != 0x09) goto drop;          // 0x136d5, the only gate on the branch
+ResetDevice(device);                    // 0x136e1  <-- BEFORE the sub-ID2 test
+resetPrograms = 1;                      // 0x136e6/0x136e8, read by the tail
+isSystemOn    = (buf[4] == 1);          // 0x136eb/0x136ee
+if (isSystemOn)
+    device.gsMode = 0;                  // 0x136f5, System On only
+Collection(device+0x20, isSystemOn);    // 0x136fc/0x13700
+goto sharedTail;                        // 0x13705 -> 0x137fa
+----
+
+The call to `ResetDevice` precedes the sub-ID2 test entirely; the sub-ID1
+compare at `0x136d5` is the only gate on the branch. Both GM System On and GM
+System Off reach it.
+
+``ResetDevice``'s `0xf54` store is likewise unconditional. `0x123be`–`0x123d7`
+is the function epilogue, entered only by the loop exit at `0x123bc`, and
+contains no branch target:
+
+[source]
+----
+// per-channel loop over 16 channels ends at 0x123bc
+device.masterVolAtten = 0;              // 0x123be
+device.gsMode         = 0;              // 0x123c5
+device.rhythmPart[0]  = 1;              // 0x123ce
+return;                                 // 0x123d7
+----
+
+**Therefore GM System Off clears the GS-mode flag.** xref:SPEC.adoc#s4-5[S4.5]'s
+"untouched" was true of instruction `0x136f5` alone, not of the message;
+xref:SPEC.adoc#s4-6-4[S4.6.4]'s "unchanged (System Off)" cell was wrong and
+becomes `0`. Every other GM-System-Off cell in that table is inherited from
+`ResetDevice`, which is genuinely called, so all of them stand unchanged.
+
+A corollary: the dedicated clear at `0x136f5` on the System On path is **dead
+code**. `ResetDevice` zeroed `0xf54` twelve instructions earlier, so it can
+never observe a nonzero flag.
+
+=== The shared tail: the gate is a register, and there is a third caller
+
+xref:#item25[Item 25] flagged xref:SPEC.adoc#s4-5[S4.5]'s claim that the tail
+at `0x137fa` is always taken "because the gating flag was just set to `1` two
+instructions earlier in **both callers**". Three things are wrong with that.
+
+[source]
+----
+sharedTail:                                     // 0x137fa
+    ResetAllChannelControllers(device);         // 0x13802, unconditional
+    if (resetPrograms)                          // 0x13807, tests EBX
+        ResetAllProgramsAndRhythmGroups(device);// 0x13813
+----
+
+First, the gate tests **EBX, not `device+0xf54`**. On the GS Reset path EBX is
+set to `1` at `0x137f1`/`0x137f3` and then additionally *stored* to `0xf54` at
+`0x137f4`, which is what made the register and the flag look like the same
+thing. On the GM path EBX is set to `1` at `0x136e6`/`0x136e8`, where it also
+serves as the constant `1` for the sub-ID2 compare, while `0xf54` is being
+*cleared*. EBX survives the intervening calls: `0x150bc` pushes it at `0x150d7`
+and pops at `0x151a1`; `0x126c2` pushes at `0x126ca`.
+
+Second, there are **three** entries into the tail, not two. USE RHYTHM PART
+jumps into it at `0x137b5`:
+
+[source]
+----
+useRhythmPart:                                  // 0x137a2, address 40 1n 15
+    if (device.gsMode == 0) goto drop;          // 0x137a2/0x137a9
+    device.rhythmPart[n] = buf[8];              // 0x137ab/0x137ae
+    goto sharedTail;                            // 0x137b5
+----
+
+Third, on that path the gate is **false**. EBX is zeroed at function entry
+(`0x13683`) and the only writes to it anywhere on the Roland branch are in the
+tuning-grid case at `0x1378d`/`0x13790`, which exits at `0x137a0` without ever
+reaching the tail. So USE RHYTHM PART arrives at `0x137fa` with `EBX = 0`.
+
+The consequence is not cosmetic. A USE RHYTHM PART message, once GS mode is
+on, runs the whole of `ResetAllChannelControllers` (xref:SPEC.adoc#s4-6-2[S4.6.2]):
+it releases every currently-active voice, cancels every pending node in all
+six per-channel queues, and reschedules Modulation `0`, Pitch Bend `8192`,
+Channel Volume `100`, Pan `64` and Expression `127` on **all sixteen
+channels**, plus a sustain-release sentinel per channel. It then skips
+`ResetAllProgramsAndRhythmGroups`, so Bank/Program survive. Neither
+`SPEC.adoc` nor `CHART.adoc` recorded any of this; both described the message
+as a single byte written to `device+0x130c+n`.
+
+The original claim that the tail is "always taken" is therefore true of the
+two callers xref:SPEC.adoc#s4-5[S4.5] knew about and false in general. Those
+three are the only entries into `0x137fa`: two `jmp`s (`0x13705`, `0x137b5`)
+and the fallthrough from `0x137f4`, with no data pointer to the address.
+
+Two smaller things fall out of the same read. The System Reset (`0xFF`) path
+clears `0xf54` at `0x131ee` immediately *before* its own `call 0x12354`, so
+that clear is redundant for the same reason `0x136f5` is. And that path runs
+the two reset functions in the **opposite order** to the shared tail: `0x13202`
+calls `ResetAllProgramsAndRhythmGroups` and `0x1320f` then calls
+`ResetAllChannelControllers`, where the tail calls `0x126c2` first and
+`0x12780` second. Since `ResetAllChannelControllers` cancels every pending
+queue node and `ResetAllProgramsAndRhythmGroups` schedules program/locale
+events, the ordering decides whether the program events survive the cancel —
+so the `0xFF` column of xref:SPEC.adoc#s4-6-4[S4.6.4] is not simply the union
+of the two functions' writes. Tracing which events actually survive each
+ordering was not done; it is `[O]` and belongs to a separate item.
+
+=== `0x150bc` is the `gm.dls` acquire/release, not a Master Volume call
+
+xref:SPEC.adoc#s4-5[S4.5]'s closing paragraph described `0x150bc` as "the
+extra Master-Volume-related call ... that only the `0xFF`/System-Reset path
+makes (`0x13218`)". Both halves are wrong. It takes one boolean and is the
+acquire/release for the DLS collection:
+
+[source]
+----
+Collection(obj, wantLoaded):                        // 0x150bc
+    if (obj.loaded == wantLoaded) return;           // 0x150cc, no-op early-out
+    if (wantLoaded) {
+        obj.collection = Open("\\SystemRoot\\System32\\Drivers\\gm.dls");
+                                                    // 0x150e6, name at 0x1506e
+        obj.slot[0] = NewInstrument(obj.collection, DRUM_BIT);
+                                                    // 0x15104/0x15107
+        for (i = 1; i < 16; i++)                    // 0x15119-0x15133
+            obj.slot[i] = NewInstrument(obj.collection, 0);
+        obj.loaded = 1;                             // 0x15135
+    } else {
+        for (i = 0; i < 16; i++) {                  // 0x1513e-0x15187
+            Release(obj.slot[i]);     obj.slot[i].locale     = NONE;
+            Release(obj.prevSlot[i]); obj.prevSlot[i].locale = NONE;
+        }
+        Release(obj.collection);                    // 0x15193 -> 0x16048
+        obj.collection = 0;                         // 0x15198
+        obj.loaded     = 0;                         // 0x1519c
+    }
+----
+
+The slots are 8-byte `(handle, locale)` pairs: the live array at `obj+0x2c`,
+the parallel "previous instrument" array `0x80` bytes above at `obj+0xac`.
+`NONE` is the sentinel `0x40000000`, `DRUM_BIT` is `0x80000000`, `obj.loaded`
+is `obj+0x18`, `obj.collection` is `obj+0x28`.
+
+All four call sites, arguments read from the binary:
+
+[options="header"]
+|===
+| Site | Argument | Effect
+| `0x12b4c` (device constructor) | `edi = 1`, set at `0x12af6`/`0x12af8` | **acquire** — this is where `gm.dls` is loaded, at device open
+| `0x13218` (MIDI System Reset `0xFF`) | `edi = 1`, set at `0x131d7`/`0x131d9` | acquire; no-op when already loaded
+| `0x13700` (GM System On/Off) | `eax = (sub-ID2 == 1)` | System On: acquire (normally a no-op). **System Off: RELEASE**
+| `0x15323` (teardown) | literal `0` | release
+|===
+
+`0x150bc` is the only site in the binary that opens the collection — confirmed
+by disassembling every section and grepping for the target, and by confirming
+its address appears in no data section as a function pointer.
+
+**Net effect: GM System Off tears down the instrument collection.** With
+`obj.collection` null and `obj.loaded` zero, `0x14f5e` (the per-slot
+instrument-handle setter) returns failure at `0x14f6f` and `0x151b0`
+short-circuits at `0x151c8`, so no new handle can be created and Program
+Change stops having any audible effect. `FindInstrument` (`0x14800`) walks the
+collection list at `obj+0x0` — the same list `0x164ee` links into and
+`0x16048` unlinks from — so its scan finds nothing and the note-on path
+exhausts its three retries into the no-voice exit at `0x1302a`. Only a
+subsequent GM System On or MIDI System Reset (`0xFF`) re-acquires.
+
+The state teardown is `[A]`. The audible consequence — silence until
+re-acquire — is `[I]`: `0x16048` unlinks only once the `InterlockedDecrement`
+on the collection's refcount at `+0x2c` (`0x16066`, import thunk `0x11874`)
+reaches zero, and whether a currently-sounding voice holds a reference of its
+own was not traced. It enters `SPEC.adoc` as `[I]` and needs an `[M]` probe.
+
+=== The falsification probe from Item 25 needs replacing
+
+xref:#item25[Item 25] proposed: GS Reset, CC0 `= 8`, GM System Off, Program
+Change 80, note — expecting Sine Wave (bank 8) if GS mode survived and Square
+Wave (bank 0) if it did not. Under the confirmed reading that probe produces
+**silence** either way, because the same message released the collection. It
+cannot distinguish the two readings.
+
+Three probes replace it, none generated yet — worth adding to
+`make_probes.py` when a reference render can be captured:
+
+. GS Reset, CC0 `= 8`, GM System **On**, Program Change 80, note. Uses the
+  acquiring form of the message, so it isolates the GS-mode question from the
+  teardown. Square Wave confirms GS mode was cleared.
+. GS Reset, note, GM System Off, note. Tests the teardown directly; the second
+  note silent confirms the `[I]` above.
+. GS Reset, sustained chord across several channels with Volume/Pan/Expression
+  moved off their defaults, then USE RHYTHM PART on an unrelated part. Every
+  note cutting off and every controller snapping back confirms the tail entry.
+
+=== What shipped in the engine, and what did not
+
+`src/engine/synth.c`:
+
+* GM System Off already cleared GS mode, because the engine collapses all
+  three reset functions into `synth_reset()` and that zeroes `g_gs_mode`
+  before the sub-ID2 test is reached — the same accident of ordering the
+  driver has. The sub-ID2-gated clear that sat after it was dead code against
+  its own reset, exactly as `0x136f5` is; removed, with the comment that
+  claimed System Off "leaves untouched" corrected. **No behavioural change.**
+* USE RHYTHM PART now calls a new `reset_all_channel_controllers_device()`.
+  This is distinct from the existing CC121 helper, which is gated by
+  `CC121_RESETS_VOLUME` and runs on one channel: the tail's version resets
+  Channel Volume and runs on all sixteen. **Behavioural change**, verified on
+  `probes/48_rhythm_part_reset.mid`: sounding voices cut at the message, and a
+  retrigger with no intervening controller returns 28× louder and centred —
+  which is exactly `(100·127)² / (40·60)²` for volume `40`→`100` and
+  expression `60`→`127` under the squared law, so the reset is landing on the
+  right fields and not merely making noise. Corpus mean unmoved at
+  `r = 0.913` / `−23.39 dB`; no corpus item carries either message.
+
+**Not implemented: the collection release** (xref:SPEC.adoc#s4-9-1[S4.9.1]).
+GM System Off does not unload anything in the engine. The teardown is `[A]`
+but its audible consequence is `[I]`, and shipping silence on a message some
+files send as a politeness would be a bad trade against an unmeasured claim.
+`probes/47_gm_off_state.mid` exists to settle it; this stays unimplemented
+until a reference render says otherwise.
+
+=== What changed
+
+* xref:SPEC.adoc#s4-5[S4.5]: GM System Off row (clears GS mode via
+  `ResetDevice`); GM System On row (the redundant clear); USE RHYTHM PART row
+  (the tail entry); the closing converging-triggers paragraph, replaced in
+  full — tail callers and gate, and ``0x150bc``'s identity and call sites.
+* xref:SPEC.adoc#s4-6-3[S4.6.3]: ``0x151b0``'s `[O]` retired; its internal
+  effect is now read.
+* xref:SPEC.adoc#s4-6-4[S4.6.4]: GS-mode row, "GM On/Off net effect" cell
+  `unchanged (System Off)` → `0`.
+* xref:SPEC.adoc#s4-10[S4.10]: the `0x151b0` open item removed.
+* `impl-chart/CHART.adoc`: the GM System Off and USE RHYTHM PART rows, and the
+  Bank Select warning that lists how GS mode is left.
+
+'''
+
 [#item21-addendum-doomdrum]
 == 2026-07-29 — Item 21 addendum: `tests/doomdrum.mid` reproduces the still-open level-scaling gap on a cymbal same-note retrigger -- OPEN, no fix attempted
 

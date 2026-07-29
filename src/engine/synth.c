@@ -179,6 +179,22 @@ static void reset_all_channel_controllers(Channel *c) {
     c->expression = 127;
 }
 
+/* SPEC.adoc S4.6.2 -- the driver's ResetAllChannelControllers, which the reset
+ * paths and USE RHYTHM PART all route through. Distinct from CC121 above: this
+ * one does reset Channel Volume, and it runs across every channel. */
+static void reset_all_channel_controllers_device(void) {
+    for (int i = 0; i < 16; i++) {
+        Channel *c = &g_channels[i];
+        voice_all_sound_off(i);
+        c->modulation = 0;
+        c->pitch_bend = 8192;
+        c->volume = 100;
+        c->pan = 64;
+        c->expression = 127;
+        c->sustain = 0;
+    }
+}
+
 static void dispatch_cc(int ch, uint32_t cc, uint32_t val) {
     Channel *c = &g_channels[ch];
     switch (cc) {
@@ -252,10 +268,11 @@ void synth_sysex(const uint8_t *buf, uint32_t len) {
     uint8_t mfr = buf[0];
 
     if (mfr == 0x7E && len >= 4) { /* GM System On/Off */
-        if (buf[2] == 0x09) {
-            synth_reset();
-            if (buf[3] == 0x01) g_gs_mode = 0; /* GM On clears GS mode; Off leaves untouched */
-        }
+        /* SPEC.adoc S4.5: the reset is reached before the sub-ID2 byte is
+         * examined, so System Off clears GS mode exactly as System On does.
+         * The driver's own sub-ID2-gated clear is dead code against the reset
+         * that just ran; not reproduced. */
+        if (buf[2] == 0x09) synth_reset();
         return;
     }
     if (mfr == 0x7F && len >= 6) { /* Master Volume, Universal Realtime */
@@ -293,6 +310,11 @@ void synth_sysex(const uint8_t *buf, uint32_t len) {
                                       indirection layer, SPEC_GAPS.md) */
                 } else if (a2 == 0x15) { /* USE RHYTHM PART */
                     g_channels[ch].is_rhythm = buf[7] ? 1 : 0;
+                    /* SPEC.adoc S4.5: this message falls into the shared reset
+                     * tail, so it fires a device-wide controller reset. Bank
+                     * and Program survive -- the tail's second call is gated
+                     * off on this path. */
+                    reset_all_channel_controllers_device();
                 }
                 /* per-part tuning grid: not modeled */
             }
