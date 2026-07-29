@@ -14,8 +14,16 @@ heading:
   h2_font_size: $base_font_size * 1.5
   h3_font_size: $base_font_size * 1.2
   h4_font_size: $base_font_size * 1.1
+  margin_top: 3
+  margin_bottom: 4
+# prose/heading margins are derived from $vertical_rhythm in default-theme.yml
+# but get baked at the default's 12pt rhythm before base.line_height_length: 9
+# is merged, so they're set explicitly here. block/prose kept equal (6) so a
+# heading gets the same space above whether or not it starts a new section.
 block:
-  margin_bottom: 2
+  margin_bottom: 6
+prose:
+  margin_bottom: 6
 list:
   item_spacing: 2
 description_list:
