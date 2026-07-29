@@ -35,7 +35,7 @@ $(DIST)/msgs.wasm: $(WASM_SRCS) $(ENGINE_HDRS) | $(DIST)
 	$(CLANG) $(CFLAGS_WASM) $(LDFLAGS_WASM) -o $@ $(WASM_SRCS)
 
 $(DIST)/msgs-render: $(CLI_SRCS) $(ENGINE_HDRS) | $(DIST)
-	$(CC) $(CFLAGS_NATIVE) -o $@ $(CLI_SRCS)
+	$(CC) $(CFLAGS_NATIVE) -o $@ $(CLI_SRCS) -lm
 
 $(DIST):
 	mkdir -p $(DIST)
