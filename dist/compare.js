@@ -93,7 +93,12 @@ const SlopgsCompare = (() => {
     const resp = await fetch(midiUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${midiUrl}`);
     const smfBytes = new Uint8Array(await resp.arrayBuffer());
+    return renderMidiBytes(smfBytes);
+  }
 
+  // Same render, from bytes already in hand (a File, not a fetch) -- what
+  // play2.html uses for a locally-picked .mid.
+  async function renderMidiBytes(smfBytes) {
     const { exp, outPtr } = await loadSynth();
     exp.msgs_reset();
     const ptr = exp.msgs_alloc(smfBytes.length);
@@ -593,7 +598,11 @@ const SlopgsCompare = (() => {
     try { src.stop(); } catch (_) { /* already ended */ }
     if (onStop) onStop();
   }
-  function playStereo(left, right, sampleRate, onStop) {
+  // opts.startSample: sample to start at (default 0). opts.loop: when true,
+  // uses the AudioBufferSourceNode's native loop (loopStart = startSample,
+  // loopEnd = end of buffer) instead of looping back to sample 0 -- exactly
+  // "loop from wherever the playhead is", for free, from the platform.
+  function playStereo(left, right, sampleRate, onStop, opts) {
     stopCurrent();
     const ctx = getPlayCtx();
     ctx.resume().catch(() => {});
@@ -602,12 +611,18 @@ const SlopgsCompare = (() => {
     buf.getChannelData(1).set(right);
     const src = ctx.createBufferSource();
     src.buffer = buf;
+    const startSample = (opts && opts.startSample) || 0;
+    if (opts && opts.loop) {
+      src.loop = true;
+      src.loopStart = startSample / sampleRate;
+      src.loopEnd = left.length / sampleRate;
+    }
     src.connect(ctx.destination);
     src.onended = () => {
       if (currentPlay && currentPlay.src === src) { currentPlay = null; if (onStop) onStop(); }
     };
     currentPlay = { src, onStop };
-    src.start();
+    src.start(0, startSample / sampleRate);
     return src;
   }
 
@@ -1117,6 +1132,282 @@ const SlopgsCompare = (() => {
     return specWrap;
   }
 
+  // Single-signal viewer for play2.html: one canvas (spectrogram/waveform),
+  // click to set the playhead, play from there with native buffer looping
+  // (loopStart = playhead). Shares the draw/zoom/scroll machinery with
+  // buildSpectrograms but there's only one signal, so no alignment nudge,
+  // no drag-to-realign, no mixed playback.
+  function buildSingleViewer(parent, mono, left, right, sampleRate) {
+    const total = mono.length;
+    const scale = computeSharedScale([mono]);
+
+    const specWrap = el("div", { class: "specwrap" });
+    const cSig = el("canvas", { class: "spectrogram" });
+    const cursor = el("div", { class: "spec-cursor" });
+    const viewport = el("div", { class: "spec-viewport" }, [cSig, cursor]);
+    const spacer = el("div", { class: "spec-spacer" });
+    const scrollbar = el("div", { class: "spec-scrollbar" }, [spacer]);
+
+    const zoomVal = el("span", { class: "zoomval" });
+    const rangeVal = el("span", { class: "rangeval" });
+    let dynRange = SPEC_DYNAMIC_RANGE_DB;
+    let zoom = 1;
+    let pending = false;
+    let playhead = 0;
+    let fLo = 0, fHi = NYQUIST;
+    let logFreq = false;
+    let mode = "spectrogram";
+
+    function viewWidth() { return cSig.width || 1; }
+    function visibleSamples() { return Math.max(viewWidth(), Math.round(total / zoom)); }
+    function maxZoom() { return Math.max(1, total / viewWidth()); }
+
+    function viewStart() {
+      const count = visibleSamples();
+      const maxStart = Math.max(0, total - count);
+      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const frac = denom > 0 ? Math.min(1, Math.max(0, scrollbar.scrollLeft / denom)) : 0;
+      return Math.round(frac * maxStart);
+    }
+
+    function drawPlayhead(x) {
+      if (x < -2 || x > viewWidth() + 2) return;
+      const ctx = cSig.getContext("2d");
+      ctx.fillStyle = "#f00";
+      ctx.fillRect(Math.round(x) - 1, 0, 2, cSig.height);
+    }
+
+    function paint() {
+      pending = false;
+      const count = visibleSamples();
+      const start = viewStart();
+      const view = { zoom, fLo, fHi, logFreq, dynRangeDb: dynRange };
+      const draw = mode === "waveform" ? drawWaveformWindow : drawSpectrogramWindow;
+      const st = draw(cSig, mono, start, count, scale, view);
+
+      const band = mode === "waveform" ? "waveform" : `${fmtHz(fLo)}–${fmtHz(fHi)}${logFreq ? " log" : ""}`;
+      const viewLine = `${(start / sampleRate).toFixed(3)}s–${((start + count) / sampleRate).toFixed(3)}s`
+        + `   ${band}`
+        + (mode === "waveform" ? `   zoom ${fmtZoom(zoom)}`
+          : `   window ${st.fftSize}   zoom ${fmtZoom(zoom)}   contrast ${dynRange}dB`);
+      const lvl = `${mode === "waveform" ? "" : "band "}rms ${st.bandRmsDb.toFixed(1)}dB  peak ${st.bandPeakDb.toFixed(1)}dB`;
+      drawOverlay(cSig, "MIDI RENDER (native 22050Hz)", [viewLine, lvl]);
+
+      drawPlayhead(((playhead - start) / count) * viewWidth());
+      playheadVal.textContent = `from ${(playhead / sampleRate).toFixed(3)}s`;
+
+      const t0 = start / sampleRate, t1 = (start + count) / sampleRate;
+      rangeVal.textContent = `${t0.toFixed(2)}s – ${t1.toFixed(2)}s of ${(total / sampleRate).toFixed(2)}s`;
+      zoomVal.textContent = fmtZoom(zoom);
+    }
+
+    function schedulePaint() {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(paint);
+    }
+
+    function setFreqZoom(factor) {
+      const wMid = (warpHz(fLo, logFreq) + warpHz(fHi, logFreq)) / 2;
+      const wHalf = ((warpHz(fHi, logFreq) - warpHz(fLo, logFreq)) / 2) * factor;
+      let lo = Math.max(0, unwarpHz(wMid - wHalf, logFreq));
+      let hi = Math.min(NYQUIST, unwarpHz(wMid + wHalf, logFreq));
+      if (hi - lo < MIN_FREQ_SPAN) {
+        const mid = (lo + hi) / 2;
+        lo = mid - MIN_FREQ_SPAN / 2; hi = mid + MIN_FREQ_SPAN / 2;
+      }
+      panFreq(lo, hi);
+    }
+    function panFreq(lo, hi) {
+      const s = hi - lo;
+      if (lo < 0) { lo = 0; hi = s; }
+      if (hi > NYQUIST) { hi = NYQUIST; lo = NYQUIST - s; }
+      fLo = Math.max(0, lo); fHi = Math.min(NYQUIST, hi);
+      schedulePaint();
+    }
+
+    function setZoom(z) {
+      zoom = Math.max(1, Math.min(maxZoom(), z));
+      // Zoom about the playhead, same as buildSpectrograms.
+      const centreFrac = playhead / Math.max(1, total);
+      spacer.style.width = `${(zoom * 100).toFixed(4)}%`;
+      const denomNext = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const targetFrac = zoom <= 1 ? 0 : (centreFrac - 0.5 / zoom) / (1 - 1 / zoom);
+      scrollbar.scrollLeft = Math.min(1, Math.max(0, targetFrac)) * denomNext;
+      schedulePaint();
+    }
+
+    // Click sets the playhead; vertical drag pans the frequency window (same
+    // gesture split as buildSpectrograms' attachDrag). No horizontal-drag
+    // realignment here -- there's nothing to align against.
+    const DRAG_SLOP = 4;
+    let dragFrom = 0, dragFromY = 0, dragBaseLo = 0, dragBaseHi = 0, dragActive = false;
+    cSig.addEventListener("pointerdown", (ev) => {
+      dragActive = true; dragFrom = ev.clientX; dragFromY = ev.clientY;
+      dragBaseLo = fLo; dragBaseHi = fHi;
+      try { cSig.setPointerCapture(ev.pointerId); } catch (_) { /* no capture */ }
+      ev.preventDefault();
+    });
+    cSig.addEventListener("pointermove", (ev) => {
+      if (!dragActive) return;
+      const wLo0 = warpHz(dragBaseLo, logFreq), wHi0 = warpHz(dragBaseHi, logFreq);
+      const dW = ((ev.clientY - dragFromY) * (wHi0 - wLo0)) / Math.max(1, cSig.clientHeight);
+      panFreq(unwarpHz(wLo0 + dW, logFreq), unwarpHz(wHi0 + dW, logFreq));
+    });
+    const dragEnd = (ev) => {
+      if (!dragActive) return;
+      dragActive = false;
+      try { cSig.releasePointerCapture(ev.pointerId); } catch (_) { /* fine */ }
+      if (ev.type !== "pointerup") return;
+      if (Math.abs(ev.clientX - dragFrom) > DRAG_SLOP || Math.abs(ev.clientY - dragFromY) > DRAG_SLOP) return;
+      const x = ev.clientX - cSig.getBoundingClientRect().left;
+      const perPx = visibleSamples() / Math.max(1, cSig.clientWidth);
+      playhead = Math.max(0, Math.min(total - 1, Math.round(viewStart() + x * perPx)));
+      schedulePaint();
+    };
+    cSig.addEventListener("pointerup", dragEnd);
+    cSig.addEventListener("pointercancel", dragEnd);
+
+    const contrast = el("input", {
+      type: "range", min: "20", max: "120", step: "5",
+      value: String(SPEC_DYNAMIC_RANGE_DB), class: "contrast",
+    });
+    contrast.oninput = () => { dynRange = Number(contrast.value); schedulePaint(); };
+    const scaleBtn = mkBtn("linear", () => {
+      logFreq = !logFreq;
+      scaleBtn.textContent = logFreq ? "log" : "linear";
+      schedulePaint();
+    });
+    const freqOutBtn = mkBtn("−", () => setFreqZoom(2));
+    const freqInBtn = mkBtn("+", () => setFreqZoom(0.5));
+    const freqFullBtn = mkBtn("Full", () => panFreq(0, NYQUIST));
+    const viewBtn = mkBtn(mode, () => {
+      mode = mode === "waveform" ? "spectrogram" : "waveform";
+      viewBtn.textContent = mode;
+      const disabled = mode === "waveform";
+      contrast.disabled = disabled;
+      scaleBtn.disabled = disabled;
+      freqOutBtn.disabled = disabled;
+      freqInBtn.disabled = disabled;
+      freqFullBtn.disabled = disabled;
+      schedulePaint();
+    });
+    const viewRow = el("div", { class: "ctlrow" }, [
+      grp("zoom", [
+        mkBtn("−", () => setZoom(zoom / ZOOM_STEP)),
+        mkBtn("+", () => setZoom(zoom * ZOOM_STEP)),
+        mkBtn("Fit", () => setZoom(1)),
+        zoomVal,
+      ]),
+      grp("freq", [freqOutBtn, freqInBtn, freqFullBtn, scaleBtn]),
+      grp("contrast", [contrast]),
+      grp("view", [viewBtn]),
+      rangeVal,
+    ]);
+
+    const playheadVal = el("span", { class: "rangeval" });
+    const playingVal = el("span", { class: "playing-indicator" });
+    const loopBox = el("input", { type: "checkbox", checked: "checked" });
+    const followBox = el("input", { type: "checkbox" });
+    const playRow = el("div", { class: "ctlrow" }, [
+      grp("play", [
+        mkBtn("▶ play", () => playFromHere()),
+        mkBtn("■ stop", () => stopCurrent()),
+        el("label", null, [loopBox, document.createTextNode(" loop")]),
+        el("label", null, [followBox, document.createTextNode(" follow")]),
+        playingVal,
+        playheadVal,
+      ]),
+    ]);
+
+    let cursorRaf = 0, cursorFrom = 0, cursorT0 = 0;
+    function hideCursor() {
+      if (cursorRaf) cancelAnimationFrame(cursorRaf);
+      cursorRaf = 0;
+      cursor.style.display = "none";
+    }
+    function onPlaybackStop() {
+      hideCursor();
+      playingVal.textContent = "";
+    }
+    // Scrolls the view so `sampleAt` sits at its centre -- same scrollLeft
+    // math as viewStart()'s inverse. Firing the scrollbar's own "scroll"
+    // listener repaints the canvas, so following just means "move the
+    // scrollbar every frame"; no separate repaint path needed.
+    function centerOn(sampleAt) {
+      const maxStart = Math.max(0, total - visibleSamples());
+      if (maxStart <= 0) return; // whole signal already fits on screen
+      const desiredStart = Math.max(0, Math.min(maxStart, Math.round(sampleAt - visibleSamples() / 2)));
+      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const newScrollLeft = (desiredStart / maxStart) * denom;
+      if (Math.abs(scrollbar.scrollLeft - newScrollLeft) > 0.5) scrollbar.scrollLeft = newScrollLeft;
+    }
+    function trackCursor() {
+      cursorRaf = requestAnimationFrame(trackCursor);
+      let at = cursorFrom + (getPlayCtx().currentTime - cursorT0) * sampleRate;
+      // Native loop wraps the underlying buffer at loopStart/loopEnd; mirror
+      // that here so the cursor doesn't run off the right edge forever.
+      if (loopBox.checked && total > cursorFrom) {
+        at = cursorFrom + ((at - cursorFrom) % (total - cursorFrom));
+      }
+      if (followBox.checked) centerOn(at);
+      const x = ((at - viewStart()) / visibleSamples()) * viewport.clientWidth;
+      if (x < 0 || x > viewport.clientWidth) { cursor.style.display = "none"; return; }
+      cursor.style.display = "block";
+      cursor.style.left = `${x}px`;
+    }
+
+    function playFromHere() {
+      const src = playStereo(left, right, sampleRate, onPlaybackStop,
+        { startSample: playhead, loop: loopBox.checked });
+      if (!src) return;
+      playingVal.textContent = loopBox.checked ? "▶ playing (looped)" : "▶ playing";
+      if (cursorRaf) cancelAnimationFrame(cursorRaf);
+      cursorFrom = playhead;
+      cursorT0 = getPlayCtx().currentTime;
+      trackCursor();
+    }
+
+    specWrap.appendChild(viewRow);
+    specWrap.appendChild(playRow);
+    specWrap.appendChild(viewport);
+    specWrap.appendChild(scrollbar);
+
+    scrollbar.addEventListener("scroll", schedulePaint);
+    viewport.addEventListener("wheel", (ev) => {
+      if (ev.shiftKey) {
+        ev.preventDefault();
+        setFreqZoom(ev.deltaY < 0 ? 0.5 : 2);
+        return;
+      }
+      if (!ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      setZoom(ev.deltaY < 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP);
+    }, { passive: false });
+
+    parent.appendChild(specWrap);
+    cSig.style.width = "100%";
+    cSig.style.height = SPEC_CANVAS_HEIGHT + "px";
+    spacer.style.width = "100%";
+    // The canvas's backing store (a pixel count) doesn't track its CSS size
+    // (a percentage) on its own -- a rotation or window resize changes
+    // viewport.clientWidth without touching cSig.width, which would leave
+    // the image stretched instead of redrawn at the new resolution.
+    let lastW = 0;
+    function resizeCanvas() {
+      const w = Math.max(320, Math.round(viewport.clientWidth || 900));
+      if (w === lastW) return false;
+      lastW = w;
+      cSig.width = w;
+      cSig.height = SPEC_CANVAS_HEIGHT;
+      return true;
+    }
+    resizeCanvas();
+    new ResizeObserver(() => { if (resizeCanvas()) schedulePaint(); }).observe(viewport);
+    paint();
+    return specWrap;
+  }
+
   function mkBtn(text, onclick) {
     const b = el("button", { text });
     b.onclick = onclick;
@@ -1195,5 +1486,5 @@ const SlopgsCompare = (() => {
     return card;
   }
 
-  return { renderPage };
+  return { renderPage, renderMidiBytes, buildSingleViewer, toMono };
 })();

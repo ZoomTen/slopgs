@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slopgs -- play a MIDI file (live)</title>
+<link rel="stylesheet" href="compare.css">
+</head>
+<body>
+<h1>play a MIDI file (live)</h1>
+<p>Pick a local <code>.mid</code> file. It's rendered live via <code>msgs.wasm</code> + <code>gm.dls</code> --
+the same engine the <a href="compare-tests.html">compare pages</a> use, not the cached
+<code>bg-sound2.js</code> custom element. Spectrogram (linear/log) and waveform views; click either to set
+the start point, then play from there, looping if you like.</p>
+<p><input type="file" id="file" accept=".mid,.midi,audio/midi"></p>
+<p id="status"></p>
+<div id="viewer"></div>
+<script src="compare.js"></script>
+<script>
+(() => {
+  const fileInput = document.getElementById("file");
+  const status = document.getElementById("status");
+  const viewer = document.getElementById("viewer");
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    viewer.innerHTML = "";
+    status.textContent = "loading synth + gm.dls, rendering...";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { left, right, sampleRate } = await SlopgsCompare.renderMidiBytes(bytes);
+      const mono = SlopgsCompare.toMono(left, right);
+      status.textContent = `rendered ${file.name} (${(left.length / sampleRate).toFixed(2)}s)`;
+      SlopgsCompare.buildSingleViewer(viewer, mono, left, right, sampleRate);
+    } catch (err) {
+      status.textContent = `error: ${err.message || err}`;
+    }
+  });
+})();
+</script>
+</body>
+</html>
