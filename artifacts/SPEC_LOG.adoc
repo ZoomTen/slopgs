@@ -18,7 +18,7 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item31`) are discrepancies and gaps between
+throughout: **items** (`item1`…`item33`) are discrepancies and gaps between
 `SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
@@ -187,6 +187,481 @@ before/after tables in Entries 1–6. Those tables are kept as recorded; they
 are history, not current measurements.
 
 '''
+
+'''
+
+[#item25-followup-gm-off-measured]
+== 2026-07-29 — GM System Off's silence is SETTLED by measurement (`[M: probes 47/48]`); the collection release is now SHIPPED
+
+Follow-up to xref:#item25-resolved[the `0x150bc` acquire/release entry], and
+specifically its "Not implemented: the collection release" section. That
+entry read the teardown from the driver's own code (`[A]`) but left its
+audible consequence `[I]`, pending "an `[M]` probe" against
+xref:SPEC.adoc#s4-9-1[S4.9.1] and xref:SPEC.adoc#s4-5[S4.5]. Both probes it
+proposed — `probes/47_gm_off_state.mid` and `probes/48_rhythm_part_reset.mid`
+— now have reference renders (`probe-results/47.flac`, `probe-results/48.flac`,
+9.8148 s and 6.6467 s, 44100 Hz/16-bit stereo), and this entry reads them.
+
+=== Method
+
+Both files were decoded with `ffmpeg`. Each file's own capture-clock offset
+was derived independently, per case, from the first non-digital-zero sample
+after that case's nominal MIDI note-on, and used only to align that file's
+own windows — never assumed, never carried between files. Probe 47 runs
+0.458 s ahead of nominal (0.4574 s at case 1, 0.4581 s at case 3, 0.4588 s at
+case 4 — 1.4 ms spread across the file); probe 48 runs 0.6807 s ahead, with
+both of its note-ons landing within 0.7 ms of nominal. Level windows are an
+0.85 s body starting 50 ms after onset (probe 47) or the plain
+nominal-equivalent spans given below (probe 48). The harmonic table used a
+200 ms Hann-windowed FFT starting 300 ms after each onset, read at the
+fundamental and its 2nd/3rd/4th/5th/7th partials. Probe 47 case 2's silence
+was confirmed by `ffmpeg astats` over the file window 1.15–5.135 s reporting
+Min level 0.000000 / Max level 0.000000 / Peak level −inf / RMS level −inf
+across 175,739 samples — bracketing case 2's whole aligned note with over
+1.4 s of margin on each side — which is bit-exactness confirmed by `astats`,
+not an RMS threshold.
+
+=== Probe 47 — per-case sounding span and level
+
+[options="header"]
+|===
+| Case | Nominal note | Sounds (file time) | Peak dBFS | RMS dBFS
+| 1 (control, after GS Reset) | 0.6–1.6 | 0.1426–1.1485 | −10.30 | −13.386
+| 2 (after GM System Off) | 3.1–4.1 | nothing | −inf | −inf
+| 3 (after GM System On) | 5.6–6.6 | 5.1419–6.1609 | −11.26 | −23.839
+| 4 (control, after GS Reset) | 8.1–9.1 | 7.6412–8.6474 | −10.30 | −13.387
+|===
+
+=== Probe 47 — harmonic content (dB relative to the 261.63 Hz fundamental)
+
+[options="header"]
+|===
+| Case | 2nd | 3rd | 4th | 5th | 7th | Reads as
+| 1 | −45.0 | −51.8 | −58.8 | −61.5 | −67.2 | Sine Wave
+| 2 | — | — | — | — | — | silent (fundamental bin at −667 dBFS, numerical zero)
+| 3 | −12.3 | −2.9 | −14.4 | −4.5 | −8.7 | Square Wave
+| 4 | −45.1 | −51.8 | −58.8 | −61.5 | −67.2 | Sine Wave
+|===
+
+Cases 1 and 4 agree to 0.1 dB on every harmonic and to 0.001 dB on body RMS.
+Both patches sustain — 100 ms slices hold case 1 flat at −10.30 dBFS peak and
+case 3 flat at −14.4 dBFS peak for the whole 1 s note — so case 2's silence
+is not a fast decay. Release tails after note-off: 7 ms (case 1, sine), 20 ms
+(case 3, square).
+
+=== Probe 48 — levels, ratio and pan
+
+[options="header"]
+|===
+| Window (nominal) | L RMS dBFS | R RMS dBFS
+| first pair 1.05–2.45 | −49.75 | −49.08
+| gap 2.60–4.45 | −inf (exact zero) | −inf (exact zero)
+| retrigger 4.55–5.95 | −20.50 | −20.40
+|===
+
+Retrigger/first-pair linear amplitude ratio: L 29.02× (+29.25 dB), R 27.16×
+(+28.68 dB), stereo power 28.03× (+28.95 dB) — against the squared-gain-law
+prediction (100·127)²/(40·60)² = 28.00× for volume `40`→`100` and expression
+`60`→`127`.
+
+[options="header"]
+|===
+| Pair | 261.63 Hz (ch1, sent hard left) | 329.63 Hz (ch2, sent hard right)
+| first | +25.76 dB | −25.55 dB
+| retrigger | −0.10 dB | −0.10 dB
+|===
+
+Cut shape: a 2 ms peak envelope holds steady between −40.5 and −42.3 dBFS
+right through the window starting at nominal 2.4615, reads −90.3 dBFS at
+2.4635, and is exact digital zero from 2.4655 onward — full level to digital
+zero in ≤2 ms, the resolution of this measurement. As a measurement caveat,
+not a driver finding: the cut lands 36.5 ms before the SysEx's nominal
+2.500 s, in a file whose two note-ons are accurate to 0.7 ms; this probe
+cannot tell whether the driver applies the reset out-of-band or the capture
+chain delivered the SysEx early.
+
+=== Engine vs. reference
+
+`dist/msgs-render` in the working tree is stale (mtime Jul 28; `src/` last
+changed Jul 29) and predates the USE RHYTHM PART change
+(xref:#item25-resolved[the prior entry]). The figures below are from a binary
+built fresh from `src/` at HEAD (`gcc -std=c11 -O2 -Wall -Wextra -Isrc`) into
+a scratch directory; neither `dist/` nor `src/` were modified to take them.
+
+[options="header"]
+|===
+| Metric | Reference | Engine (fresh build)
+| Probe 47 case 1 body RMS | −13.386 dBFS | −16.37 dBFS
+| Probe 47 case 2 body RMS | −inf (silent) | −26.85 dBFS (sounds, Square Wave)
+| Probe 47 case 3 body RMS | −23.839 dBFS | −26.85 dBFS
+| Probe 47 case 4 body RMS | −13.387 dBFS | −16.37 dBFS
+| Probe 48 first pair L / R RMS | −49.75 / −49.08 dBFS | −52.73 / −52.06 dBFS
+| Probe 48 retrigger L / R RMS | −20.50 / −20.40 dBFS | −23.46 / −23.39 dBFS
+| Probe 48 retrigger ratio, stereo power | 28.03× (+28.95 dB) | L 29.08× / R 27.14× (+29.27 / +28.67 dB)
+| Probe 48 cut duration to digital zero | ≤2 ms | ~46 ms, with a ~+9 dB rise en route
+|===
+
+The engine's probe 47 case 2 sounds a Square Wave at a level identical to
+case 3's — exactly what not implementing the collection release predicts,
+since GM System Off already clears GS mode in the engine
+(xref:#item25-resolved[the prior entry]) but does not release the collection.
+`score.py` against that fresh build: `47_gm_off_state` r 0.961 / −18.51 dB /
+dead 30 ms; `48_rhythm_part_reset` r 0.982 / −35.90 dB / dead 0 ms. The
+checked-in stale binary reads `48_rhythm_part_reset` at r 0.969 / −30.99 dB
+instead — a reminder to rebuild before scoring this item.
+
+Worth recording as a measurement caveat, not a claimed engine defect: the
+engine's renders sit a uniform 2.97–2.98 dB below both of these new
+reference captures, on every channel of both files (47 case 1 −16.37 vs
+−13.39; 48 first pair L −52.73 vs −49.75; 48 retrigger L −23.46 vs −20.50).
+This offset is unexplained and invisible to `score.py`, which normalizes by
+mean RMS before the residual — recorded here as a capture-ceiling
+observation, not investigated further.
+
+=== What this settles, and what it does not
+
+**Settles.** GM System Off releases the instrument collection, and the
+audible consequence is total silence — xref:SPEC.adoc#s4-9-1[S4.9.1]'s
+closing sentence moves from `[I]` to `[M]`. The positive controls hold:
+cases 1 and 4 are Sine Wave, identical to each other, so case 2's silence
+cannot be blamed on the probe file. Case 3 being Square Wave rather than
+Sine Wave confirms, audibly, that the re-acquiring GM System On both cleared
+GS mode (bank 8 no longer selectable) and genuinely re-acquired (it sounds at
+all). Probe 48 confirms the USE RHYTHM PART tail quantitatively against the
+reference: sounding voices cut at the message, and the retrigger returns
+28.03× louder in stereo power (28.00× predicted) and centred to within
+0.1 dB, with no controller message between the two note-ons.
+
+**Does NOT settle.** Whether a voice already sounding when GM System Off
+arrives holds a reference of its own and so survives the release — the
+refcount question at `[A:0x16066]` — stays `[O]`. Nothing was sounding when
+probe 47's System Off arrived (case 1's tail ends at file 1.1485, the message
+lands at file 2.042), so this probe cannot speak to it. Traced from
+xref:SPEC.adoc#s4-5[S4.5] and xref:SPEC.adoc#s4-6-2[S4.6.2]: on the GM path
+the driver calls `ResetDevice`, then the collection release at `0x13700`,
+then falls into the shared reset tail, and that tail's
+`ResetAllChannelControllers` reclaims every sounding voice immediately. The
+voice is therefore cut under *both* hypotheses, so a probe with the System Off
+landed while a note is still sounding bounds the question rather than settling
+it — the only window in which "the voice holds a reference" and "it does not"
+differ audibly lies between the release call and the tail, shorter than one
+render buffer. What such a probe CAN establish is the first `[M]` on what
+actually happens to a voice sounding across GM System Off — whether it is
+cut, how fast, and whether any noise burst or truncation appears at the
+boundary — not the refcount question itself. The `[O]` stands.
+
+Also does not settle, and cannot be built as a probe file at all: re-acquiring
+via MIDI System Reset (`0xFF`) instead of GM System On. Inside an SMF track,
+`0xFF` is the meta-event prefix — this project's own reader treats it as one
+(`src/engine/smf.c:78`) — and the Standard MIDI File format has no encoding
+for a realtime System Reset. Verified by hex-dumping
+`artifacts/probes/47_gm_off_state.mid`: its only `FF` bytes are the `FF 51`
+tempo meta and `FF 2F` end-of-track. So the System Reset re-acquire path
+stays `[A:0x13218]` and would need a live MIDI-stream capture, not a probe
+MIDI, to reach `[M]`.
+
+[#item32]
+=== Item 32 — the reference's USE RHYTHM PART cut is instantaneous; the engine's passed through a bump. SHIPPED
+
+Probe 48 exposed a discrepancy nothing had measured before: the reference's
+voice cut on USE RHYTHM PART is effectively instantaneous (≤2 ms to digital
+zero, no level change beforehand), while the engine's took about 46 ms and
+passed through a ~+9 dB bump on the way. The audible part was that bump: the
+engine applied the reset's restored Volume/Expression defaults to voices that
+were still releasing, instead of cutting them at once.
+
+**Root cause.** `reset_all_channel_controllers_device()` (`synth.c:200-208`,
+this engine's shared tail for the GS Reset / GM System On / GM System Off /
+System Reset device-reset paths and USE RHYTHM PART) was calling
+`voice_all_sound_off(i)` once per channel. `voice_all_sound_off()` performs
+`start_release(v, 0)`, an authored envelope release — correct for its other
+callers (CC120/CC126/CC127, where xref:SPEC.adoc#s4-3[S4.3] says those rows
+"release (do not cut)") but wrong for the device-reset tail, whose `0x123de`
+(xref:SPEC.adoc#s4-6-2[S4.6.2], xref:SPEC.adoc#s5-3[S5.3]) is an immediate
+reclaim to the free pool, not an authored release.
+
+**Fix.** `reset_all_channel_controllers_device()` now calls
+`voice_pool_reset()` once instead of `voice_all_sound_off(i)` per channel
+(`synth.c:200-208`). `voice_all_sound_off()` itself was not modified and
+`voice.c` was not touched, so the CC120/123/126/127 release paths are
+unchanged. One deliberate deviation, already commented in the code:
+`voice_pool_reset()` also zeroes the reserve top-up accumulator and the voice
+age counter, which `0x123de` does not — harmless because every voice has just
+gone inactive.
+
+**Direct measurement, before -> after (probe 48 cut, engine render, 2 ms peak
+envelope):** before the fix the level rose to −34.7 dBFS at 2.506 s and did
+not reach digital zero until 2.546 s. After the fix the level is flat between
+−43.7 and −45.1 dBFS right up to the bin at 2.4960 s, and is digital zero
+from the bin at 2.4980 s onward — the last nonzero sample is at 2.4965 s: a
+fall to digital zero inside one 2 ms bin, with the ~+9 dB bump gone. Against
+the reference, whose cut lands at nominal-equivalent 2.4635 s, the engine now
+carries 33.0 ms of sound where the reference is already silent, down from
+82.5 ms before the fix.
+
+**Refinement at sample resolution.** Both "effectively instantaneous (≤2 ms
+to digital zero, no level change beforehand)" above and "to digital zero
+inside one 2 ms bin" for the fix were measured at 2 ms hop resolution, and
+neither is wrong at that resolution. A later, per-sample look at a different
+cut — probe 49's GM-System-Off cut, xref:#item33[Item 33] — shows the
+reference's collapse actually spans about 68 us at 44100 Hz (not truly
+instantaneous), while our engine's is a single-sample step. This refines the
+resolution of the measurement, not the fix: the fix (removing the ~46 ms
+fade and the ~+9 dB bump) still stands and is still SHIPPED.
+
+=== What changed
+
+* xref:SPEC.adoc#s4-9-1[S4.9.1]: the closing sentence replaced in full —
+  silence-until-a-GM-System-On-re-acquires is now `[M]`; the System Reset
+  re-acquire path stays `[A]` on its call site (`[A:0x13218]`), separated out
+  of the `[M]`; the sounding-voice refcount question stays `[O]`, still
+  citing `[A:0x16066]`.
+* xref:SPEC.adoc#s4-5[S4.5]: the USE RHYTHM PART row's Evidence cell gains an
+  `[M]` alongside its existing `[A]` citations.
+
+=== What shipped
+
+GM System Off now releases the instrument collection. Implemented with no
+new state: `dls_find_region()` already returns null when `g_dls.valid` is 0
+and `voice_note_on()` already allocates no voice in that case, which is
+exactly the driver's "FindInstrument's scan finds nothing" — so the release
+is `g_dls.valid = 0`.
+
+* `synth.c:37-43` — new `acquire_collection()`, guarded on
+  `g_dls.first_instrument` so a re-acquire cannot resurrect a gm.dls that
+  never parsed.
+* `synth.c:82-87` — `synth_reset()` acquires at its end. `synth_reset()` is
+  this engine's device-construction/open path as well as its System Reset
+  (`0xFF`) and GM System On/Off handler, and xref:SPEC.adoc#s4-9-1[S4.9.1]'s
+  call-site table has all three of those acquiring.
+* `synth.c:297-303` — GM System Off (sub-ID2 `0x02`) sets `g_dls.valid = 0`
+  after that acquire.
+* `synth.c:318-323` — GS Reset saves and restores `g_dls.valid` around
+  `synth_reset()`, because xref:SPEC.adoc#s4-5[S4.5] says GS Reset does not
+  call the acquire/release at all.
+
+Item 32's fix (above) shipped in the same pass: `reset_all_channel_controllers_device()`
+(`synth.c:200-208`) now calls `voice_pool_reset()` once instead of
+`voice_all_sound_off(i)` per channel.
+
+=== Corpus gate, before -> after
+
+Full 66-item corpus, same binary rebuilt before and after: the "before"
+binary built from a clean `git worktree` at HEAD (i.e. the pre-change
+`src/engine/synth.c`), the "after" binary from the working tree, both with
+the same `gcc -std=c11 -O2 -Wall -Wextra -Isrc` invocation, both scored
+against the same corpus via `MSGS_RENDER=<binary> .venv/bin/python
+artifacts/score.py`.
+
+[options="header"]
+|===
+| Item | Before | After
+| `CrystalOscillator` | r 0.847 / −22.76 dB | r 0.847 / −22.74 dB
+| `HueArme-Weekend` | r 0.765 / −19.34 dB | r 0.766 / −19.38 dB
+| `47_gm_off_state` | r 0.961 / −18.51 dB | r 0.992 / −48.76 dB
+| `48_rhythm_part_reset` | r 0.982 / −35.90 dB | r 0.982 / −35.56 dB
+| MEAN | r 0.927 / −31.06 dB | r 0.927 / −31.52 dB
+|===
+
+A line-by-line diff of the two full score tables — this time a true
+full-corpus run, not the truncated capture the earlier version of this entry
+was written from — shows this is the complete and exhaustive set of
+differences: every other one of the 66 items is byte-identical between the
+two tables. `CrystalOscillator` and `HueArme-Weekend` both carry USE RHYTHM
+PART, so Item 32's fix is what reaches them. CrystalOscillator's residual
+moved 0.02 dB the wrong way and HueArme-Weekend's moved 0.04 dB the right way
+with `r` up 0.001 — both changes are far too small to read as evidence either
+way, and they are reported here only because the earlier "no other item
+moved" claim was wrong. The shipping decision rests on the targeted probe
+(47) improving by 30.25 dB and the corpus mean improving by 0.46 dB with `r`
+unchanged.
+
+Direct measurement, probe
+47 case 2, engine render, body window 3.15–4.05 s: RMS is now exactly 0 and
+the largest absolute sample in the whole 0.9 s window is 0 — bit-exact
+silence, matching the reference. Cases 1/3/4 are unchanged at −16.37, −26.85,
+−16.37 dBFS. (Probe 48's direct cut measurement is recorded under Item 32
+above.)
+
+**Honest note on probe 48's residual.** Probe 48's whole-file
+level-normalized spectral residual moved 0.34 dB the *wrong* way (−35.90 ->
+−35.56) even though the behaviour it targets measurably improved. Its
+envelope r is unchanged at 0.982, and the corpus mean improved by 0.46 dB.
+The residual is a whole-file average over a 6.6 s render dominated by the
+two 1.4 s note groups and cannot resolve a ~50 ms cut window, so the cut was
+accepted on the direct 2 ms-resolution measurement above rather than on this
+residual. The 0.34 dB itself is not explained here; no mechanism for it is
+claimed.
+
+**Corpus SysEx census — supersedes xref:#item25-resolved[the prior entry]'s
+"no corpus item carries either message".** That sentence came from an
+unverified assertion, not a parse. A proper SysEx parse of every corpus MIDI
+(parsing MTrk events and reading actual F0 SysEx payloads, not scanning raw
+bytes) finds ten corpus files carrying GM System On and/or USE RHYTHM PART:
+
+[options="header"]
+|===
+| File | Messages carried
+| `field/CrystalOscillator.mid` | GM System On, USE RHYTHM PART
+| `field/HueArme-Weekend.mid` | GM System On, USE RHYTHM PART
+| `field/Kot_and_A64-GENERAL_SERUM.mid` | GM System On, USE RHYTHM PART
+| `field/eek_the.mid` | GM System On
+| `field/serum_opening.mid` | GM System On, USE RHYTHM PART
+| `tests/lazers.mid` | GM System On, USE RHYTHM PART
+| `tests/radio.mid` | GM System On, USE RHYTHM PART
+| `tests/sine-gate.mid` | GM System On, USE RHYTHM PART
+| `tests/sine2.mid` | GM System On, USE RHYTHM PART
+| `tests/wild-sweep.mid` | GM System On, USE RHYTHM PART
+|===
+
+No corpus file carries GM System **Off** — that part of the original claim
+holds; probe 47 and the new probe 49 remain the only files that send it.
+
+=== Probe 49 — the sounding voice across GM System Off, now measured (`[M]`)
+
+`artifacts/probes/49_gm_off_during_note.mid` (162 bytes), generated by
+`p49_gm_off_during_note()` in `make_probes.py`, targets the sounding-voice-
+across-GM-System-Off question left `[O]` above. It holds a GS Sine Wave note
+(key 60, vel 100) from 0.6 s to 3.6 s and lands GM System Off at 2.1 s,
+squarely inside the sustain, then runs three controls: a silent post-Off
+attempt at 4.2 s, a GM System On re-acquire and attempt at 6.3 s (which
+sounds as Square Wave, because System On clears GS mode), and a closing GS
+Reset plus Sine Wave attempt at 8.4 s. A reference render now exists —
+`probe-results/49.flac`, 10.2917 s, 44100 Hz stereo.
+
+**Alignment.** Probe 49's reference runs 0.3221 s ahead of the nominal MIDI
+clock, measured from first-nonzero at each of the three sounding cases:
+
+[options="header"]
+|===
+| Case | File time (first nonzero) | Nominal | Offset
+| 1 | 0.27762 | 0.600 | 0.32238
+| 3 | 5.97755 | 6.300 | 0.32245
+| 4 | 8.07871 | 8.400 | 0.32129
+|===
+
+a 1.2 ms spread.
+
+**Confirms probe 47 independently.** Sounding spans (file time):
+0.27762-1.72512 (case 1), 5.97755-6.99277 (case 3), 8.07871-9.08528 (case 4).
+The case-2 window (nominal 4.2-5.2 s) contains 97,020 samples, every one of
+them exactly integer zero — bit-exact silence on a second, independently
+captured reference file, confirming probe 47's case 2 result rather than
+merely repeating it.
+
+Harmonic content (200 ms Hann FFT from onset+0.3 s, dB relative to the
+261.63 Hz fundamental):
+
+[options="header"]
+|===
+| Case | 2nd | 3rd | 4th | 5th | 7th | Reads as
+| 1 | −45.1 | −51.8 | −58.8 | −61.5 | −67.2 | Sine Wave
+| 3 | −12.3 | −3.0 | −14.3 | −4.5 | −8.7 | Square Wave
+| 4 | −45.0 | −51.8 | −58.8 | −61.5 | −67.2 | Sine Wave
+|===
+
+These match probe 47's corresponding cases to 0.1 dB on every harmonic, so
+probe 49's three controls all behaved as its docstring predicted.
+
+**What happens to the sounding voice (the `[M]` this probe was built for).**
+The held note is cut, not left ringing: it sounds from nominal 0.600 to
+nominal 2.0473 and then stops. No noise burst, no garbage, no partial-sample
+truncation artefact beyond the click characterised in xref:#item33[Item 33]
+below. The GM System Off is scheduled at nominal 2.100, so the cut lands
+52.7 ms early.
+
+**The refcount question stays `[O]`.** Whether a voice already sounding when
+GM System Off arrives holds a reference of its own and so survives the
+release (`[A:0x16066]`) is NOT settled by this probe. As reasoned above, the
+voice is cut under both hypotheses — the release call and the shared reset
+tail's `ResetAllChannelControllers` both reclaim it, and the only window in
+which the two hypotheses would sound different is shorter than one render
+buffer. This probe bounded the question exactly as its docstring predicted
+(a clean, characterised cut with no anomaly beyond the click) and did not
+settle it. The `[O]` stands.
+
+**Third data point for the early-SysEx caveat.** Our engine's earliness on
+any non-note-on event is bounded by construction at one service block: the
+render loop anchors service blocks to the absolute sample position and
+dispatches every event due inside a block before rendering a sample of it,
+using each event's true sub-block offset only for a note-on via
+`voice_set_event_offset`
+(`src/engine/smf.c:456-473`, offset consumed at line 470, cleared at line
+474). That block is `SERVICE_BLOCK_FRAMES`, `256u * RESAMPLE_FACTOR` with
+`RESAMPLE_FACTOR` shipping at 1 (`src/engine/voice.h:19,37`) — 256 frames,
+11.61 ms at the engine's 22050 Hz render rate. Our engine cuts at nominal
+2.0904 against the SysEx's nominal 2.100 — 9.6 ms early, inside that
+11.61 ms bound. The reference cuts 52.7 ms early here; probe 48 measured
+36.5 ms early on a different file — about 4.5x and 3.1x that bound. If the
+real driver also applies the SysEx at a service-block boundary, its block
+would have to be several times larger, or it drains several blocks ahead;
+that is a lead for a future pass, not a finding. The reference's note-ons in
+these same files stay accurate to about 1 ms. So the reference's
+SysEx-effect earliness is now measured at 36.5 ms and 52.7 ms on two files,
+still unexplained and still not attributable between "the driver applies the
+reset out-of-band" and "the capture chain delivered the SysEx early".
+
+[#item33]
+=== Item 33 — the reference's GM-System-Off cut passes through a ~68 us transition; our engine's is a single-sample step. OPEN
+
+Probe 49's held Sine Wave note gives the first per-sample look at the
+GM-System-Off cut itself (as opposed to the ≤2 ms-resolution USE RHYTHM PART
+cut in xref:#item32[Item 32]).
+
+**Reference, at the capture's native 44100 Hz.** The transition is at file
+t=1.724286. Consecutive samples through it: 3698, 4476, 5363, 5171, 3387,
+981, -499, -513, 109, 335, 38. Largest single-sample step there is 2406 LSB
+= 24.0% of the tone's steady amplitude (10012 LSB), against a natural largest
+step of 390 LSB (3.9%) during the steady tone — a genuine discontinuity,
+about 6x the largest step the waveform ever makes on its own. That is the
+click.
+
+A gain envelope recovered by least-squares-fitting the tone before the cut
+(261.41 Hz, fit residual 1.0% of amplitude) and dividing the actual samples
+by the extrapolated sine gives gain ~1.00 up to the transition, then 0.635,
+0.174, then ~0 — the collapse spans roughly 3 samples at 44100 Hz (~68 us),
+not a slow fade. Contrast, same file: a normal note-off (case 4, nominal
+9.4 s) decays over about 40 ms — 10008 LSB peak at file 9.0453 falling to
+266 at 9.0813 and to zero at 9.0853. So the ~68 us collapse is specific to
+the reset cut and is not some blanket property of the capture chain.
+
+**Measurement ceiling.** The reference captures are band-limited to
+11025 Hz: in probe 49's case 3 (the harmonically rich Square Wave, the most
+demanding test), 99.9997% of the energy sits below 10500 Hz and every band
+above 11025 Hz is 85-97 dB down. Probe 47's case 3 measures the same. That
+means the real synth renders at 22050 Hz and these 44100 Hz captures are
+upsampled, so the exact per-sample values at a transition cannot be
+recovered without assuming the upsampler's filter — a capture-ceiling fact
+that bounds what any per-sample claim from these references can mean, and in
+particular bounds the ratio below.
+
+**Like-for-like at the synth's native 22050 Hz.** Decimating the reference
+by 2 (both phases, to bracket the unknown upsampler phase) and comparing
+against our engine, rendered natively at 22050 Hz:
+
+[options="header"]
+|===
+| Rate / source | Consecutive samples near the transition | Largest step | vs steady amplitude | Natural largest step (steady tone)
+| 44100 Hz, reference | 3698, 4476, 5363, 5171, 3387, 981, -499, -513, 109, 335, 38 | 2406 LSB | 24.0% | 3.9%
+| 22050 Hz, reference (phase 0) | ..., 3192, 3532, 4476, 5171, 981, -513, 335, -213, ... | 4190 LSB | 41.8% | 7.7%
+| 22050 Hz, reference (phase 1) | ..., 3533, 3698, 5363, 3387, -499, 109, 38, -98, ... | 3886 LSB | 38.8% | 7.8%
+| 22050 Hz, our engine (native) | 6287, 6048, 5778, 5478, 0, 0, 0, 0 | 5478 LSB | 77.5% | 7.8%
+|===
+
+Our engine goes from full amplitude to exact zero in ONE sample. The
+reference passes through an intermediate sample and then a small decaying
+tail over a few more. Our largest step is 77.5% of amplitude against the
+reference's 38.8-41.8% — roughly twice the step, about +6 dB more impulsive.
+The DIRECTION is robust (both decimation phases agree); the exact ratio is
+NOT pinned, because of the upsampling ceiling above.
+
+**Verdict.** The click is real and is genuine reference behaviour, not a
+slopgs defect; our engine reproduces it and overshoots it by roughly a
+factor of two in step size.
+
+**Status: OPEN, no fix attempted.** A fix means a one-to-two-sample gain
+ramp in the voice teardown — a render-loop change needing maintainer review —
+and it is not being made here.
 
 '''
 
@@ -774,6 +1249,11 @@ Three probes replace it, none generated yet — worth adding to
   expression `60`→`127` under the squared law, so the reset is landing on the
   right fields and not merely making noise. Corpus mean unmoved at
   `r = 0.913` / `−23.39 dB`; no corpus item carries either message.
+  **Superseded 2026-07-29** -- see
+  xref:#item25-followup-gm-off-measured[today's follow-up entry]'s corpus
+  SysEx census: this no longer holds, a proper SysEx parse finds ten corpus
+  files carrying GM System On and/or USE RHYTHM PART (GM System Off itself
+  is still carried by none, so that half of the original claim stands).
 
 **Not implemented: the collection release** (xref:SPEC.adoc#s4-9-1[S4.9.1]).
 GM System Off does not unload anything in the engine. The teardown is `[A]`
@@ -781,6 +1261,10 @@ but its audible consequence is `[I]`, and shipping silence on a message some
 files send as a politeness would be a bad trade against an unmeasured claim.
 `probes/47_gm_off_state.mid` exists to settle it; this stays unimplemented
 until a reference render says otherwise.
+**Superseded 2026-07-29** -- see
+xref:#item25-followup-gm-off-measured[today's follow-up entry]: the
+reference render arrived, the audible consequence is now `[M]`, and the
+release shipped.
 
 === What changed
 

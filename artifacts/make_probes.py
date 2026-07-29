@@ -2762,6 +2762,75 @@ def p48_rhythm_part_reset():
     return write("48_rhythm_part_reset.mid", tr)
 
 
+def p49_gm_off_during_note():
+    """What happens to a voice already sounding when GM System Off arrives.
+
+    SPEC.adoc S4.9.1 leaves one question open: whether a voice that is already
+    sounding when the message lands holds a reference of its own to the
+    instrument collection, and so survives the collection release. Probe 47
+    could not speak to this -- nothing was sounding when its System Off
+    arrived.
+
+    What this probe CAN do: measure, for the first time, what actually
+    happens to a sounding voice at GM System Off -- whether it is cut, how
+    fast, and whether anything anomalous (a noise burst, a click, a
+    truncation part-way through the sample) appears at the boundary. That is
+    `[A]`-only today and worth an `[M]`.
+
+    What it CANNOT do: cleanly settle the refcount question by itself. Traced
+    from SPEC.adoc S4.5: on the GM path the driver calls `ResetDevice`, then
+    the collection release (`0x13700`), then falls into the shared reset tail,
+    which runs `ResetAllChannelControllers` -- and that tail reclaims every
+    sounding voice immediately (SPEC.adoc S4.6.2, `0x123de`) regardless of
+    whether the release actually unlinked the collection. So the voice is cut
+    by the tail under BOTH hypotheses; the only window in which "voice holds
+    a reference" and "voice does not" would differ audibly is between the
+    release call and the tail, which is shorter than one render buffer. This
+    probe bounds the question -- it does not settle it.
+
+    Case 1 is the measurement: Sine Wave (008:080) held for 3.0s, with GM
+    System Off landing 1.5s in -- squarely inside the sustain, not near
+    either edge. Cases 2-4 are the same controls as probe 47: 2 is expected
+    silent (collection released); 3 is a positive control after GM System On
+    re-acquires -- GS mode is also cleared by System On, so 008:080 sounds as
+    Square Wave (bank 0), not Sine Wave, and that is expected, not a defect;
+    4 is a closing control after a GS Reset, Sine Wave again.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    clock = t(0.5)
+
+    # Case 1: the measurement. Note held well past the message so the cut
+    # (or its absence) is unambiguous, and the note-off is still emitted at
+    # its scheduled time even though the note is expected gone by then.
+    tr.cc(clock, 0, 0, 8)
+    tr.cc(clock, 0, 32, 0)
+    tr.prog(clock, 0, 80)
+    note_on = clock + t(0.1)
+    note_dur = t(3.0)
+    tr.note(note_on, note_dur, 0, 60, 100)
+    tr.sysex(note_on + t(1.5), [0x7E, 0x7F, 0x09, 0x02, 0xF7])  # GM System Off, mid-note
+    clock = note_on + note_dur + t(0.5)
+
+    def sine_attempt(dur=1.0):
+        """Ask for 008:080. Sine Wave only if GS mode is on AND a kit is loaded."""
+        nonlocal clock
+        tr.cc(clock, 0, 0, 8)
+        tr.cc(clock, 0, 32, 0)
+        tr.prog(clock, 0, 80)
+        tr.note(clock + t(0.1), t(dur), 0, 60, 100)
+        clock += t(dur) + t(0.6)
+
+    sine_attempt(1.0)                                    # 2: control, expected silent
+    tr.sysex(clock, [0x7E, 0x7F, 0x09, 0x01, 0xF7])     # GM System On, re-acquires
+    clock += t(0.5)
+    sine_attempt(1.0)                                    # 3: Square Wave, GS mode cleared
+    tr.sysex(clock, GS_RESET)                           # GS back on
+    clock += t(0.5)
+    sine_attempt(1.0)                                    # 4: control, Sine Wave again
+    return write("49_gm_off_during_note.mid", tr)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2774,7 +2843,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
           p44_release_shape, p45_release_from_level, p46_noteoff_grid,
-          p47_gm_off_state, p48_rhythm_part_reset]
+          p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note]
 
 
 def check(path):

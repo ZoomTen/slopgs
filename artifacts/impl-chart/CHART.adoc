@@ -316,12 +316,15 @@ Roland GS-family message.
 | GM System On (Universal Non-Realtime).
 
 Full device reset, and **clears GS mode** — Bank Select goes inert again
-until the next GS Reset. `dev` not checked.
+until the next GS Reset. Also (re)loads the instrument set, so this is what
+restores sound after a GM System Off. `dev` not checked.
 | `F0 7E dev 09 02 F7`
 | GM System Off (Universal Non-Realtime).
 
-Full device reset, and **clears GS mode** — exactly as GM System On does.
-`dev` not checked.
+Full device reset, and **clears GS mode** — exactly as GM System On does. It
+also **unloads the instrument set**: every patch becomes unavailable, so
+nothing sounds at all — not even a fresh Program Change — until a GM System
+On or a System Reset (`FF`) reloads it. `dev` not checked.
 | `F0 7F dev 04 01 ll mm F7`
 | Master Volume (Universal Realtime).
 

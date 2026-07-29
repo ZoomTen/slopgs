@@ -3158,7 +3158,7 @@ All addresses below are relative to the SysEx buffer, byte 0 = the leading
 | `F0 7F <any> 04 01 <lsb> <msb> F7` | Master Volume (Universal Realtime, sub-ID1=`04`, sub-ID2=`01`) | Only the **MSB** byte is used; the LSB is never read. MSB is looked up in the same 128-entry attenuation table as note-on velocity and stored to `device+0xf78` (device-global) | `[A:0x136a7]` (mfr `0x7F`), `[A:0x136ae]`/`[A:0x136b8]` (sub-IDs), `[A:0x136c2]` (reads byte 6 = MSB; byte 5 = LSB is never referenced), `[A:0x12d28]` (table lookup), `[A:0x12d2d]` (store)
 | `F0 41 <any> 42 12 40 00 7F 00 <chk> F7` | Roland GS Reset (`DT1`, address `40 00 7F`, data `00`) | Calls `ResetDevice`; **sets** the GS-mode flag to `1`; then calls `ResetAllChannelControllers` and `ResetAllProgramsAndRhythmGroups` | `[A:0x1369d]` (mfr `0x41`), `[A:0x13717]`/`[A:0x13721]` (model `0x42`/command `0x12`), `[A:0x1374a]` (address match `400 07F`), `[A:0x137ea]` (`call 0x12354`), `[A:0x137f4]` (set flag), `[A:0x137fa]`–`[A:0x13816]` (both reset calls, shared with GM On/Off)
 | `F0 41 <any> 42 12 40 1x 02 <data> <chk> F7` | RCV CHANNEL (per-Part MIDI-channel remap), gated on GS-mode flag | Writes `data` into `device+0x12fc+part*1` | `[A:0x13756]` (address match), `[A:0x137b7]` (gate test), `[A:0x137ae]` (store)
-| `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1`, then enters the shared reset tail and calls `ResetAllChannelControllers` — releasing every sounding voice and resetting every controller on all 16 channels. It does **not** call `ResetAllProgramsAndRhythmGroups`, so Bank/Program survive | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store), `[A:0x137b5]` (`jmp` into the tail), `[A:0x13807]` (tail gate, false on this path)
+| `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1`, then enters the shared reset tail and calls `ResetAllChannelControllers` — releasing every sounding voice and resetting every controller on all 16 channels. It does **not** call `ResetAllProgramsAndRhythmGroups`, so Bank/Program survive | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store), `[A:0x137b5]` (`jmp` into the tail), `[A:0x13807]` (tail gate, false on this path); `[M]` every sounding voice cut, Volume/Pan/Expression back at their defaults on channels sent no message of their own
 | `F0 41 <any> 42 12 40 1x yy ... F7` (any other address in the `40 1x` family), gated on GS-mode flag | Per-Part 12-entry tuning-grid write (xref:s4-2-2[§4.2.2], `device+0xfbc`) | 12 iterations, one per semitone class, each storing `byte - 0x40` | `[A:0x1376c]` (gate test), `[A:0x13797]` (store loop)
 | any other manufacturer ID / model ID / command ID / address | Unrecognized | No state change; function returns success (`1`), the buffer is consumed and dropped, no error is raised | `[A:0x13818]`
 |===
@@ -3500,10 +3500,11 @@ Nothing else in the driver opens or closes a collection.
 locale assignment short-circuits `[A:0x151c8]`, and ``FindInstrument``'s scan
 over `obj+0x0` finds nothing, so note-on exhausts its retry tiers and
 allocates no voice `[A:0x1302a]`. The device stays silent until a GM System
-On or a System Reset (`0xFF`) re-acquires — `[I]`, inferred from the
-teardown; the refcount at `[A:0x16066]` releases the collection only if no
-other reference is outstanding, and whether a sounding voice holds one is
-`[O]`.
+On re-acquires `[M]`; a System Reset (`0xFF`) also re-acquires, on its call
+site `[A:0x13218]`. Whether a voice already sounding when the message
+arrives holds a reference of its own, and so survives the release, is `[O]`:
+the refcount at `[A:0x16066]` releases the collection only if no other
+reference is outstanding.
 
 [#s4-9-2]
 ==== Locale assignment, `0x151b0`

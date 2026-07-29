@@ -28,10 +28,19 @@
 #include "synth.h"
 #include "voice.h"
 #include "tables.h"
+#include "dls.h"
 
 Channel g_channels[16];
 uint8_t g_gs_mode;
 int32_t g_master_vol_hdb;
+
+/* SPEC.adoc S4.9.1's `0x150bc(1)` acquire half, restricted to this engine's
+ * one-shot gm.dls load: only set the loaded flag if a collection actually
+ * parsed, so a re-acquire after a failed load can't resurrect a g_dls that
+ * was never valid. */
+static void acquire_collection(void) {
+    if (g_dls.first_instrument) g_dls.valid = 1;
+}
 
 /* SPEC.md S4.2.1 `0x16df4`: (re)compute the scheduled 21-bit locale from the
  * channel's CURRENT bank bytes + program, with no drum bit (that is OR'd in
@@ -70,6 +79,12 @@ void synth_reset(void) {
     g_master_vol_hdb = 0;
     for (int i = 0; i < 16; i++) channel_defaults(&g_channels[i], i);
     voice_pool_reset();
+    /* synth_reset() stands in for this engine's device construction/open
+     * (called by src/cli.c and src/wasm.c to initialise) as well as the MIDI
+     * System Reset (0xFF) and GM System On/Off handlers below -- and per
+     * SPEC.adoc S4.9.1's call-site table, device construction, System Reset
+     * and GM System On all acquire the instrument collection. */
+    acquire_collection();
 }
 
 /* A/B guard for measurement purposes only (SPEC_GAPS.md #14): 1 (default,
@@ -183,9 +198,16 @@ static void reset_all_channel_controllers(Channel *c) {
  * paths and USE RHYTHM PART all route through. Distinct from CC121 above: this
  * one does reset Channel Volume, and it runs across every channel. */
 static void reset_all_channel_controllers_device(void) {
+    /* SPEC.adoc S4.6.2/S5.3: this tail's `0x123de` is the bulk immediate
+     * reclaim to the free pool, not the authored envelope release that
+     * voice_all_sound_off() (CC120/CC126/CC127, S4.3) performs -- so it must
+     * cut, not release. voice_pool_reset() is that immediate cut.
+     * ponytail: it also zeroes the reserve top-up accumulator and voice age
+     * counter, which 0x123de does not -- harmless here since every voice has
+     * just gone inactive, but not an exact mechanical match. */
+    voice_pool_reset();
     for (int i = 0; i < 16; i++) {
         Channel *c = &g_channels[i];
-        voice_all_sound_off(i);
         c->modulation = 0;
         c->pitch_bend = 8192;
         c->volume = 100;
@@ -272,7 +294,13 @@ void synth_sysex(const uint8_t *buf, uint32_t len) {
          * examined, so System Off clears GS mode exactly as System On does.
          * The driver's own sub-ID2-gated clear is dead code against the reset
          * that just ran; not reproduced. */
-        if (buf[2] == 0x09) synth_reset();
+        if (buf[2] == 0x09) {
+            synth_reset();
+            /* SPEC.adoc S4.9.1: System Off (sub-ID2 0x02) releases the
+             * collection after synth_reset()'s acquire; System On (0x01)
+             * needs nothing more -- synth_reset() already re-acquired. */
+            if (buf[3] == 0x02) g_dls.valid = 0;
+        }
         return;
     }
     if (mfr == 0x7F && len >= 6) { /* Master Volume, Universal Realtime */
@@ -287,7 +315,12 @@ void synth_sysex(const uint8_t *buf, uint32_t len) {
         if (buf[2] == 0x42 && buf[3] == 0x12) {
             uint8_t a0 = buf[4], a1 = buf[5], a2 = buf[6];
             if (a0 == 0x40 && a1 == 0x00 && a2 == 0x7F) { /* GS Reset */
+                /* SPEC.adoc S4.5: "GS Reset does not call it at all" -- save
+                 * and restore around synth_reset()'s new acquire so this path
+                 * leaves the collection's loaded state unchanged. */
+                int had_collection = g_dls.valid;
                 synth_reset();
+                g_dls.valid = had_collection;
                 g_gs_mode = 1;
                 return;
             }
