@@ -14,8 +14,8 @@
  * Plain classic <script>, no build step, no imports, no dependencies.
  *
  * Handles the three traps named in CLAUDE.adoc's "Measuring" section:
- *   - rate:      decodeReferenceAt22050() forces decodeAudioData onto a
- *                22050 Hz context so the platform resamples for us.
+ *   - rate:      decodeReferenceAtSynthRate() forces decodeAudioData onto a
+ *                SYNTH_RATE-Hz context so the platform resamples for us.
  *   - alignment: alignByEnvelope() does RMS-envelope cross-correlation over
  *                a coarse hop, searching a few seconds of lag.
  *   - dither/level: normalizeRMS() scales both signals to a common RMS
@@ -24,8 +24,13 @@
 "use strict";
 
 const SlopgsCompare = (() => {
-  const SYNTH_RATE = 22050; // fixed by the ABI (int16 stereo @ 22050)
-  const RENDER_CHUNK_FRAMES = 22050; // 1s per chunk
+  // BASE_RATE (22050) * RESAMPLE_FACTOR, the rate dist/msgs.wasm was built at
+  // (voice.h). The analysis and grading constants below bake it in, so it stays
+  // a declared constant here -- but loadSynth() now checks it against the
+  // module's own msgs_sample_rate() rather than trusting this copy. Default
+  // build, RESAMPLE_FACTOR=1.
+  const SYNTH_RATE = 22050;
+  const RENDER_CHUNK_FRAMES = SYNTH_RATE; // 1s per chunk
   const MAX_RENDER_SECONDS = 240; // cap so a runaway file can't hang the page
   const ENV_HOP_MS = 50; // envelope hop for alignment cross-correlation
   const MAX_LAG_SECONDS = 5; // alignment search window
@@ -39,7 +44,7 @@ const SlopgsCompare = (() => {
   const SPEC_SURVEY_FFT = 1024; // fixed size for the one-off dB-scale survey
   const SPEC_DYNAMIC_RANGE_DB = 80; // default shading floor below peak; slider-driven
   const SPEC_CANVAS_HEIGHT = 300;
-  const NYQUIST = SYNTH_RATE / 2; // 11025 Hz -- the whole visible spectrum
+  const NYQUIST = SYNTH_RATE / 2; // whole visible spectrum, half of SYNTH_RATE
   const MIN_FREQ_SPAN = 100; // narrowest frequency window, in Hz
   // Vertical axis warp. Linear by default; "log" is log(f + LOG_KNEE) rather
   // than log(f) so 0 Hz stays on the axis instead of running to -infinity --
@@ -60,12 +65,28 @@ const SlopgsCompare = (() => {
   function loadSynth() {
     if (synthPromise) return synthPromise;
     synthPromise = (async () => {
-      const resp = await fetch("msgs.wasm");
+      // cache: "reload" -- msgs.wasm changes identity on every rebuild but never
+      // its URL, and a stale cached copy is exactly the silent wrong-speed bug
+      // the msgs_sample_rate() check below exists to catch.
+      const resp = await fetch("msgs.wasm", { cache: "reload" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching msgs.wasm`);
       const wasmBytes = await resp.arrayBuffer();
       const { instance } = await WebAssembly.instantiate(wasmBytes, {});
       const exp = instance.exports;
       if (typeof exp.__wasm_call_ctors === "function") exp.__wasm_call_ctors();
+
+      // The one thing this file cannot infer: which RESAMPLE_FACTOR the module
+      // was built at. Mismatch is not subtle -- it plays every file at the wrong
+      // speed -- but it is silent, so refuse to run instead.
+      const wasmRate = exp.msgs_sample_rate ? exp.msgs_sample_rate() >>> 0 : 0;
+      if (wasmRate !== SYNTH_RATE) {
+        throw new Error(
+          `msgs.wasm renders at ${wasmRate || "an unreported rate"}Hz but compare.js `
+          + `is configured for ${SYNTH_RATE}Hz -- audio would play at `
+          + `${wasmRate ? (SYNTH_RATE / wasmRate).toFixed(2) : "?"}x speed. Rebuild the wasm at a `
+          + `matching RESAMPLE_FACTOR (voice.h, -D'd at compile time) or set SYNTH_RATE to ${wasmRate}.`
+        );
+      }
 
       const dlsResp = await fetch("gm.dls");
       if (!dlsResp.ok) throw new Error(`HTTP ${dlsResp.status} fetching gm.dls`);
@@ -104,7 +125,7 @@ const SlopgsCompare = (() => {
     const ptr = exp.msgs_alloc(smfBytes.length);
     new Uint8Array(exp.memory.buffer, ptr, smfBytes.length).set(smfBytes);
     const loadRet = exp.msgs_load_smf(ptr, smfBytes.length) | 0;
-    if (loadRet !== 0) throw new Error(`msgs_load_smf failed (code ${loadRet}) for ${midiUrl}`);
+    if (loadRet !== 0) throw new Error(`msgs_load_smf failed (code ${loadRet})`);
     exp.msgs_set_loop(0);
 
     const maxFrames = MAX_RENDER_SECONDS * SYNTH_RATE;
@@ -137,14 +158,14 @@ const SlopgsCompare = (() => {
   }
 
   // -----------------------------------------------------------------------
-  // reference decode -- trap #1 (rate): force decodeAudioData onto a 22050Hz
-  // context so the platform resamples the 44.1kHz reference for us. This
-  // buffer is reused for both playback and analysis.
-  // ponytail: shared 22050Hz buffer for playback too (slightly lower
+  // reference decode -- trap #1 (rate): force decodeAudioData onto a
+  // SYNTH_RATE context so the platform resamples the 44.1kHz reference for
+  // us. This buffer is reused for both playback and analysis.
+  // ponytail: shared SYNTH_RATE buffer for playback too (slightly lower
   // fidelity than a native-rate decode); add a second native-rate decode
   // for listening if that quality loss ever matters.
   // -----------------------------------------------------------------------
-  async function decodeReferenceAt22050(flacUrl) {
+  async function decodeReferenceAtSynthRate(flacUrl) {
     const resp = await fetch(flacUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${flacUrl}`);
     const bytes = await resp.arrayBuffer();
@@ -368,7 +389,7 @@ const SlopgsCompare = (() => {
 
   // Renders mono[start .. start+count) into `canvas` at one column per pixel.
   // ponytail: width FFTs per redraw, recomputed from scratch on every scroll
-  // step -- fine at ~900px and a 22050Hz mono signal, and it keeps the code a
+  // step -- fine at ~900px and a SYNTH_RATE mono signal, and it keeps the code a
   // single pass with no cache to invalidate. Add a column cache keyed by
   // (start, count) if a very long field recording ever feels sluggish.
   // Returns the band statistics it measured while drawing; the caller needs
@@ -701,7 +722,7 @@ const SlopgsCompare = (() => {
     let ref, slop;
     statusEl.textContent = "decoding reference...";
     try {
-      ref = await decodeReferenceAt22050(item.flacUrl);
+      ref = await decodeReferenceAtSynthRate(item.flacUrl);
     } catch (err) {
       statusEl.textContent = missingMsg("reference FLAC", item.flacUrl) + ` (${err.message || err})`;
       return;
@@ -834,9 +855,9 @@ const SlopgsCompare = (() => {
       const dPeak = sSlop.bandPeakDb - sRef.bandPeakDb;
       const sign = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
 
-      drawOverlay(cRef, "REFERENCE (44.1kHz source, resampled to 22050Hz)",
+      drawOverlay(cRef, `REFERENCE (44.1kHz source, resampled to ${SYNTH_RATE}Hz)`,
         [viewLine(refOff, sRef), lvl(sRef)]);
-      drawOverlay(cSlop, "SLOPGS (native 22050Hz render)",
+      drawOverlay(cSlop, `SLOPGS (native ${SYNTH_RATE}Hz render)`,
         [viewLine(slopOff, sSlop), `${lvl(sSlop)}   Δ vs ref: rms ${sign(dRms)}dB  peak ${sign(dPeak)}dB`]);
 
       // The playhead sits at the same x on both canvases by construction: it
@@ -1191,7 +1212,7 @@ const SlopgsCompare = (() => {
         + (mode === "waveform" ? `   zoom ${fmtZoom(zoom)}`
           : `   window ${st.fftSize}   zoom ${fmtZoom(zoom)}   contrast ${dynRange}dB`);
       const lvl = `${mode === "waveform" ? "" : "band "}rms ${st.bandRmsDb.toFixed(1)}dB  peak ${st.bandPeakDb.toFixed(1)}dB`;
-      drawOverlay(cSig, "MIDI RENDER (native 22050Hz)", [viewLine, lvl]);
+      drawOverlay(cSig, `MIDI RENDER (native ${sampleRate}Hz)`, [viewLine, lvl]);
 
       drawPlayhead(((playhead - start) / count) * viewWidth());
       playheadVal.textContent = `from ${(playhead / sampleRate).toFixed(3)}s`;
@@ -1431,9 +1452,9 @@ const SlopgsCompare = (() => {
     // platform requirement -- four separate facts, so four separate rows.
     if (notice) {
       notice.innerHTML = `<dl>
-        <dt>rate</dt><dd>references are decoded via <code>decodeAudioData</code> on a 22050Hz
+        <dt>rate</dt><dd>references are decoded via <code>decodeAudioData</code> on a ${SYNTH_RATE}Hz
           <code>OfflineAudioContext</code>, so the platform resamples them to the synth's native
-          22050Hz (verified against <code>decodedBuffer.sampleRate</code>).</dd>
+          ${SYNTH_RATE}Hz (verified against <code>decodedBuffer.sampleRate</code>).</dd>
         <dt>alignment</dt><dd>start delay is removed by RMS-envelope cross-correlation over a 50ms
           hop, searching ±5s of lag. The detected lag is shown per item.</dd>
         <dt>level</dt><dd>both signals are normalized to a common RMS before the spectral residual

@@ -188,10 +188,16 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * defect TOPUP_INTERVAL_FRAMES (voice.c) exists to prevent, and it is
      * invisible to the probe corpus (100ms event spacing) but audible on
      * dense field MIDIs. SPEC.md S5.5 [M]: 80 held note-ons must leave 48
-     * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed. */
+     * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed, so
+     * this renders through render_frames rather than smf_render: the song is
+     * still loaded here, and smf_render would keep dispatching its events into
+     * the block. That made the window's contents depend on how much song the
+     * CHUNK-sized probe render above had consumed -- a fixed frame count, so
+     * half as much real time at RESAMPLE_FACTOR=2, which shifted the window and
+     * cost one voice (47/48). */
     synth_reset();
     for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
-    for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) smf_render(buf, CHUNK); /* ~7.4s */
+    for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(buf, CHUNK); /* ~7.4s */
     int surviving = 0;
     for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
     if (surviving != 48) {

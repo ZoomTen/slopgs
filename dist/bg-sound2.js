@@ -116,6 +116,24 @@
         throw new Error(`msgs.wasm reports ABI version ${abiVersion}, expected 1`);
       }
 
+      // The one thing this file cannot infer: which RESAMPLE_FACTOR (voice.h)
+      // the fetched module was built at. A mismatch is silent otherwise --
+      // every song plays at the wrong speed -- so refuse to run instead. See
+      // compare.js's loadSynth() for the sibling fix. The staleness vector
+      // here is this file's own Cache Storage layer (cachedFetch), not the
+      // HTTP cache, so the fix is bumping ASSET_CACHE_NAME above, not a
+      // fetch-level cache option.
+      const wasmRate = exp.msgs_sample_rate ? exp.msgs_sample_rate() >>> 0 : 0;
+      if (wasmRate !== SYNTH_RATE) {
+        throw new Error(
+          `msgs.wasm renders at ${wasmRate || "an unreported rate"}Hz but bg-sound2.js `
+          + `is configured for ${SYNTH_RATE}Hz -- audio would play at `
+          + `${wasmRate ? (SYNTH_RATE / wasmRate).toFixed(2) : "?"}x speed. Rebuild the wasm at a `
+          + `matching RESAMPLE_FACTOR, set SYNTH_RATE to ${wasmRate}, or bump ASSET_CACHE_NAME if `
+          + `a stale cached module is the cause.`
+        );
+      }
+
       let dlsBytes;
       const dlsStart = performance.now();
       try {

@@ -98,6 +98,16 @@ uint32_t msgs_abi_version(void) {
     return 1;
 }
 
+/* The rate this build renders at: BASE_RATE * RESAMPLE_FACTOR (voice.h).
+ * Additive to the required ABI, like msgs_debug_active_count below. Exported
+ * so a host never has to keep its own copy of a build-time constant -- when
+ * dist/compare.js did, a stale copy played every file at the wrong speed and
+ * nothing anywhere could notice. */
+WASM_EXPORT
+uint32_t msgs_sample_rate(void) {
+    return RENDER_RATE;
+}
+
 WASM_EXPORT
 uint32_t msgs_mem_size(void) {
     return rt_mem_size();
