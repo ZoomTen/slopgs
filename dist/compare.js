@@ -1054,12 +1054,14 @@ const SlopgsCompare = (() => {
     // the red playhead (or at 0 if nothing has been clicked yet).
     const playheadVal = el("span", { class: "rangeval" });
     const playingVal = el("span", { class: "playing-indicator" });
+    const followBox = el("input", { type: "checkbox" });
     const playRow = el("div", { class: "ctlrow" }, [
       grp("play", [
         mkBtn("▶ reference", () => playAt("ref")),
         mkBtn("▶ slopgs", () => playAt("slop")),
         mkBtn("▶ mixed", () => playAt("mixed")),
         mkBtn("■ stop", () => stopCurrent()),
+        el("label", null, [followBox, document.createTextNode(" follow")]),
         playingVal,
         playheadVal,
       ]),
@@ -1086,9 +1088,22 @@ const SlopgsCompare = (() => {
       hideCursor();
       playingVal.textContent = "";
     }
+    // Scrolls the view so `sampleAt` sits at its centre -- same scrollLeft
+    // math as viewStart()'s inverse, and shared across both canvases since
+    // they share one scrollbar. See buildSingleViewer's centerOn for the
+    // rationale (firing the scrollbar's own "scroll" listener repaints).
+    function centerOn(sampleAt) {
+      const maxStart = Math.max(0, total - visibleSamples());
+      if (maxStart <= 0) return; // whole signal already fits on screen
+      const desiredStart = Math.max(0, Math.min(maxStart, Math.round(sampleAt - visibleSamples() / 2)));
+      const denom = Math.max(1, spacer.offsetWidth - scrollbar.clientWidth);
+      const newScrollLeft = (desiredStart / maxStart) * denom;
+      if (Math.abs(scrollbar.scrollLeft - newScrollLeft) > 0.5) scrollbar.scrollLeft = newScrollLeft;
+    }
     function trackCursor() {
       cursorRaf = requestAnimationFrame(trackCursor);
       const at = cursorFrom + (getPlayCtx().currentTime - cursorT0) * SYNTH_RATE;
+      if (followBox.checked) centerOn(at);
       const x = ((at - viewStart()) / visibleSamples()) * viewport.clientWidth;
       if (x < 0 || x > viewport.clientWidth) { cursor.style.display = "none"; return; }
       cursor.style.display = "block";
