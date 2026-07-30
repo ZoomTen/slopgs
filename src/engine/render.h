@@ -1,5 +1,5 @@
 /* render.h -- the mixer: interpolation, gain, saturating accumulate.
- * SPEC.md Part 6. */
+ * SPEC.adoc Part 6. */
 #ifndef RENDER_H
 #define RENDER_H
 

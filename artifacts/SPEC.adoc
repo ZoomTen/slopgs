@@ -451,18 +451,22 @@ result.
   `4096 · 2^(cents/1200)` exactly in the mathematical limit
   (xref:s3-3-3[§3.3.3]) — there is no separate `fyl2x`/`f2xm1` call
   at note-on for pitch; these two tables replace it entirely.
-* **Centibel (0.1 dB per unit) units** for the attenuation-style `art1` connections
-  and for the `wsmp` attenuation field: `(lScale · 10) >>arith 16` (a
-  right-shift-by-16 arithmetic, not a divide), with the DLS
-  `INT32_MIN` sentinel mapping directly to `-9600` (silence) instead of
-  performing the multiply, to avoid signed overflow (xref:s2-4-2[§2.4.2]).
-  **Do not confuse this with the separate, finer hundredths-of-a-dB
-  (0.01 dB) table used elsewhere** (xref:s3-5[§3.5], the velocity/CC7/master-volume
-  table) — the two must not be divided by the same factor; dividing that
-  other table's values by 10 instead of 100 silently produces attenuations
-  10× too large. This governs reading either table's *own* on-disk value in
-  isolation; it is not a conversion that must be inserted when the two are
-  added together. **In the note-on gain sum specifically** (xref:s3-5[§3.5], xref:s3-10[§3.10]),
+* **Two distinct units apply to `art1`/`wsmp` attenuation-style connections, and
+  they are not interchangeable.** On disk, DLS `wsmp` `lAttenuation` /
+  `art1` `lScale` is 16.16 fixed point whose *integer* part is in units of
+  0.1 dB (centibels): 1 LSB = 1/655360 dB, so `lScale/65536` is tenths of a
+  dB. The driver's conversion, `(lScale · 10) >>arith 16` (a
+  right-shift-by-16 arithmetic, not a divide), produces a *different*,
+  converted value — `lScale·10/65536 = (lScale/655360)·100` — i.e.
+  **hundredths of a dB**, the same unit the velocity/CC7/master-volume table
+  (xref:s3-5[§3.5]) is stored in. The DLS `INT32_MIN` sentinel maps directly
+  to `-9600` (silence) instead of performing the multiply, to avoid signed
+  overflow (xref:s2-4-2[§2.4.2]).
+  **Do not divide the velocity/CC7/master-volume table's own values by the
+  same factor as the raw on-disk `lScale` integer part**: that table
+  (xref:s3-5[§3.5]) is already hundredths of a dB and divides by 100;
+  dividing its values by 10 instead of 100 silently produces attenuations
+  10× too large. **In the note-on gain sum specifically** (xref:s3-5[§3.5], xref:s3-10[§3.10]),
   the WORD this `(lScale·10)>>16` formula produces for the `wsmp` attenuation
   field (stored at `wave+0x1e`/`region+0x24`) is summed with **no further ×10
   scaling**, as one more addend in the same hundredths-of-a-dB accumulator
@@ -978,10 +982,10 @@ iteration `[A:0x15804]`/`[A:0x15aae]`. Relative to the cursor: `usSource` =
 [#s2-4-2]
 ==== `lScale` conversion formulas actually implemented
 
-* **Attenuation-style (0.1 dB units)**: `(lScale * 10) >>arith 16`. Special
-  case `lScale == 0x80000000` (INT32_MIN) maps directly to sentinel `0xda80`
-  (signed −9600, "silent") instead of doing the multiply (avoids signed
-  overflow) `[A:0x158a4]`.
+* **Attenuation-style (0.1-dB-per-step fixed point in, hundredths of a dB
+  out)**: `(lScale * 10) >>arith 16`. Special case `lScale == 0x80000000`
+  (INT32_MIN) maps directly to sentinel `0xda80` (signed −9600, "silent")
+  instead of doing the multiply (avoids signed overflow) `[A:0x158a4]`.
 * **Pitch/cents (0.01-cent-ish; DLS "1/65536 cent")**: driver stores the
   **high 16 bits of `lScale` directly** (`cursor+2`, i.e. `lScale>>16`
   truncated, no rounding), then clamps to `[-1200,+1200]` `[A:0x1594d]`.
@@ -1589,7 +1593,7 @@ Struct sizes, confirmed via literal `push size; call 0x1282e`
 | +0x1d | "no loop" flag (region-level `wsmp`) | `[A:0x15ba3]`/`[A:0x15b6a]`
 | +0x1e | `wsmp` unity note (region-level, BYTE) | `[A:0x15b5c]`
 | +0x1f | "region has its own unity-note/finetune/atten override" flag | `[A:0x15b5f]`
-| +0x24 | `wsmp` attenuation (region-level, 0.1 dB WORD) | `[A:0x15b4d]`
+| +0x24 | `wsmp` attenuation (region-level, hundredths-of-a-dB WORD) | `[A:0x15b4d]`
 | +0x28 | pointer/predicate target used by `0x1469e` ("has articulation?") | `[I]`
 | +0x2c | `edit` value (directly in ``rgn `` body) | `[A:0x15b2f]`
 | +0x2e | `rgnh.fusOptions` bit 0 | `[A:0x15be8]`
@@ -2945,19 +2949,46 @@ not sorted-queue objects, confirmed by direct index arithmetic in
 | `0xf58` | word×16 | Combined 14-bit Data-Entry value (`MSB<<7\|LSB`) used while building an RPN/NRPN value | CC6 (MSB half) `[A:0x133d1]`; CC38 (LSB half) `[A:0x1346e]` | CC6/CC38 (each reads the other half back before combining) `[A:0x133c3]`/`[A:0x13464]`; RPN1 fine-tune calc `[A:0x1347a]`
 | `0xf78` | dword (device-global, not per-channel) | Master Volume attenuation, in hundredths of a dB (dB = value/100) (`0`=unity, from the same curve as note-on velocity, xref:s4-4[§4.4], Appendix T §xref:t2[T.2]) | SysEx Master Volume `[A:0x12d2d]` | folded into the note-on attenuation sum, xref:s3-5[§3.5]
 | `0xf7c` | dword×16 | RPN1 (Channel Fine Tuning) result, in cents | RPN1 calc, shared tail for CC6/CC38 `[A:0x1348a]` | The note-on tuning accumulator, added unconditionally `[A:0x12f67]` (xref:s3-3-2[§3.3.2])
-| `0xfbc` | dword×16×12 (16 parts, 12 sub-entries each) | Per-part 12-entry GS Scale Tuning grid, one entry per semitone class; value = `(incoming byte - 0x40)`, i.e. signed offset from a center of `0x40` | GS `DT1` fallthrough case (any address not matched as GS Reset/RCV CHANNEL/USE RHYTHM PART) `[A:0x13797]` | The note-on tuning accumulator `[A:0x12f60]`, indexed `part*12 + note%12` (xref:s3-3-2[§3.3.2]) — the indexing by semitone class is itself what confirms this grid is GS Scale Tuning
+| `0xfbc` | dword×16×12 (16 parts, 12 sub-entries each) | Per-part 12-entry GS Scale Tuning grid, one entry per semitone class; value = `(incoming byte - 0x40)`, i.e. signed offset from a center of `0x40` | GS `DT1` Scale Tuning arm, address `40 1x 40` matched exactly `[A:0x13763]`, store gated on the GS-mode flag `[A:0x1376e]`, store loop `[A:0x13797]` | The note-on tuning accumulator `[A:0x12f60]`, indexed `part*12 + note%12` (xref:s3-3-2[§3.3.2]) — the indexing by semitone class is itself what confirms this grid is GS Scale Tuning
 | `0x12bc` | dword×16 | RPN2 (Channel Coarse Tuning) result, in cents | RPN2 calc (CC6 only, param==2) `[A:0x133f2]` | The note-on tuning accumulator `[A:0x12f78]` — skipped when the part's USE RHYTHM PART flag is set `[A:0x12f6e]` (xref:s3-3-2[§3.3.2])
 | `0x12fc` | byte×16 | RCV CHANNEL: which physical MIDI channel index (0–15) feeds internal Part *i* | `ResetDevice` (from the static table, xref:s4-6[§4.6]) `[A:0x123aa]`; GS SysEx RCV CHANNEL, arm matched at `[A:0x13756]`, gated at `[A:0x137b7]`, re-dispatched through the internal-message path, store `[A:0x12d11]` | ``ShortMsg``'s per-Part CC/note dispatch loop (matches incoming channel against this array) `[A:0x13267]`
 | `0x130c` | byte×16 | USE RHYTHM PART: `0`=melodic, nonzero=rhythm part | `ResetDevice` `[A:0x12395]`/`[A:0x123ce]` (Part 0 forced to `1`); GS SysEx USE RHYTHM PART `[A:0x137ae]` | Program Change's drum-locale propagation `[A:0x132e8]`; ``TriggerVoiceEvent``'s drum-bit injection `[A:0x12dcf]` (xref:s4-8[§4.8]); ``ResetAllProgramsAndRhythmGroups``'s per-channel drum-bit OR `[A:0x127ce]`
 | `0x131c` | dword×16 | Mono mode flag (CC126/127): nonzero = Mono | CC126 sets `1` `[A:0x13621]`; CC127 clears `0` `[A:0x13618]`; `ResetDevice` clears all `[A:0x123b1]` | ``TriggerVoiceEvent``'s mono-retrigger pre-pass `[A:0x12ddd]`
-| `0xf54` | dword (device-global) | GS-mode flag: gates CC0/CC32 storage (xref:s4-3[§4.3], xref:s4-4[§4.4]) | GS Reset sets `1` `[A:0x137f4]`; GM System On clears `0` `[A:0x136f5]`; `ResetDevice` clears `0` `[A:0x123c5]` | CC0 `[A:0x1341e]`, CC32 `[A:0x13492]`; RCV CHANNEL/USE RHYTHM PART SysEx gate `[A:0x137a2]`,`[A:0x1376e]`
+| `0xf54` | dword (device-global) | GS-mode flag: gates CC0/CC32 storage (xref:s4-3[§4.3], xref:s4-4[§4.4]) and the three per-Part `DT1` SysEx handlers (RCV CHANNEL, USE RHYTHM PART, GS Scale Tuning) | GS Reset sets `1` `[A:0x137f4]`; GM System On clears `0` `[A:0x136f5]`; `ResetDevice` clears `0` `[A:0x123c5]`; System Reset (`0xFF`) clears `0` `[A:0x131ee]` | CC0 `[A:0x1341e]`, CC32 `[A:0x13492]`; USE RHYTHM PART gate `[A:0x137a2]`, RCV CHANNEL gate `[A:0x137b7]`, GS Scale Tuning gate `[A:0x1376e]`
 |===
 
 The GS-mode flag is referenced at exactly the sites enumerated above:
-2 writers that clear it (`0x123c5`, `0x136f5`), 1 writer that sets it
-(`0x137f4`), and 4 readers that gate on it (`0x1341e`, `0x13492`,
-`0x1376e`, `0x137a2`) — 7 sites total, all cited with instruction-level
-evidence.
+3 writers that clear it (`0x123c5`, `0x136f5`, `0x131ee`), 1 writer that
+sets it (`0x137f4`), and 5 readers that gate on it (`0x1341e`, `0x13492`,
+`0x137a2`, `0x137b7`, `0x1376e`) — 9 sites total, all cited with
+instruction-level evidence.
+
+[#s4-2-2-scale-tuning-loop]
+The `0xfbc` store loop's bit-7 abort test leads its own store by one byte —
+the byte tested on a given iteration is not the byte that iteration
+stores:
+
+[source,c]
+----
+i = 0;                                        // 0x1376c
+if (device->gs_mode == 0) return;             // 0x1376e
+do {
+    if (buf[9 + i] & 0x80) return;            // 0x1377a
+    device->scaleTuning[part][i] = buf[8 + i] - 0x40; // 0x13785-0x13797
+    i++;                                      // 0x13793
+} while (i < 12);                             // 0x13794
+----
+
+The first data byte, `buf[8]`, is stored unconditionally — nothing tests
+its bit 7. The tested bytes are `buf[9]` through `buf[20]`: data bytes 2
+through 12, plus the byte following the twelfth data byte (the checksum in
+a well-formed message, whose bit 7 is clear, so a well-formed message
+completes all 12 stores). A short message's `0xF7` terminator has bit 7
+set and ends the loop, but because the test is one byte ahead of the
+store, the data byte immediately before the terminator is never written —
+the loop returns before reaching that iteration's store. Entries already
+written by earlier iterations are not rolled back, so a short message
+leaves the twelve-entry grid partially updated.
 
 '''
 
@@ -3214,8 +3245,8 @@ All addresses below are relative to the SysEx buffer, byte 0 = the leading
 | `F0 41 <any> 42 12 40 00 7F 00 <chk> F7` | Roland GS Reset (`DT1`, address `40 00 7F`, data `00`) | Calls `ResetDevice`; **sets** the GS-mode flag to `1`; then calls `ResetAllChannelControllers` and `ResetAllProgramsAndRhythmGroups` | `[A:0x1369d]` (mfr `0x41`), `[A:0x13717]`/`[A:0x13721]` (model `0x42`/command `0x12`), `[A:0x1374a]` (address match `400 07F`), `[A:0x137ea]` (`call 0x12354`), `[A:0x137f4]` (set flag), `[A:0x137fa]`–`[A:0x13816]` (both reset calls, shared with GM On/Off)
 | `F0 41 <any> 42 12 40 1x 02 <data> <chk> F7` | RCV CHANNEL (per-Part MIDI-channel remap), gated on GS-mode flag | Writes `data` into `device+0x12fc+part*1`, via a re-dispatch through the internal-message path | `[A:0x13756]` (address match), `[A:0x137b7]` (gate test), `[A:0x12d11]` (store, in the internal-message dispatcher)
 | `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1`, then enters the shared reset tail and calls `ResetAllChannelControllers` — releasing every sounding voice and resetting every controller on all 16 channels. It does **not** call `ResetAllProgramsAndRhythmGroups`, so Bank/Program survive | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store), `[A:0x137b5]` (`jmp` into the tail), `[A:0x13807]` (tail gate, false on this path); `[M]` every sounding voice cut, Volume/Pan/Expression back at their defaults on channels sent no message of their own
-| `F0 41 <any> 42 12 40 1x yy ... F7` (any other address in the `40 1x` family), gated on GS-mode flag | Per-Part 12-entry tuning-grid write (xref:s4-2-2[§4.2.2], `device+0xfbc`) | 12 iterations, one per semitone class, each storing `byte - 0x40` | `[A:0x1376c]` (gate test), `[A:0x13797]` (store loop)
-| any other manufacturer ID / model ID / command ID / address | Unrecognized | No state change; function returns success (`1`), the buffer is consumed and dropped, no error is raised | `[A:0x13818]`
+| `F0 41 <any> 42 12 40 1x 40 <12 data bytes> <chk> F7` | GS Scale Tuning (per-Part 12-entry tuning-grid write, xref:s4-2-2[§4.2.2], `device+0xfbc`), gated on GS-mode flag | 12 iterations, one per semitone class, each storing `byte - 0x40`; the bit-7 abort test leads its own store by one byte, so a short message can leave the grid partially updated — full account at xref:s4-2-2-scale-tuning-loop[§4.2.2] | `[A:0x13763]` (address match), `[A:0x1376e]` (gate test), `[A:0x13797]` (store loop), `[A:0x1377a]` (bit-7 abort check)
+| any other manufacturer ID / model ID / command ID / address, including every `40 1x` address other than `02`, `15` and `40` | Unrecognized | No state change; function returns success (`1`), the buffer is consumed and dropped, no error is raised | `[A:0x13818]`
 |===
 
 GM System On, GM System Off and GS Reset all converge on calling

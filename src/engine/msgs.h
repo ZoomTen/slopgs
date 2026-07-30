@@ -1,5 +1,5 @@
 /* msgs.h -- public ABI for the freestanding wasm32 MIDI synth.
- * This is the fixed ABI from SPEC.md Part 1 S1.5.3. Do not change signatures. */
+ * This is the fixed ABI from SPEC.adoc Part 1 S1.5.3. Do not change signatures. */
 #ifndef MSGS_H
 #define MSGS_H
 

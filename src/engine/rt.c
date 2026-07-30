@@ -7,7 +7,7 @@
  * sqrt uses the f64.sqrt hardware instruction via a compiler builtin (not a
  * libm call, and on x86-64 it lowers to sqrtsd). exp/log/sin are
  * implemented from scratch with a standard range-reduction + polynomial
- * approach: not bit-exact vs. any specific CRT, but SPEC.md S1.4.3 explicitly
+ * approach: not bit-exact vs. any specific CRT, but SPEC.adoc S1.4.3 explicitly
  * establishes plain IEEE-754 double precision is sufficient for this driver's
  * own numeric margins (>1.3M ULP worst case on gm.dls's actual timecent
  * values), so a good-quality from-scratch implementation is adequate here.
@@ -53,7 +53,7 @@ double rt_exp(double x) {
     double r2 = r * r;
     /* Taylor series through r^8/8! -- |r| <= ln2/2 ~= 0.3466, plenty accurate
      * for this driver's domain (finite normal doubles, no correct-rounding
-     * requirement per SPEC.md S1.4.3). */
+     * requirement per SPEC.adoc S1.4.3). */
     double poly = 1.0 + r + r2 * (1.0 / 2 +
                   r * (1.0 / 6 +
                   r * (1.0 / 24 +

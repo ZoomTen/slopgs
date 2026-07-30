@@ -1,4 +1,4 @@
-/* tables.h -- runtime-built lookup tables, SPEC.md Appendix T. */
+/* tables.h -- runtime-built lookup tables, SPEC.adoc Appendix T. */
 #ifndef TABLES_H
 #define TABLES_H
 
@@ -12,36 +12,36 @@ extern int32_t g_table_cents[201];
  * table_semi[n+48] = trunc(4096 * 2^(n/12)) */
 extern int32_t g_table_semi[97];
 
-/* Velocity/attenuation table (0x1c9d0 in SPEC.md), 128 entries, squared law,
+/* Velocity/attenuation table (0x1c9d0 in SPEC.adoc), 128 entries, squared law,
  * units: hundredths of a dB. table_vel[0] = -9600 (hardcoded floor);
  * table_vel[v] = trunc(1000*log10((v/127)^4)) for v=1..127.
- * Reused for CC7 (Channel Volume), CC11 (Expression, per SPEC.md 3.5's
- * [M:probe]-carried claim), and Master Volume -- same table, per SPEC.md. */
+ * Reused for CC7 (Channel Volume), CC11 (Expression, per SPEC.adoc 3.5's
+ * [M:probe]-carried claim), and Master Volume -- same table, per SPEC.adoc. */
 extern int32_t g_table_vel[128];
 
 /* Linear/sqrt-law table (0x1bfd4+0x1bfd0), 128 entries (index 0 = the v=0
  * floor scalar, indices 1..127 = the trunc(1000*log10(v/127)) curve).
- * Consumed by the pan law (SPEC.md 3.6), reverse-indexed. */
+ * Consumed by the pan law (SPEC.adoc 3.6), reverse-indexed. */
 extern int32_t g_table_lin[128];
 
 /* T1 (dB->linear amplitude), domain n=-1000..0 (1001 entries), Q12.
  * table_dbamp[n+1000] = trunc(4095*sqrt(10^(n/100))). Built for completeness
- * per SPEC.md's table-appendix requirement; not wired into the gain path
- * (gain is computed directly via rt_pow, see SPEC_GAPS.md). */
+ * per SPEC.adoc's table-appendix requirement; not wired into the gain path
+ * (gain is computed directly via rt_pow, see SPEC_LOG.adoc). */
 extern int32_t g_table_dbamp[1001];
 
 /* Table C (0x1a9d8), 201 entries, envelope/time-progress shaping curve whose
- * exact consumer SPEC.md itself marks [O]. Built for completeness, unused. */
+ * exact consumer SPEC.adoc itself marks [O]. Built for completeness, unused. */
 extern int16_t g_table_envshape[201];
 
 /* Table D (0x1a7d8), 256 entries, sine LFO, amplitude +-100. Built for
- * completeness; real-time LFO modulation is not implemented (SPEC_GAPS.md). */
+ * completeness; real-time LFO modulation is not implemented (SPEC_LOG.adoc). */
 extern int16_t g_table_sine[256];
 
 /* Table E (0x1c1d0), 2048 entries, log-companding curve for the 16->8 bit
  * sample-storage reduction path. Built for completeness; not needed because
  * this implementation always keeps samples at full 16-bit fidelity,
- * referenced in place (SPEC_GAPS.md). */
+ * referenced in place (SPEC_LOG.adoc). */
 extern uint8_t g_table_companding[2048];
 
 void tables_build(void);

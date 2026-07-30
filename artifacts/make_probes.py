@@ -2831,6 +2831,248 @@ def p49_gm_off_during_note():
     return write("49_gm_off_during_note.mid", tr)
 
 
+def p50_gain_ceiling():
+    """The TR-808 hand clap defect (`field/HueArme-Weekend`, 77.5456s):
+    gm.dls wave 193 `HCLAP60` is the CORRECT sample, correctly selected, but
+    slopgs renders it at a burst prominence of +14.2 dB against the real
+    MSGS reference's +3.0 dB -- about 11 dB too hot. A uniform global trim
+    was already tried and failed, because score.py's metric is
+    level-normalised and a constant offset is invisible to it.
+
+    Mechanism under test, read from voice_update_gain() (voice.c:827-845):
+
+        atten_hdb   = g_master_vol_hdb + chan_vol + expr + v->atten_const_hdb;
+        gain_linear = 10^((atten_hdb/100 + GAIN_TRIM_DB) / 20);   // voice.c:835
+        ... pan applied ...
+        if (gain_l_target > GAIN_CEILING) gain_l_target = GAIN_CEILING; // :844
+        if (gain_r_target > GAIN_CEILING) gain_r_target = GAIN_CEILING; // :845
+
+    with GAIN_CEILING = 32767/65536 = 0.49999 (voice.c:816). The clamp is
+    PER-VOICE and happens BEFORE any voices are summed (render_voice /
+    render_frames in render.c accumulate already-clamped per-voice gains via
+    a saturating add). Every gm.dls region carries a NEGATIVE wsmp
+    lAttenuation, i.e. a gain BOOST, so at zero total attenuation
+    gain_linear = 1.0, already more than double GAIN_CEILING: ordinary loud
+    notes are pinned, not a rare edge case.
+
+    HCLAP60's region has its own `lart` LIST but, walking gm.dls directly, no
+    KEYONVELOCITY(2)->ATTENUATION(1) `art1` connection block inside it, and
+    the instrument has no usable `lart` of its own either -- so it falls
+    back to the engine's default -9600 full-depth velocity law: velocity
+    modulates its attenuation at FULL depth.
+
+    Because the clamp is per-voice/pre-sum and the corpus metric is
+    level-normalised, a global offset cannot move any of the following
+    relative to each other -- so they are what this probe measures instead:
+    the velocity KNEE (where a voice stops being pinned and starts tracking),
+    the FLAT-TOP width above it, and whether a real attenuation LADDER
+    collapses (ceiling) or keeps its authored spacing (scale/no ceiling).
+
+    A. Velocity knee sweep, GS Sine Wave 008:080, key 60, CC7=127/CC11=127
+       (not the GM defaults -- those never engage the clamp at all, see A2).
+       Predicted knee: atten_hdb = g_table_vel[vel] - 384 must exceed -602 to
+       pin, i.e. vel > 127*10^(-218/4000) ~= 112.0. Dense from 104 up (4-unit
+       steps) to bracket it; top (>=112) should render FLAT, below should
+       TRACK the velocity law.
+    A2. Unpinned control: same patch/key at the OLD GM-default CC7=100,
+       CC11=127, vel 96/112/127 only. Must TRACK (no flat top): predicted
+       -4.86 / -2.18 / 0.00 dB relative to its own top. Separates "the
+       ceiling exists" (A) from "the velocity law is wrong" (A2).
+    B. Region attenuation ladder at vel 127 (above section A's knee):
+       SAW0_60 (000:081, authored 0.000 dB), BAGPP64A (000:109, -2.4965 dB),
+       PIANO64 (000:000, -6.700 dB), HCLAP60 (TR-808 kit, prog 25, key 39,
+       -4.300 dB). Raw gm.dls wsmp lAttenuation, re-verified directly against
+       the collection with dB = lAttenuation/655360: 0, -1636067, -4390912,
+       -2818048 respectively.
+    C. The same ladder at vel 32 (below the knee) -- the control that makes
+       B interpretable: if B's spread is collapsed and C's is not, the
+       ceiling is confirmed and bracketed between the two velocities.
+    D. Unequal-pair stacking: the per-voice pre-sum clamp only shows up when
+       two DIFFERENT levels are summed (identical levels above the ceiling
+       scale together and prove nothing either way).
+    E. Identical-voice stacking, N = 1/2/4/8, to separate a per-voice clamp
+       (predicts +6.02 dB per doubling, since the clamp does not prevent a
+       linear sum) from any limiting/clipping applied after the sum.
+    F. Single voice with total attenuation driven to zero (vel 127, CC7 127,
+       CC11 127) -- pins the raw-register mapping on its own.
+    G. The exact defect: TR-808 kit on MIDI channel 11 (0-based index 10),
+       declared a rhythm part via GS "USE FOR RHYTHM PART" block 0x0A (addr
+       byte 0x10+0x0A = 0x1A, block 0 = channel 10, blocks 1-9 = channels
+       1-9, blocks A-F = channels 11-16 -- probe 16/48 convention), key 39,
+       vel 126, then two velocity neighbours on the same voice to locate
+       HCLAP60's own knee.
+    """
+    tr = Track()
+    tr.sysex(0, GS_RESET)
+    clock = t(0.5)
+    man = ["# 50_gain_ceiling.mid",
+           "# HCLAP60 (wave 193): region has its own lart but no",
+           "# KEYONVELOCITY(2)->ATTENUATION(1) art1 connection block, and the",
+           "# instrument-level lart is absent too -- confirmed by walking gm.dls",
+           "# directly -- so it falls back to the engine's default -9600",
+           "# full-depth velocity law (velocity modulates it at full depth).",
+           "# onset\tsection\tch\tbank\tprog\tkey\tvel\tvoices\texpected"]
+
+    def emit(section, voices, desc, dur, gap):
+        """voices: list of (ch, bank_or_None, prog_or_None, key, vel,
+        cc7_or_None, cc11_or_None). All voices in one call share one onset,
+        i.e. they are one manifest case / one expected burst."""
+        nonlocal clock
+        onset = clock
+        for ch, bank, prog, key, vel, cc7, cc11 in voices:
+            if bank is not None:
+                tr.cc(clock, ch, 0, bank)
+                tr.cc(clock, ch, 32, 0)
+            if prog is not None:
+                tr.prog(clock + t(0.01), ch, prog)
+            if cc7 is not None:
+                tr.cc(clock, ch, 7, cc7)
+            if cc11 is not None:
+                tr.cc(clock, ch, 11, cc11)
+        for ch, bank, prog, key, vel, cc7, cc11 in voices:
+            tr.note(clock + t(0.05), dur, ch, key, vel)
+        man.append(f"{onset / TPS + 0.05:.3f}\t{section}\t"
+                   f"{','.join(str(v[0]) for v in voices)}\t"
+                   f"{','.join('-' if v[1] is None else str(v[1]) for v in voices)}\t"
+                   f"{','.join('-' if v[2] is None else str(v[2]) for v in voices)}\t"
+                   f"{','.join(str(v[3]) for v in voices)}\t"
+                   f"{','.join(str(v[4]) for v in voices)}\t"
+                   f"{len(voices)}\t{desc}")
+        clock += gap
+
+    MELODIC_DUR, DRUM_DUR = t(0.5), t(0.4)
+    GAP, DRUM_GAP, STACK_GAP, PAUSE = t(1.0), t(1.1), t(1.3), t(1.5)
+
+    # -- A: velocity knee sweep, GS Sine Wave, key 60, CC7=127/CC11=127 (NOT
+    # the GM defaults -- at 100/127 the top of the sweep never reaches the
+    # clamp, which is the defect this revision fixes; see A2 for the old
+    # settings kept as the unpinned control). Predicted knee: atten_hdb =
+    # g_table_vel[vel] - 384 must exceed -602 to pin, i.e. vel > 112.0. Dense
+    # from 104 up (4-unit steps) to bracket it.
+    for vel in (8, 16, 32, 48, 64, 80, 96, 104, 108, 112, 116, 120, 124, 127):
+        where = ("predicted ABOVE the knee (~vel112): must render FLAT, "
+                 "same level as every other vel>=112 case" if vel >= 112 else
+                 "predicted BELOW the knee (~vel112): must TRACK the "
+                 "velocity law, below the flat top")
+        emit("A", [(0, 8, 80, 60, vel, 127, 127)],
+             f"vel {vel}, CC7=127 CC11=127: {where}",
+             MELODIC_DUR, GAP)
+    clock += PAUSE
+
+    # -- A2: unpinned control -- same patch/key at the OLD GM-default
+    # CC7=100/CC11=127. Must TRACK with no flat top: predicted -4.86 dB
+    # (vel96), -2.18 dB (vel112), 0.00 dB (vel127), all relative to this
+    # section's own top (vel127). Contrasting this against A's pinned top is
+    # what separates "the ceiling exists" from "the velocity law is wrong".
+    for vel, exp_db in ((96, -4.86), (112, -2.18), (127, 0.00)):
+        emit("A2", [(0, 8, 80, 60, vel, 100, 127)],
+             f"vel {vel}, CC7=100 CC11=127 (unpinned control): predicted "
+             f"{exp_db:+.2f} dB vs this section's vel127 -- must TRACK, no "
+             "flat top",
+             MELODIC_DUR, GAP)
+    clock += PAUSE
+
+    # -- B/C: region attenuation ladder. Values re-verified directly against
+    # gm.dls (dB = lAttenuation / 655360); see docstring for the raw ints.
+    LADDER = [
+        (0, 81, 60, 0.0000, "SAW0_60 (000:081)"),
+        (0, 109, 60, -2.4965, "BAGPP64A (000:109)"),
+        (0, 0, 60, -6.7000, "PIANO64 (000:000)"),
+    ]
+    for bank, prog, key, db, label in LADDER:
+        emit("B", [(0, bank, prog, key, 127, 100, 127)],
+             f"{label} authored {db:+.4f} dB at vel127 (above the knee): a "
+             "ceiling collapses this ladder's spread to nothing; a scale "
+             "error preserves it",
+             MELODIC_DUR, GAP)
+    emit("B", [(9, None, 25, 39, 127, 100, 127)],
+         "HCLAP60 (TR-808 kit, prog25 key39) authored -4.3000 dB at vel127 "
+         "(above the knee): the exact defect instrument, same ladder test",
+         DRUM_DUR, DRUM_GAP)
+    clock += PAUSE
+
+    for bank, prog, key, db, label in LADDER:
+        emit("C", [(0, bank, prog, key, 32, 100, 127)],
+             f"{label} authored {db:+.4f} dB at vel32 (below the knee, "
+             "control): the true authored spacing should appear here, "
+             "unlike B -- this brackets the ceiling threshold",
+             MELODIC_DUR, GAP)
+    emit("C", [(9, None, 25, 39, 32, 100, 127)],
+         "HCLAP60 at vel32 (below the knee, control): true -4.3dB spacing "
+         "vs the other three should appear here, unlike B",
+         DRUM_DUR, DRUM_GAP)
+    clock += PAUSE
+
+    # -- D: unequal-pair stacking. The per-voice pre-sum clamp only shows up
+    # when two DIFFERENT levels are summed.
+    emit("D", [(0, 8, 80, 60, 127, 100, 127)],
+         "sine vel127 alone: anchor for the pair sum below", MELODIC_DUR, GAP)
+    emit("D", [(0, 8, 80, 60, 48, 100, 127)],
+         "sine vel48 alone: anchor for the pair sum below", MELODIC_DUR, GAP)
+    emit("D", [(0, 8, 80, 60, 127, 100, 127), (1, 8, 80, 60, 48, 100, 127)],
+         "sine vel127 + vel48 together: a 1:1 sum (both pinned) vs the "
+         "authored-ratio sum (unpinned) separates the ceiling",
+         MELODIC_DUR, STACK_GAP)
+    emit("D", [(0, 0, 81, 60, 127, 100, 127)],
+         "SAW0_60 (0.000 dB) alone: anchor for the unequal-attenuation pair "
+         "sum below", MELODIC_DUR, GAP)
+    emit("D", [(0, 0, 0, 60, 127, 100, 127)],
+         "PIANO64 (-6.700 dB) alone: anchor for the unequal-attenuation "
+         "pair sum below", MELODIC_DUR, GAP)
+    emit("D", [(0, 0, 81, 60, 127, 100, 127), (1, 0, 0, 60, 127, 100, 127)],
+         "SAW0_60 + PIANO64 together, both vel127: a 1:1 sum (both pinned) "
+         "vs the authored 6.7dB-ratio sum (unpinned) separates the ceiling",
+         MELODIC_DUR, STACK_GAP)
+    clock += PAUSE
+
+    # -- E: identical-voice stacking, N = 1/2/4/8. All GS Sine Wave, vel127,
+    # on distinct keys within ONE region (key 65-82, wave SINE_76) so every
+    # stacked voice shares the same authored attenuation, 2 semitones apart
+    # so the voices neither phase-cancel nor alias and stay individually
+    # resolvable in a spectrogram. A linear (unclamped-sum) mixer predicts
+    # +6.02 dB per doubling; a per-voice clamp that still sums linearly
+    # matches that, post-sum limiting/int16 clipping would not.
+    STACK_KEYS = (65, 67, 69, 71, 73, 75, 77, 79)
+    for n in (1, 2, 4, 8):
+        voices = [(0, 8, 80, k, 127, 100, 127) for k in STACK_KEYS[:n]]
+        emit("E", voices,
+             f"{n} identical sine voices summed: +6.02 dB per doubling is "
+             "the linear-mixer prediction (per-voice clamp still sums "
+             "linearly); post-sum limiting/clipping would flatten it",
+             MELODIC_DUR, STACK_GAP)
+    clock += PAUSE
+
+    # -- F: single voice with total attenuation driven to zero -- CC7 and
+    # CC11 both pushed to 127 (above section A's 100/127 defaults), so
+    # gain_linear -> 1.0, well above GAIN_CEILING. Pins the raw-register
+    # mapping independent of any summing behavior.
+    emit("F", [(0, 8, 80, 60, 127, 127, 127)],
+         "full-scale single voice (vel127, CC7=127, CC11=127): pins the "
+         "raw-register mapping on its own", MELODIC_DUR, GAP)
+    clock += PAUSE
+
+    # -- G: the exact defect. Block 0x0A -> MIDI channel 11 (0-based index
+    # 10): block 0 is channel 10, blocks 1-9 are channels 1-9, blocks A-F
+    # are channels 11-16 (probe 16/48 convention); addr byte = 0x10+block =
+    # 0x1A. No CC7/CC11 override here, so the defect conditions are exactly
+    # GS Reset + this one SysEx + program + key + velocity.
+    tr.sysex(clock, gs([0x40, 0x1A, 0x15], [0x02]))
+    clock += t(0.5)
+    for vel, desc in (
+        (126, "field defect velocity on MIDI channel 11 (0-based ch 10): "
+              "reproduces the +11dB-hot clap exactly as it occurs in "
+              "field/HueArme-Weekend"),
+        (100, "neighbour below the field velocity: locates HCLAP60's own "
+              "knee"),
+        (64, "further below: brackets HCLAP60's knee together with vel100 "
+             "and vel126"),
+    ):
+        emit("G", [(10, None, 25, 39, vel, None, None)], desc,
+             DRUM_DUR, DRUM_GAP)
+
+    return _write_manifest("50_gain_ceiling.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -2843,7 +3085,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p38_same_tick_locale, p39_high_sustain_decay, p40_same_tick_bank,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
           p44_release_shape, p45_release_from_level, p46_noteoff_grid,
-          p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note]
+          p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note,
+          p50_gain_ceiling]
 
 
 def check(path):

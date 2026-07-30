@@ -1,4 +1,4 @@
-/* wasm.c -- the freestanding wasm32 interface: the exported ABI (SPEC.md
+/* wasm.c -- the freestanding wasm32 interface: the exported ABI (SPEC.adoc
  * Part 1 S1.5.3), the bump allocator over this module's own linear memory,
  * and the libc-named mem* symbols the freestanding target has no libc for.
  *
@@ -173,7 +173,7 @@ void msgs_midi(uint32_t status, uint32_t d1, uint32_t d2) {
 }
 
 /* Temporary debug export for verifying the same-note retrigger fast-release
- * (SPEC.md S5.6/0x12ec6). Not part of the required 10-function ABI; harmless
+ * (SPEC.adoc S5.6/0x12ec6). Not part of the required 10-function ABI; harmless
  * to leave exported since it's additive and does not change any required
  * export's signature. Remove if a stricter export surface is desired. */
 WASM_EXPORT

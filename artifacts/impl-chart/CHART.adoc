@@ -368,12 +368,13 @@ controllers back to defaults. Bank/Program survive.
 // exactly like Fine Tuning — changing it does not retune a note already
 // sounding. Twelve data bytes are consumed, always starting at semitone
 // class C.
-| `40 1n 40`–`4B`
+| `40 1n 40`
 | Scale Tuning
 
 One signed offset per semitone class (C…B), centred on `40`, stored per Part `n`
-| Recognized. Twelve data bytes are consumed, always starting at semitone
-class C.
+| Recognized. This single address carries all twelve semitone offsets as
+its twelve data bytes, always starting at semitone class C. No other
+address in `41`–`4B` is recognized.
 | `40 1n` _any other_
 | Anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, …)
 | **Not individually implemented.**
@@ -396,7 +397,11 @@ Any `DT1` (or `RQ1`)
 message with an address outside the table above, or with a manufacturer
 ID other than `41`/`7E`/`7F`, is accepted and silently dropped.
 
-Fallthrough `40 1n xx..` messages ("not individually implemented") are instead consumed by the same 12-byte write that serves Scale Tuning, regardless of which parameter the address nominally names, and always starting at semitone class C. *A sequence intended to set, e.g., Reverb Macro or Part Level on real GS hardware will overwrite that Part's whole Scale Tuning table instead.*
+Fallthrough `40 1n xx` messages ("not individually implemented") are simply
+dropped, exactly like any other unrecognized address — they do **not**
+fall through into the Scale Tuning write. *A sequence intended to set,
+e.g., Reverb Macro or Part Level on real GS hardware does nothing here;
+it does not touch that Part's Scale Tuning table.*
 
 [#s3]
 == MIDI Implementation Chart

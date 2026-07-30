@@ -1,5 +1,5 @@
 /* voice.h -- voice pool, allocation, stealing, key-group choke, per-voice
- * parameters, envelopes. SPEC.md Part 5 (pool/steal/choke) + Part 3
+ * parameters, envelopes. SPEC.adoc Part 5 (pool/steal/choke) + Part 3
  * (per-voice parameter computation: pitch, envelopes, volume law, pan). */
 #ifndef VOICE_H
 #define VOICE_H
@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include "dls.h"
 
-/* BASE_RATE is the driver's own rate (SPEC.md S1.3/S6.1: single fixed rate,
+/* BASE_RATE is the driver's own rate (SPEC.adoc S1.3/S6.1: single fixed rate,
  * not a range), and is the rate every fitted constant in this engine was
  * measured against. RESAMPLE_FACTOR is how many times finer we render than
  * that; every rate-derived constant scales by it, so changing the engine's
@@ -57,15 +57,15 @@ _Static_assert(RENDER_RATE % BASE_RATE == 0 && RENDER_RATE >= BASE_RATE,
  * rate aliasing (probe 02 keys 125-127, the faffaee reference) is real,
  * audible, spec-relevant output; a non-multiple render rate smears the
  * fold into noise. Render at BASE_RATE and resample at the output stage. See
- * SPEC.md verification-ceiling / internal-rate invariant.
+ * SPEC.adoc verification-ceiling / internal-rate invariant.
  *
  * Raising RESAMPLE_FACTOR is itself a fidelity LOSS, not a gain: at factor 2
  * the Nyquist moves to 22050 and the 11025Hz fold probe 02 exists to capture
  * stops happening at all. The references have it; an oversampled render will
  * not. */
 
-#define NUM_VOICES 54 /* 48 primary + 6 reserve, SPEC.md S5.2 -- implemented
-                         here as one flat pool; see SPEC_GAPS.md for the
+#define NUM_VOICES 54 /* 48 primary + 6 reserve, SPEC.adoc S5.2 -- implemented
+                         here as one flat pool; see SPEC_LOG.adoc for the
                          48/6-split reserve-topup mechanic this simplifies
                          away. */
 
@@ -86,7 +86,7 @@ typedef struct Voice {
                              one sample at a time by render.c's render_voice
                              (see PITCH_RAMP_MS in voice.c);
                              never written directly outside voice_note_on's
-                             initial snap and that ramp step, SPEC.md S6.6 */
+                             initial snap and that ramp step, SPEC.adoc S6.6 */
     int32_t  bend_cents_applied; /* bend the in-flight ramp is aimed at; LFO and
                              EG2 changes are carried through instantly instead */
     uint32_t phase_step_target;  /* live target voice_update_pitch recomputes
@@ -99,7 +99,7 @@ typedef struct Voice {
                              by ramp_reaim when a bend moves the target, over a
                              FIXED horizon private to this voice -- not a
                              shared clock's period -- and held constant until
-                             ramp_left (below) expires, SPEC.md S6.6 */
+                             ramp_left (below) expires, SPEC.adoc S6.6 */
     int32_t  phase_step_ramp_acc;  /* leftover 1/256ths from the slope above,
                              carried sample to sample by render_voice */
     uint32_t ramp_left;    /* frames left on the current ramp; 0 = settled.
@@ -140,7 +140,7 @@ typedef struct Voice {
      * single straight line to zero, a longer one as a chain of linear chords of
      * its geometric curve, and a note-off landing mid-segment is not heard until
      * the segment START -- early, which is what probe 46 measures. See
-     * SPEC_GAPS.adoc item 21's resolution. */
+     * SPEC_LOG.adoc item 21's resolution. */
     uint32_t amp_left;            /* frames left in this segment; 0 = re-aim */
     double amp_l, amp_r;          /* applied amplitude, envelope x gain */
     double amp_step_l, amp_step_r;/* per-frame increment towards the target */
@@ -153,14 +153,14 @@ typedef struct Voice {
                                atten_const_hdb plus current channel vol/
                                expr/pan/master vol */
     int32_t atten_const_hdb; /* velocity attenuation + region/wsmp attenuation:
-                                 fixed for the voice's life (SPEC.md S3.5/
+                                 fixed for the voice's life (SPEC.adoc S3.5/
                                  S3.10); everything CC-driven is NOT baked in
                                  here, see voice_update_gain */
 
     EnvStage env_stage;
     double env_level;         /* 0..1 amplitude envelope multiplier */
     double env_attack_step;   /* linear increment per sample during attack */
-    double env_decay_coef;    /* SPEC.md S5.1.2.1: geometric per-sample ratio
+    double env_decay_coef;    /* SPEC.adoc S5.1.2.1: geometric per-sample ratio
                                   toward env_sustain_level (env_level *=
                                   env_decay_coef), same mechanism as
                                   env_release_coef below, NOT an approach-to-
@@ -169,7 +169,7 @@ typedef struct Voice {
                                   this coefficient asymptoting. */
     double env_release_coef;  /* multiplicative approach-to-zero coefficient */
     double env_sustain_level; /* 0..1 */
-    int32_t env_decay_samples_left; /* SPEC.md S5.1.2.1: exact countdown so the
+    int32_t env_decay_samples_left; /* SPEC.adoc S5.1.2.1: exact countdown so the
                                   decay ramp snaps to env_sustain_level AT the
                                   rescaled decay-to-sustain duration rather
                                   than relying on a threshold test (a nonzero-
@@ -177,7 +177,7 @@ typedef struct Voice {
                                   threshold the way an approach-to-zero one
                                   does). 0 while not in ENV_DECAY. */
 
-    /* EG2, the PITCH envelope. SPEC.md S2.4.3 documents `(usSource=5 EG2,
+    /* EG2, the PITCH envelope. SPEC.adoc S2.4.3 documents `(usSource=5 EG2,
      * usDestination=0x0003 PITCH)` as a real, dispatched connection
      * `[A:0x15838]`, and S2.4.4 confirms EG2 to any OTHER destination is
      * ignored -- so pitch is the one EG2 modulation this driver implements.
@@ -195,14 +195,14 @@ typedef struct Voice {
     int sustain_deferred;  /* CC64 held down at note-off time */
     uint32_t age;          /* allocation sequence number, for oldest-first steal */
 
-    int in_reserve;             /* SPEC.md S5.2/S5.3/S5.4 [A]: 1 while this
+    int in_reserve;             /* SPEC.adoc S5.2/S5.3/S5.4 [A]: 1 while this
                                     voice is a FREE (inactive) node currently
                                     tagged as belonging to the reserve tier;
                                     meaningless while active==1. Recycling
                                     always clears it back to 0 (primary) --
                                     S5.3 "both target primary only, never
                                     reserve". See voice_topup_reserve (voice.c). */
-    int fast_release_committed; /* SPEC.md S5.6 +0x138 [A]: 1 once this voice
+    int fast_release_committed; /* SPEC.adoc S5.6 +0x138 [A]: 1 once this voice
                                     has been committed to a fast release by
                                     ANY of the three fast-release callers
                                     (key-group choke, same-note retrigger, or
@@ -213,7 +213,7 @@ typedef struct Voice {
                                     call while still draining. Cleared at note
                                     setup (voice_note_on). */
 
-    /* Pitch LFO (vibrato), SPEC.md LFO section `[M: probe 06]`. lfo_freq_hz/
+    /* Pitch LFO (vibrato), SPEC.adoc LFO section `[M: probe 06]`. lfo_freq_hz/
      * lfo_delay_s are cached once at note-on from this voice's own artic
      * (region-specific, so different instruments vibrato at different
      * rates -- a per-instrument derivation, not a global constant).
@@ -233,7 +233,7 @@ extern uint32_t g_voice_age_counter;
 void voice_pool_reset(void);
 void voice_note_on(int channel, int note, int velocity);
 
-/* SPEC.md S5.4 [A] mechanism / [O] cadence: advances the top-up's own tick
+/* SPEC.adoc S5.4 [A] mechanism / [O] cadence: advances the top-up's own tick
  * clock by `frames` rendered samples and runs one top-up every
  * TOPUP_INTERVAL_FRAMES, standing in for the real driver's per-service-tick
  * (0x13054 -> 0x12bd6 -> 0x12b6a) cadence. The top-up tops the reserve tier
@@ -270,7 +270,7 @@ uint32_t voice_env_frames_to_change(const Voice *v);
 int voice_any_active(void);
 
 /* Recomputes v->phase_step from v->base_cents plus every live per-block
- * pitch modulation source (currently: pitch bend, SPEC.md S4.4; LFO and EG2
+ * pitch modulation source (currently: pitch bend, SPEC.adoc S4.4; LFO and EG2
  * are wired in as zero-contributing hooks for the next steps). This is the
  * ONLY place phase_step is computed -- voice_note_on calls it too, so
  * note-on and per-block recompute can never drift apart. */
@@ -285,7 +285,7 @@ void voices_update_modulation(void);
 /* Advances every active voice's pitch-LFO phase by `freq_hz * frames/RENDER_RATE`
  * cycles (wrapped to [0,1)), gated on each voice's own lfo_delay_s so the
  * oscillator's phase=0 start lines up with the end of the start-delay, not
- * note-on. Called by render.c once per sub-chunk (SPEC.md LFO section
+ * note-on. Called by render.c once per sub-chunk (SPEC.adoc LFO section
  * `[M: probe 06]`) so a held note's vibrato actually oscillates instead of
  * freezing at one per-block value for a long event-free chunk. */
 void voice_ramp_tick(uint32_t frames); /* retire pitch ramps whose horizon has
@@ -296,7 +296,7 @@ void voices_advance_lfo(uint32_t frames);
 /* Recomputes v->gain_l/v->gain_r from v->atten_const_hdb (the fixed velocity+
  * region attenuation baked in at note-on) plus every live gain source: g_
  * master_vol_hdb and the owning channel's current volume(CC7)/expression
- * (CC11)/pan(CC10), SPEC.md S3.5 (squared volume law via g_table_vel), S3.10
+ * (CC11)/pan(CC10), SPEC.adoc S3.5 (squared volume law via g_table_vel), S3.10
  * (attenuation sum), S3.6 (pan law). This is the ONLY place gain_l/gain_r are
  * computed -- voice_note_on calls it too, mirroring voice_update_pitch. */
 void voice_update_gain(Voice *v);

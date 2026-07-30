@@ -1,5 +1,5 @@
 /* rt.h -- runtime primitives the core synth needs.
- * SPEC.md Part 1 S1.5.1: "the module must provide, itself, whatever runtime
+ * SPEC.adoc Part 1 S1.5.1: "the module must provide, itself, whatever runtime
  * primitives it needs: memcpy, memset, pow, log10, sqrt, sin, and a bump
  * allocator."
  *
@@ -14,7 +14,7 @@
 #include <stddef.h>
 
 /* math primitives, plain IEEE-754 double, not bit-exact vs MSVC CRT
- * (SPEC.md S1.4.3: not required to be -- margin is >1.3M ULP on gm.dls). */
+ * (SPEC.adoc S1.4.3: not required to be -- margin is >1.3M ULP on gm.dls). */
 double rt_pow(double base, double exponent);
 double rt_log(double x);
 double rt_log10(double x);

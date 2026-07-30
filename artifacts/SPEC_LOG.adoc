@@ -18,7 +18,7 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item36`) are discrepancies and gaps between
+throughout: **items** (`item1`…`item38`) are discrepancies and gaps between
 `SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
@@ -190,6 +190,679 @@ are history, not current measurements.
 
 '''
 
+[#item39]
+== 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; expression is cut to 0 forty-four ms later, which is an untested candidate for the level discrepancy — item39
+
+Two loose ends closed by direct measurement, and one new candidate mechanism
+recorded so it is not lost.
+
+=== The note-on exists
+
+An earlier pass reported that it could not locate a key-39 velocity-126
+note-on near 77.5456 s on the rhythm channel, and offered a nearby
+`CC11 = 0` at ≈77.456 s as the closest event. That reading was wrong. Parsing
+the file directly — format 1, 19 tracks, division 960, three tempo changes,
+tick→seconds resolved through the full tempo map — the note-on is there:
+
+|===
+| time | channel | event
+
+| 77.5482 s | 11 | note-on key 39 velocity 126 — the clap
+| 77.5482 s | 11 | note-on key 42 velocity 117 — struck on the same tick
+| 77.5482 s | 11 | `CC11 = 127`
+| 77.5482 s | 11 | pitch bend 13030 (above centre)
+| 77.5703 s | 11 | pitch bend 3418
+| 77.5923 s | 11 | `CC11 = 0`
+| 77.6364 s | 11 | note-off keys 39 and 42
+|===
+
+That is 2.6 ms from the 77.5456 s figure carried by the previous entries, so
+the instant and the voice identification both stand. The file contains 2119
+key-39 note-ons across twelve channels; the one on channel 11 at 77.5482 s is
+unique within ±0.35 s.
+
+=== Candidate mechanism for the ~11 dB level error: `[O]`
+
+Expression on the rhythm channel is driven `127` at the note-on and `0`
+**44 ms later**, while the voice is still sounding — the note-off does not
+arrive until 77.6364 s, a further 44 ms after that. The reference's burst
+prominence is +3.0 dB against slopgs's +14.2 dB, and a mid-note expression
+collapse is the right shape to produce exactly that: the real synth's clap is
+cut off part-way through its decay, slopgs's is not.
+
+This is a hypothesis, not a finding. It has not been measured, and it is
+independent of the per-voice ceiling that xref:#item35-followup-probe50[probe
+50] tests — both could be contributing. What makes it worth chasing before
+another gain-scale pass: `CC11` here is toggled on a *sounding* drum voice,
+which is the one case probe 28 (expression gate) does not cover, and the
+engine's `CC11` handling reaches the voice through the smoothed
+`voice_update_gain()` path rather than being latched at note-on. If slopgs
+applies that collapse more slowly than the driver, or applies it to the
+target rather than the current gain, the tail survives and the burst reads
+hotter. **Status: `[O]`, not implemented, no engine change made.**
+
+=== `GAIN_TRIM_DB` has been exercised, and the result was negative
+
+`GAIN_TRIM_DB` (`voice.c`) defaults to `0.0` and no entry recorded that it
+had ever been tried. It has been. A uniform `-1.7` dB trim was measured
+against the 18-item corpus and made both the target item and the mean worse:
+
+|===
+| build | HueArme-Weekend `r` | HueArme residual | MEAN `r` | MEAN residual
+
+| `GAIN_TRIM_DB = 0.0` (shipped) | 0.766 | −19.38 dB | 0.837 | −21.94 dB
+| `GAIN_TRIM_DB = -1.7` | 0.756 | −19.15 dB | 0.831 | −21.42 dB
+|===
+
+Recorded so the experiment is not repeated. It also demonstrates the point
+xref:#item35-followup-probe50[probe 50] is built on: the metric is
+level-normalised, so a uniform offset cannot express a shape error and this
+class of fix cannot work.
+
+'''
+
+[#item35-followup-probe50]
+== 2026-07-30 — Probe 50 (`50_gain_ceiling`) finalized to eight sections; attached to xref:#item35[Item 35], reference still not recorded
+
+This is not a new discrepancy. It is a measurement instrument attached to
+the still-open xref:#item35[Item 35] (the `+1200` constant and the `[O]`
+hundredths-of-a-dB-to-raw-Q16-gain-register mapping it interacts with).
+Nothing is settled by this entry: `artifacts/probe-results/` holds nothing
+but a `README.txt`, so probe 50 has no reference render and no score. This
+entry exists so recording that reference later is mechanical, not so the
+design has to be re-derived from the MIDI bytes.
+
+`p50_gain_ceiling()` carries all eight sections (A/A2/B/C/D/E/F/G, detailed
+below), including the defect case itself as section G, so there is no
+separate clap probe: `artifacts/probes/` holds no `51_*` file and none is
+wanted.
+
+=== Why a uniform trim cannot settle this
+
+`field/HueArme-Weekend` at 77.5456 s renders `gm.dls` wave 193 `HCLAP60`
+(TR-808 kit hand clap, channel 11 declared a rhythm part by GS SysEx, key
+39, velocity 126, program 25) at a burst prominence of **+14.2 dB** against
+the real MSGS reference's **+3.0 dB** — a correctly-selected sample (checked
+against the disassembly) about 11 dB too prominent. A uniform global trim
+was tried and failed: `score.py`'s metric is level-normalised, so a constant
+offset is invisible to it. The probe is shaped to find something a trim
+cannot: a *shape* difference in level-vs-parameter, not an offset.
+
+=== The mechanism, verified against `src/engine/voice.c`
+
+`voice_update_gain()` (`voice.c:827-846`):
+
+[source,c]
+----
+int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr + v->atten_const_hdb;
+double gain_linear = rt_pow(10.0, ((double)atten_hdb/100.0 + GAIN_TRIM_DB)/20.0);  // :835
+// ... pan law computes gainA_hdb/gainB_hdb from g_table_lin, applied to gain_l/r ...
+if (v->gain_l_target > GAIN_CEILING) v->gain_l_target = GAIN_CEILING;              // :844
+if (v->gain_r_target > GAIN_CEILING) v->gain_r_target = GAIN_CEILING;              // :845
+----
+
+with `GAIN_CEILING = 32767.0/65536.0` (`voice.c:816`, ≈0.499985 per the
+constant's own comment there) and `v->atten_const_hdb` (velocity
+attenuation + region/wsmp attenuation) latched once at note-on. `g_table_vel`
+(`tables.c:40-46`) is confirmed by direct read to be exactly `g_table_vel[i]
+= trunc(1000·log10((i/127)^4))`, hundredths of a dB.
+
+Two facts, both confirmed by this read, shape the probe:
+
+* The clamp is **per-voice and pre-sum**. Stacking IDENTICAL voices cannot
+  separate a ceiling from a scale error (they scale together); only
+  stacking voices at DIFFERENT authored levels can, because two pinned
+  voices sum 1:1 while two unpinned voices sum in their true ratio.
+* At zero total attenuation `gain_linear = 1.0`, already double
+  `GAIN_CEILING` — the clamp is live in ordinary loud playing, not a rare
+  edge case.
+
+=== The discriminating principle
+
+Because the metric is level-normalised, only the *shape* of
+level-vs-parameter survives a comparison; a global offset cannot move
+shape. The normalisation-invariant features are: (a) the velocity knee
+where a voice stops tracking and pins, (b) the width of the resulting flat
+top, and (c) whether an authored-attenuation ladder COLLAPSES (ceiling) or
+is MULTIPLIED (scale error). Every section below reads one of those three.
+
+=== Pre-reference self-check, slopgs only — confirms the probe exercises what it claims
+
+Section A (Sine Wave `008:080`, key 60, CC7=127/CC11=127), RMS per case, dB
+relative to the section's loudest `[M: this engine, no reference]`:
+
+[options="header"]
+|===
+| vel | 8 | 16 | 32 | 48 | 64 | 80 | 96 | 104 | 108 | 112 | 116 | 120 | 124 | 127
+| dB | −45.180 | −33.083 | −21.028 | −13.986 | −8.985 | −5.105 | −1.945 | −0.554 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000
+|===
+
+Flat top vel 108-127, identical to 0.0003 dB; clean tracking at and below
+104; knee bracketed between 104 and 108. Section A2 (same patch, unpinned
+control at CC7=100) measures vel 96/112/127 at −4.860 / −2.180 / 0.000 dB,
+matching the pure velocity-law prediction (−4.86 / −2.18 / 0.00) exactly,
+with no flat top — the contrast that separates "a ceiling exists" (A) from
+"the velocity law is wrong" (A2).
+
+=== The `008:080` region's authored attenuation — resolved to `-314` hundredths of a dB
+
+The region attenuation is **`-314` hundredths of a dB (-3.14 dB)**, read
+directly from `dist/gm.dls`: the key-60 region's `wsmp.lAttenuation =
+-2057774` (RIFF `lins`/`ins `/`lrgn`/`rgn `/`wsmp` walk, bank locale `0x800`
+= MSB 8/LSB 0 — confirmed to be the right locale by re-deriving
+`dls.c:351-352`'s own `(ulbank&0x7f00)<<6` encoding from the raw `insh` bank
+field and getting the same `0x20000` the engine computes from `bank_msb=8`),
+found 3 times in the file:
+
+    python3 -c "
+    import struct
+    d=open('dist/gm.dls','rb').read()
+    print(d.count(struct.pack('<i',-2057774)), -2057774/655360.0, (-2057774*10)>>16)
+    "
+    # -> 3 -3.1399139404296874 -314
+
+Per the `/655360` convention (cross-reference xref:#item38[Item 38]): dB
+`= -2057774/655360 = -3.1399`, hdb `(lAttenuation*10)>>16 = -314`. The
+retired `/65536` tenths reading would misread this same raw value as
+`-31.4 dB`.
+
+A previously-recorded `-384` hundredths of a dB (-3.84 dB) figure is
+**retired: it was never a valid measurement.** It came from fitting section
+A2's measured relative levels against the gain model, but A2's levels are
+relative within one section at a fixed CC7/CC11, and nothing in A2 is
+pinned, so each case's level is `g_table_vel[vel] + R` for a common `R`.
+Differencing cases (which is what "relative levels" does) cancels `R`
+entirely, so A2's measured -4.860 / -2.180 / 0.000 dB match the
+velocity-law prediction for *any* value of `R`:
+
+    python3 -c "
+    import math
+    tv=lambda i: int(1000*math.log10((i/127.0)**4)) if i else -9600
+    print([round((tv(v)-tv(127))/100.0,3) for v in (96,112,127)])
+    "
+    # -> [-4.86, -2.18, 0.0], with no R term present at all
+
+The fit had zero sensitivity to the quantity it claimed to determine; its
+apparent exact reproduction of A2 was vacuous, not confirmation.
+
+The knee bracket, unlike A2, does have sensitivity to `R` and it selects
+`-314`. With CC7=127/CC11=127 the pin threshold is `atten_hdb > -602`
+(`2000·log10(0.499985)`):
+
+    python3 -c "
+    import math
+    tv=lambda i: int(1000*math.log10((i/127.0)**4)) if i else -9600
+    for R in (-314,-384):
+        print(R, [v for v in range(1,128) if tv(v)+R > -602][0])
+    "
+    # -> -314 108
+    # -> -384 113
+
+`R = -314` predicts the knee pins from velocity 108 up, matching Section A's
+observed bracket (104 tracking, 108 flat) exactly, with no correction term
+needed. `R = -384` predicts the knee pins from velocity 113 up, which would
+leave 108 and 112 tracking — contradicted by the measurement, which shows
+108 already fully flat.
+
+=== The real `gm.dls` regions the probe sweeps (sections B/C/D/G)
+
+`dB = lAttenuation / 655360`; the stored engine field is
+`(lAttenuation*10)>>16` hundredths — the `/65536` tenths reading is retired,
+see xref:#item38[Item 38]; this cross-reference is here so nobody
+reintroduces it.
+
+[options="header"]
+|===
+| Instrument | Wave | Key | Raw `lAttenuation` | Authored dB | Confirmed against `gm.dls` this entry
+| drum prog 25 (TR-808) | `HCLAP60` (wave 193) | 39 | `-2818048` | -4.300 | yes, exact
+| `000:081` Lead 2 Sawtooth | `SAW0_60` | 60 | `0` | 0.000 | yes, exact
+| `000:109` Bagpipe | `BAGPP64A` | 60 | `-1636067` | -2.4965 | yes (naive `/655360`; the engine's own truncating hdb read is `-2.50`, consistent with xref:#item38[Item 38]'s distinction, not a new discrepancy)
+| `000:000` Acoustic Grand Piano | `PIANO64` | 60 | `-4390912` | -6.700 | yes, exact
+|===
+
+`HCLAP60`'s region carries no `KEYONVELOCITY`→`ATTENUATION` `art1`
+connection (confirmed by walking `gm.dls` directly, instrument-level `lart`
+absent too), so it falls back to the engine's default `-9600` full-depth
+velocity law — velocity modulates the clap at full depth. The authored
+spread across those four regions is only 6.7 dB, which is why the velocity
+sweep (section A), not the region ladder, carries most of the discriminating
+power.
+
+=== What each section decides — verified against `50_gain_ceiling.manifest.tsv` and `p50_gain_ceiling()`
+
+[options="header"]
+|===
+| Section | Discriminates
+| A | Velocity knee sweep, Sine Wave `008:080`, CC7=127/CC11=127, 14 velocities. Knee position and flat-top width — the single strongest discriminator.
+| A2 | Same patch at CC7=100, 3 velocities — the unpinned control. Separates "a ceiling exists" from "the velocity law is wrong."
+| B | Region-attenuation ladder (`SAW0_60`/`BAGPP64A`/`PIANO64`/`HCLAP60`) at velocity 127, above the knee. Whether the authored spread collapses (ceiling) or is multiplied (scale error).
+| C | The same ladder at velocity 32, below the knee — the control that makes B interpretable and brackets the threshold.
+| D | Unequal-pair stacking (sine vel127+vel48; `SAW0_60`+`PIANO64` both vel127). Whether a loud+quiet pair sums 1:1 (both pinned) or in the authored ratio (unpinned).
+| E | Identical-voice stacking, N = 1/2/4/8. Post-sum limiting or int16 clipping; a linear engine predicts +6.02 dB per doubling.
+| F | Single-voice full-scale (vel127, CC7=127, CC11=127). Pins the raw-register mapping independent of any summing.
+| G | The exact defect case (TR-808 clap, rhythm channel via GS SysEx, key 39, vel 126) plus two velocity neighbours (100, 64). Locates the clap's own knee — the thing running 11 dB hot in the field.
+|===
+
+=== To record
+
+**`artifacts/probe-results/50.flac`**, matched by `score.py` to
+`artifacts/probes/50_gain_ceiling.mid` (52.15 s).
+
+=== One known characteristic, stated plainly
+
+In sections B and D, the `PIANO64` case's release does not decay to true
+digital zero within the inter-case gap — it lingers around −59 dBFS — so an
+automated silence-detector can merge that case with the following one.
+Segmentation should use the manifest's onset times, which are exact, rather
+than silence detection. This is a property of the piano region's release,
+not a generation defect.
+
+xref:#item35[Item 35] remains `[O]`. Nothing here is settled: the probe is
+an instrument, not a result.
+
+'''
+
+[#item38]
+== 2026-07-30 — `attenuation_tenth_db` actually stores hundredths of a dB, not tenths; arithmetic unchanged, renamed to `attenuation_hdb`; retires item4's unit-mismatch premise — item38
+
+**Path:** `src/engine/dls.h` (field declared, wave scope line 18 / region
+scope line 100), `src/engine/dls.c` (field produced, lines 53/108/251/285),
+`src/engine/voice.c` (field consumed, line 1220; comment block lines
+1200-1219) vs. xref:SPEC.adoc#s1-4-4[S1.4.4], xref:SPEC.adoc#s2-4-2[S2.4.2],
+xref:SPEC.adoc#s3-10[S3.10].
+
+**Finding.** The field is misnamed. It holds hundredths of a dB, not
+tenths. The arithmetic that produces and consumes it is already correct;
+nothing about the gain chain changes. This is a naming and unit-record
+correction only.
+
+=== 1. The unit chain, stated precisely
+
+* On disk, DLS `wsmp` `lAttenuation` / `art1` `lScale` is 16.16 fixed point
+  whose INTEGER part is in units of 0.1 dB (centibels): 1 LSB = 1/655360 dB,
+  so `lScale/65536` is tenths of a dB.
+* The driver's conversion is `(lScale * 10) >>arith 16` `[A:0x158a4]`, i.e.
+  `lScale*10/65536 = (lScale/655360)*100` -- hundredths of a dB.
+* So the on-disk fixed-point UNIT is 0.1 dB per integer step, but the
+  STORED, CONVERTED field is hundredths. Both statements are true of
+  different things; conflating them is the whole bug in the record, and is
+  exactly what produced xref:#item4[Item 4]'s false premise below.
+
+=== 2. Numeric confirmation
+
+[source,console]
+----
+$ python3 -c "
+for l in (-4390912,-2818048,-62914560):
+    f=(l*10)>>16
+    print(l, f, l/655360, f/100, f/10)
+"
+-4390912 -670 -6.7 -6.7 -67.0
+-2818048 -430 -4.3 -4.3 -43.0
+-62914560 -9600 -96.0 -96.0 -960.0
+----
+
+`lAttenuation = -4390912` (``gm.dls``'s Acoustic Grand Piano key-60 region,
+already cited by `SPEC.adoc`) converts to field `-670`; both `/655360`
+(raw) and `field/100` agree at `-6.700` dB; `field/10` gives the wrong
+`-67.000` dB. `-62914560` -> `-9600` -> `-96.00` dB, the canonical 16-bit
+silence floor. `-2818048` -> `-430` -> `-4.30` dB.
+
+=== 3. Producer and consumer are already self-consistent -- this confirms the rename is safe, not a bugfix
+
+`src/engine/dls.c:108` and `:285` produce the field with `(latten*10)>>16`
+(wave scope and region scope respectively); `:53` and `:251` zero-initialise
+it. `src/engine/voice.c:1220`, the only consumer: `v->atten_const_hdb =
+scaled + (int32_t)r->attenuation_tenth_db;` -- adds the field straight into
+an accumulator whose own name says hundredths (`_hdb`), with NO `*10`
+conversion. That accumulator (`atten_hdb`, built at `voice.c:831`) is
+divided by 100 at `voice.c:835` (`((double)atten_hdb / 100.0 + GAIN_TRIM_DB)
+/ 20.0` feeding `10^x`) before the dB-to-linear conversion. Producer and
+consumer are both hundredths, end to end. Zero behavior change from the
+rename.
+
+=== 4. The false trail -- confirmed NOT in this repository
+
+I was told a prior worker had read the region "mute" sentinels as -349 to
+-960 **dB** and concluded a hidden compensating error must exist elsewhere
+in the gain chain, and was asked to retire that narrative. Word-anchored
+grep of `SPEC.adoc`, `SPEC_LOG.adoc` and `src/` for `-349`, `349`, `-960`,
+`960`, `mute`, `sentinel`, `compensat`, `silence floor` finds no trace of
+that narrative anywhere in this tree. What those greps actually turn up:
+the `-349`/`349` hits are an unrelated playback-drift timing figure
+(`SPEC_LOG.adoc:2422`, milliseconds, not dB); the `compensat` hits are
+xref:#item35[Item 35]'s real, separate, still-open `+1200` attenuation
+constant (a genuine "compensated somewhere downstream" note about a
+DIFFERENT quantity); every `-9600`/`sentinel` hit is the already-documented
+velocity-depth/silence-floor sentinel `[D:gm.dls]`/`[A:0x1684c]`, never
+described anywhere as "-349 to -960 dB." That narrative is simply not on
+record in this repository -- do not write it up as though it were, and do
+not invent a citation for it going forward. "We looked and it is not
+there" is itself the useful finding for the next pass.
+
+=== 5. xref:#item4[Item 4] is retired
+
+What IS on record, resting on the SAME root misconception (reading the
+conversion formula's OUTPUT as tenths), is xref:#item4[Item 4]. It called
+`region.attenuation` "confirmed *tenths*-of-a-dB"; it stated `lAttenuation =
+-4390912` raw "i.e. `-670` tenths-of-dB = -67.0 dB exactly" -- wrong, `-670`
+is hundredths, `-6.70` dB (section 2 above); and it framed S3.10's sum as a
+genuine unit MISMATCH needing a conversion, settling which of two readings
+to ship by an empirical plausibility argument about output level. It was
+also internally inconsistent: two paragraphs after "-670 tenths = -67.0 dB
+exactly," the same entry says the `x10` reading would put the piano region
+"roughly 600 dB down instead of 6.7 dB" -- which already contradicts its own
+earlier arithmetic.
+
+There was never a unit mismatch. Both addends were already hundredths.
+Item 4 reached the RIGHT implementation (the literal, no-`x10` sum, which is
+what ships) for the WRONG reason, and its "two competing readings" framing
+should not be inherited by a future pass -- there is only one reading. The
+`x10` alternative it weighed was never a candidate; it was the mistake.
+xref:#item4[Item 4] is retired, superseded by this item; its text is kept
+as recorded, marked at its own heading.
+
+The same misconception is repeated in `src/engine/voice.c` lines 1200-1219's
+comment block (the "tested BOTH readings" / "not plausibly how a
+widely-deployed default OS synth sounds" reasoning), and line 1204 states
+outright "region.attenuation_tenth_db is stored in tenths of a dB" --
+named here as a location the engine stage must correct alongside the
+rename.
+
+=== 6. `SPEC.adoc` passages the SPEC stage must correct (not edited here)
+
+* `SPEC.adoc:454` -- "**Centibel (0.1 dB per unit) units** for the
+  attenuation-style `art1` connections and for the `wsmp` attenuation
+  field: `(lScale · 10) >>arith 16`" -- labels the on-disk unit while the
+  formula's result is hundredths; the same bullet (~line 477) already
+  correctly concludes `-670` is `-6.70 dB` (divide by 100), so the passage
+  contradicts itself.
+* `SPEC.adoc:981` -- "**Attenuation-style (0.1 dB units)**: `(lScale * 10)
+  >>arith 16`" -- the same conflation, with no self-correcting tail nearby
+  in xref:SPEC.adoc#s2-4-2[§2.4.2].
+* `SPEC.adoc:1592` -- the wave/region field table row "`wsmp` attenuation
+  (region-level, 0.1 dB WORD)" -- the stored WORD is hundredths.
+* `SPEC.adoc:2435` and `SPEC.adoc:5821` -- checked; these are correct as
+  written, do not "fix" them. Both sit inside Appendix T.2, describing the
+  velocity->attenuation table (`table[v]/100.0`, unambiguously hundredths,
+  confirmed correct), and both merely caution against applying the wrong
+  divisor to THIS table by gesturing at "a different, tenths-of-a-dB
+  table/unit ... elsewhere in this driver." Neither asserts a specific
+  numeric unit claim about the converted `wsmp`/`art1` field itself, so
+  neither repeats the item4/454/981 error -- they read consistently with
+  the raw on-disk fixed-point format (0.1 dB per LSB) they are loosely
+  pointing at.
+* `SPEC_LOG.adoc:3449` (the "gain law double-counting" entry) cross-
+  references xref:#item4[Item 4] by name as "the tenths-vs-hundredths
+  question" -- needs a pointer added to this item (item38) whenever a
+  future pass next touches that entry; not edited here, to keep this pass's
+  diff to the assigned entry only.
+
+=== 7. The rename
+
+Planned: `attenuation_tenth_db` -> `attenuation_hdb`, matching this
+codebase's established `_hdb` suffix (`atten_const_hdb`,
+`g_master_vol_hdb`). Word-anchored count, verified:
+
+[source,console]
+----
+$ grep -rho '\battenuation_tenth_db\b' src/ | wc -l
+8
+$ grep -rho '\battenuation_tenth_db\b' artifacts/*.adoc | wc -l
+0
+----
+
+8 occurrences in `src/` (`dls.h:18,100`; `dls.c:53,108,251,285`;
+`voice.c:1204,1220`), 0 in `artifacts/*.adoc`.
+
+=== 8. Corpus expectation
+
+Bit-identical. The most recent recorded corpus mean (xref:#item36[Item
+36]'s table above) is **r 0.837 / -21.94 dB**; a pure rename with unchanged
+arithmetic cannot move this. If a future engine-stage pass shows it moving,
+that is a sign a bug was introduced by the rename, and the pass must stop
+and report rather than proceed.
+
+=== 9. Why this needs a log entry at all
+
+A pure rename with already-correct arithmetic would ordinarily be a
+documentation fix needing no `SPEC_LOG` entry (`CLAUDE.adoc`'s exception for
+bringing a document back into agreement with an unchanged `SPEC.adoc`). Two
+things here are NOT that: `SPEC.adoc` itself carries a genuine unit-record
+error (section 6 above) that, as written, would lead a fresh implementer to
+a 10x error -- that is a correction to `SPEC.adoc`, not just to `src/`; and
+xref:#item4[Item 4]'s false premise needed retiring on the record so a
+future pass doesn't re-litigate a "two competing readings" question that
+never existed. No behavior change is claimed anywhere in this item.
+
+'''
+
+[#item37]
+== 2026-07-30 — The Roland `DT1` GS-mode gate is three per-handler tests, not one; `40 1n 40` GS Scale Tuning matches exactly, not the whole `40 1x` family; the engine stored `USE RHYTHM PART` ungated — item37, SHIPPED
+
+**Status: SHIPPED.** All VMAs below are `[A]`, confirmed against
+`objdump -d artifacts/swmidi.sys`. The single-guard fix in section 4 ships
+in `src/engine/synth.c` in this pass.
+
+**Path:** `SPEC.adoc` xref:SPEC.adoc#s4-5[§4.5] (SysEx table, the `40 1x yy`
+row and its converging-triggers prose) and xref:SPEC.adoc#s4-2-2[§4.2.2]
+(the `device+0xfbc`/`device+0xf54` field-table rows and the "7 sites total"
+count) vs. direct disassembly of the `DT1` dispatcher, entry `0x1367a`,
+Roland arm `0x1370a`.
+
+=== 1. The dispatcher folds three address bytes into one key and matches exactly four values
+
+Length is checked `>= 0xb` at `0x1370a`, model id `0x42` at byte 3
+`[A:0x13717]`, command id `0x12` at byte 4 `[A:0x13721]`. The three address
+bytes are then folded into one key and walked by successive subtraction,
+not a table:
+
+[source,c]
+----
+// address bytes: a0 = buf[5], a1 = buf[6], a2 = buf[7]
+part = a1 & 0x0f;                                    // 0x1373c
+key  = (a0 << 16) | ((a1 & 0xf0) << 8) | a2;         // 0x1372b - 0x13748
+switch (key) {
+case 0x40007F: goto gs_reset;       // 0x1374a, je 0x137ea
+case 0x401002: goto rcv_channel;    // 0x13756, je 0x137b7
+case 0x401015: goto use_rhythm;     // 0x1375e, je 0x137a2
+case 0x401040: goto scale_tuning;   // 0x13763, fallthrough to 0x1376c
+default:       goto drop;           // 0x13766, jne 0x13818
+}
+----
+
+The key masks `a1` with `0xf0`, so any block nibble `0x10`-`0x1f` matches the
+same three per-part cases identically (that is the intended per-Part
+addressing); `a2` is compared exactly, with no masking at all. Confirmed by
+direct read of `0x1367a`-`0x13822`: the four `sub`/`je` steps' operands
+(`0x40007f`, `0xf83`, `0x13`, `0x2b`) are cumulative, i.e. `0x40007f`,
+`0x40007f+0xf83=0x401002`, `+0x13=0x401015`, `+0x2b=0x401040` — exactly the
+four keys above.
+
+=== 2. The GS-mode gate is three separate per-handler tests, never one block-wide test
+
+`device+0xf54` is tested separately in front of each of the three per-part
+handlers:
+
+[source,c]
+----
+gs_reset:                           // 0x137ea -- NOT gated; this is what SETS the flag
+    ResetDevice();                  // 0x137ec
+    device->gs_mode = 1;            // 0x137f4
+    goto reset_tail;                // falls through to 0x137fa
+
+rcv_channel:
+    if (device->gs_mode == 0)       // 0x137b7
+        goto drop;                  // 0x137be
+    ...                             // 0x137c0 - 0x137d0, re-dispatch via 0x16c7e
+
+use_rhythm:
+    if (device->gs_mode == 0)       // 0x137a2
+        goto drop;                  // 0x137a9
+    device->useRhythmPart[part] = buf[8];  // 0x137ae
+    goto reset_tail;                // 0x137b5
+
+scale_tuning:
+    i = 0;                                     // 0x1376c
+    if (device->gs_mode == i)                  // 0x1376e -- compares against a zeroed reg
+        goto drop;                             // 0x13774
+    do {
+        if (buf[9 + i] & 0x80)                 // 0x1377a
+            goto drop;                         // jne 0x13818
+        val = buf[8 + i] - 0x40;               // 0x13785, 0x1378a
+        device->scaleTuning[part][i] = val;    // 0x13797, index part*12 + i
+        i++;                                   // 0x13793
+    } while (i < 12);                          // 0x13794, jl 0x1377a
+----
+
+Worth recording precisely because the encodings differ even though the
+semantics don't: the Scale Tuning gate at `0x1376e` is `cmp %ecx,0xf54(%edi)`
+against a register just zeroed at `0x1376c` (`xor %ecx,%ecx`), not a
+`cmpl $0x0,...` immediate compare like the other two gates at `0x137a2` and
+`0x137b7`. A future pass grepping only for the immediate form would
+undercount the gates by one. This is also where xref:#item36[Item 36]'s "GS
+Scale Tuning is confirmed live but not implemented" connects: the 12-entry
+grid it names is written by exactly this `scale_tuning` arm, and that write
+is gated on `device+0xf54` the same way the other two per-part handlers are
+— a fact xref:SPEC.adoc#s4-5[§4.5]'s row for it did not state (see below).
+
+The `drop` target `0x13818` returns success (`1`) `[A:0x1381a]` and skips
+BOTH the handler body and the shared reset tail at `0x137fa`. So with GS
+mode off, a dropped `USE RHYTHM PART` performs no store AND fires no
+controller reset — confirmed directly: `0x137a9`'s `je 0x13818` jumps past
+both the store at `0x137ae` and the tail entry at `0x137fa`.
+
+Neither the Universal SysEx arms nor Master Volume are gated on
+`device+0xf54` at all: `0x7E` GM System On/Off `[A:0x136d5]` and `0x7F`
+Master Volume `[A:0x136ae]` run unconditionally — confirmed by direct read
+of `0x136a2`-`0x1370a`, which contains no reference to `0xf54` on either
+path.
+
+=== 3. What this corrects in `SPEC.adoc` (to be applied at the SPEC.adoc stage)
+
+. xref:SPEC.adoc#s4-5[§4.5]'s `40 1x yy` row (any-other-address family
+  fallthrough) is wrong: the address must be exactly `40 1x 40`, per the
+  four-way exact-key switch in section 1 above. Any other `a2` value in the
+  `40 1x` family falls to the `0x13818` no-op, not to the tuning-grid write.
+  The row's own gate citation `[A:0x1376c]` is also wrong instruction: that
+  address is the `xor` that zeroes the comparand, not the compare itself —
+  the gate is `[A:0x1376e]`.
+. xref:SPEC.adoc#s4-2-2[§4.2.2]'s `device+0xfbc` row repeats the same "GS
+  `DT1` fallthrough case (any address not matched as GS Reset/RCV
+  CHANNEL/USE RHYTHM PART)" error and needs the same `40 1x 40`/`0x1376e`
+  correction, plus a statement that the write is itself gated on the
+  GS-mode flag (the row currently omits that the writer is conditional at
+  all).
+. xref:SPEC.adoc#s4-2-2[§4.2.2]'s `device+0xf54` row's reader citation "RCV
+  CHANNEL/USE RHYTHM PART SysEx gate `[A:0x137a2]`,`[A:0x1376e]`" is
+  crossed. Correct mapping: USE RHYTHM PART is `0x137a2`, RCV CHANNEL is
+  `0x137b7`, and GS Scale Tuning is `0x1376e` — three readers, not two, and
+  the row's list needs all three named against the right handler.
+. xref:SPEC.adoc#s4-2-2[§4.2.2]'s closing count ("7 sites total") is wrong;
+  there are **9**. Writers: `0x123c5` (`ResetDevice`, clear), `0x136f5` (GM
+  System On, clear), `0x131ee` (System Reset `0xFF`, clear), `0x137f4` (GS
+  Reset, the only setter). Readers: `0x1341e` (CC0), `0x13492` (CC32),
+  `0x137a2` (USE RHYTHM PART), `0x137b7` (RCV CHANNEL), `0x1376e` (GS Scale
+  Tuning). The omitted clear at `0x131ee` is real and sits in the `0xFF`
+  System Reset path: the handler at `0x131c0` masks the status byte with
+  `0xf0` and requires the low nibble `0x0f` `[A:0x131da]`,`[A:0x131e8]`,
+  then clears `device+0xf54` `[A:0x131ee]` before calling `ResetDevice`
+  `[A:0x131f5]`. xref:SPEC.adoc#s4-5[§4.5]'s own prose already names
+  `0x131ee` (the "redundant against `ResetDevice`'s own `0x123c5`" remark);
+  only the field table and the count in §4.2.2 were wrong. Reproduced
+  directly:
++
+[source,console]
+----
+$ objdump -d artifacts/swmidi.sys | grep 0xf54
+   123c5:  andl   $0x0,0xf54(%edx)
+   131ee:  andl   $0x0,0xf54(%esi)
+   1341e:  cmpl   $0x0,0xf54(%esi)
+   13492:  cmpl   $0x0,0xf54(%esi)
+   136f5:  andl   $0x0,0xf54(%edi)
+   1376e:  cmp    %ecx,0xf54(%edi)
+   137a2:  cmpl   $0x0,0xf54(%edi)
+   137b7:  cmpl   $0x0,0xf54(%edi)
+   137f4:  mov    %ebx,0xf54(%edi)
+----
++
+Nine lines, exactly the nine sites above (opcode bytes elided for width;
+each `%eXX` differs per compiler register allocation and is not itself
+significant).
+
+=== 4. The engine discrepancy: `synth_sysex()` stored `USE RHYTHM PART` with no `g_gs_mode` test
+
+`src/engine/synth.c`'s `synth_sysex()` (the block around lines 331-353)
+sets `g_channels[ch].is_rhythm` and calls
+`reset_all_channel_controllers_device()` for the `a2 == 0x15` (USE RHYTHM
+PART) arm with no `g_gs_mode` check anywhere in the surrounding `if
+(a0 == 0x40 && a1 >= 0x10 && a1 <= 0x1F && ...)` block. `RCV CHANNEL`
+(`a2 == 0x02`) is an empty stub and the per-part tuning grid (`a2 == 0x40`)
+is entirely unhandled (already xref:#item36[Item 36]) — so `USE RHYTHM PART`
+was the only one of the three gated addresses with observable engine
+behavior. Harmless on the present corpus, since every corpus file sends GS
+Reset before anything else, but wrong for any file that sends `USE RHYTHM
+PART`/`RCV CHANNEL`/Scale Tuning before a GS Reset.
+
+**The fix applied.** A single guard in front of the whole part-parameter
+block (`if (!g_gs_mode) return;` ahead of the `a2` dispatch), rather than
+three separate per-handler tests reproducing `0x137a2`/`0x137b7`/`0x1376e`
+individually. This is behaviorally identical to the driver's three-gate
+structure given what this engine actually implements: all three of the
+driver's recognized per-part addresses are individually gated (section 2
+above), and every unrecognized address in the `40 1x` family is already a
+no-op in the driver regardless of the flag (section 1) — and in this
+engine, the only addresses reached inside that block are the recognized
+`0x02`/`0x15`/`0x40` cases plus the family's other slots, which do nothing
+either way. One guard ahead of the whole block therefore produces the same
+observable result as three individual guards, for the set of addresses this
+engine dispatches on. This equivalence would NOT hold if a future pass adds
+handling for some *other* address inside the same `a1` range that the real
+driver leaves ungated — there is no such address in section 1's switch, so
+none exists to violate it today, but it is the condition under which a
+single shared guard would need to be split back into per-handler tests.
+
+=== Measurement — differential A/B, scratch builds (not retained in this tree)
+
+Two native renderers were built from identical source except for the guard
+in section 4 — baseline (HEAD) and gated — as throwaway scratch builds
+outside the repo; this is why the numbers exist before this entry rather
+than being cited to a script name. Two MIDIs: TEST sends `USE RHYTHM PART`
+(`F0 41 10 42 12 40 15 15 02 ...`, block 5) with **no** preceding GS Reset;
+CONTROL is identical but with a leading GS Reset, and is byte-identical to
+`probes/48_rhythm_part_reset.mid`. Both MIDIs put square-wave (program 80)
+sustained notes on channels 1 and 2 with CC7=40, CC10=0/127, CC11=60, then
+the SysEx at t=2.5 s, then note-offs and a retriggered pair.
+
+[options="header"]
+|===
+| MIDI | baseline render (md5) | gated render (md5) | required | result
+| TEST (no GS Reset) | `94b7aab314d036e4cfc5cb25522137ab` | `0ac72bf0d0caf40ec70a3fb0dd2baa39` | differ | differ
+| CONTROL (GS Reset first) | `94b7aab314d036e4cfc5cb25522137ab` | `94b7aab314d036e4cfc5cb25522137ab` | identical | identical
+|===
+
+The three equal hashes in the CONTROL row and TEST-baseline cell are not a
+transcription error: the baseline engine ignores `g_gs_mode` on this path
+entirely, so baseline-TEST, baseline-CONTROL and gated-CONTROL are all
+literally the same rendered file. That collapse is itself the confirmation
+that the ungated store was live and that the CONTROL case (GS Reset first)
+is a true no-op for the fix, exactly as expected.
+
+In the window right after the SysEx lands, the baseline render is at exact
+digital silence (max |sample| = 0 — the ungated controller reset cut the
+sustained notes) while the gated render still has the notes sounding, max
+|sample| = 232, RMS −52.45 dBFS. Over the wider 2.0-3.5 s window: baseline
+−57.32 dBFS vs. gated −52.38 dBFS, a 4.94 dB difference.
+
+**Corpus expectation: bit-identical**, because every corpus item sends GS
+Reset before anything else that would touch this path. A no-op corpus
+result is the expected pass here, not a failure — a no-op corpus is exactly
+what CONTROL's collapsed hashes above already demonstrate, and it is the
+TEST-vs-baseline differential, not the corpus, that proves the gate does
+anything.
+
+'''
+
 [#s3-5-pitch-cents-correction]
 == 2026-07-30 — SPEC §3.5 mislocated the note-on pitch-cents accumulator as part of the attenuation sum; `0x12f60`–`0x12f78` is pitch, and RPN2 Coarse Tuning is skipped for rhythm parts — retires o7/o10/o11
 
@@ -307,6 +980,65 @@ path reads only envelope/LFO/bend, "RPN1/RPN2 latched at note-on, not
 continuous" is now `[A]`-confirmed and no longer rests on `[M: probe 23]`
 alone. xref:SPEC.adoc#o10[O10] and xref:SPEC.adoc#o11[O11] are retired.
 
+=== 7. The store loop's bit-7 abort test is a one-byte lookahead, not a same-byte test
+
+A closer, instruction-by-instruction read of the `scale_tuning` loop given
+in section 2 above corrects this entry's own earlier wording and
+xref:SPEC.adoc#s4-5[§4.5]'s SysEx table cell for the same row, both of
+which said only that "the loop aborts if any of the 12 data bytes has bit
+7 set." That was imprecise about *which* byte is tested. The loop is:
+
+[source,c]
+----
+i = 0;                                        // 0x1376c
+if (device->gs_mode == 0) return;             // 0x1376e, je 0x13818
+do {
+    if (buf[9 + i] & 0x80) return;            // 0x1377a, jne 0x13818
+    val = buf[8 + i] - 0x40;                  // 0x13785, 0x1378a
+    device->scaleTuning[part][i] = val;       // 0x13797, index part*12 + i
+    i++;                                      // 0x13793
+} while (i < 12);                             // 0x13794
+----
+
+The byte tested (`buf[9 + i]`) is one byte ahead of the byte stored
+(`buf[8 + i]`) on the same iteration. Three consequences follow that the
+old wording did not state:
+
+* The first data byte, `buf[8]`, is never bit-7-tested at all — on
+  iteration 0 the test reads `buf[9]`, not `buf[8]`, so `buf[8]` is stored
+  unconditionally as long as the `0xf54` gate above already passed.
+* The bytes actually tested are `buf[9]` through `buf[20]` — data bytes 2
+  through 12, plus the byte immediately following the twelfth data byte
+  (the checksum in a well-formed message, whose bit 7 is clear, so a
+  well-formed message completes all 12 stores). A short message's `0xF7`
+  terminator has bit 7 set and fails this test, but **because the test
+  leads the store by one byte, hitting `0xF7` at `buf[9 + i]` aborts
+  *before* the store for that same iteration runs** — so the data byte
+  immediately preceding the terminator is the one byte that is never
+  written, not the terminator's own "slot."
+* The abort jumps to `drop` (`0x13818`, same target as the `0xf54` gate)
+  and returns success `[A:0x1381a]` without undoing entries already
+  written by earlier iterations of the same loop. A truncated Scale Tuning
+  message therefore leaves the twelve-entry grid **partially updated**,
+  silently, with no error surfaced to the sender.
+
+This supersedes the "aborts if any of the 12 data bytes has bit 7 set"
+phrasing both here and in `SPEC.adoc` §4.5; the precise reading above is
+what ships in xref:SPEC.adoc#s4-2-2[§4.2.2] in this pass. It also corrects
+xref:#item36[Item 36]'s and `impl-chart/CHART.adoc`'s row for this
+message, both of which named the recognized address range as `40 1n
+40`-`4B`. Only `40 1n 40` is recognized (section 1 above, confirmed
+independently by the exact-key switch): `40 1n 41`...`40 1n 4B` fall to
+the same `drop` no-op as any other unmatched address, they do not reach
+this loop at all. `CHART.adoc` is corrected to `40 1n 40` in this same
+pass.
+
+None of this touches the engine: xref:#item36[Item 36] already recorded
+that `device+0xfbc`'s twelve-entry grid is not modelled in `src/`, and that
+remains true after this correction — there is no writer to fix, so no
+`src/` change and no corpus-gate movement is expected or claimed from this
+entry.
+
 [#item34]
 === Item 34 — SPEC's `0x137ae` attribution is crossed
 
@@ -341,7 +1073,7 @@ this pass.
 Now that `0x12f60` is confirmed as its reader, the 12-entry per-part grid
 demonstrably retunes notes by semitone class, latched at note-on. The engine
 has no scale-tuning state at all. Behaviourally significant only for
-content that sends `40 1p 40`-`4B`; deferred, not implemented in this pass.
+content that sends only `40 1p 40` (xref:#item37[Item 37]); deferred, not implemented in this pass.
 
 === Measurement — corpus gate before/after
 
@@ -2623,7 +3355,7 @@ sentinel for all 235 instruments regardless of which reading is correct.
 '''
 
 [#item4]
-== 2026-07-26 — S3.10's consolidated pseudocode mixes hundredths-of-dB and tenths-of-dB units with no shown conversion -- now SETTLED empirically (`[M: probe 07]`), against the literal (no x10) reading, previously only plausibility-argued
+== 2026-07-26 — S3.10's consolidated pseudocode mixes hundredths-of-dB and tenths-of-dB units with no shown conversion -- now SETTLED empirically (`[M: probe 07]`), against the literal (no x10) reading, previously only plausibility-argued -- RETIRED 2026-07-30, superseded by item38
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s3-10[S3.10] (consolidated note-on pseudocode) vs. xref:SPEC.adoc#s1-4-4[S1.4.4] (units)
 vs. xref:SPEC.adoc#s2-3-4[S2.3.4] (region wsmp attenuation unit).
@@ -2669,6 +3401,16 @@ empirical basis. This is a real, testable divergence in behavior depending
 on which reading is chosen -- flagged prominently because it is exactly the
 kind of thing xref:SPEC.adoc#s1-4-4[S1.4.4] warns readers to get right, and the spec's own two
 sections disagree on how to apply that warning to xref:SPEC.adoc#s3-10[S3.10]'s specific sum.
+
+**Retired 2026-07-30** -- see xref:#item38[Item 38]. There was never a unit
+mismatch: `region.attenuation` (called "*tenths*-of-a-dB" above) and the
+note-on sum's other terms were already the same unit, hundredths of a dB.
+This item's own worked example was self-contradictory (`-670` called both
+"tenths-of-dB = -67.0 dB" and, two paragraphs later, "6.7 dB" for the same
+raw value) -- a symptom of the same conflation, not two independently
+plausible readings. The implementation shipped here (no `x10`) was and
+remains correct; only the reasoning above is superseded. Full account in
+Item 38.
 
 '''
 

@@ -1,4 +1,4 @@
-/* smf.c -- Standard MIDI File parser and sequencer. SPEC.md S1.5.4: not part
+/* smf.c -- Standard MIDI File parser and sequencer. SPEC.adoc S1.5.4: not part
  * of the original driver, ordinary generic SMF handling. */
 #include "smf.h"
 #include "synth.h"
@@ -144,7 +144,7 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
     e->sample_time = 0;
 }
 
-/* SPEC.md S4.2.1/S4.7: the Bank/Program pair is the one scheduled-controller
+/* SPEC.adoc S4.2.1/S4.7: the Bank/Program pair is the one scheduled-controller
  * queue whose value a note-on reads back, and the read is a LOOK-AHEAD -- at
  * one timestamp the note takes the last Program Change BEFORE THE NEXT NOTE
  * EVENT of that timestamp, not the one that preceded it in the byte stream.
@@ -161,7 +161,7 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
  * collapses to the last group's patch on all three notes and sits 19 dB from
  * what stream order renders. (38's case F disagrees with 40's case G on
  * byte-identical input; 1 outlier in 21 observations across the two captures,
- * unexplained and still open -- not yet written up in SPEC_GAPS.md.)
+ * unexplained and still open -- not yet written up in SPEC_LOG.adoc.)
  *
  * Probe 40's K settles that this is the PROGRAM CHANGE queue and not the bank
  * byte: two Bank Selects with ONE Program Change and no queue tie at all reads

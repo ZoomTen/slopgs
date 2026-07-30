@@ -1,7 +1,7 @@
 /* dls.h -- RIFF/DLS parse of gm.dls into instruments, regions, waves.
- * SPEC.md Part 2. Structure field names are chosen for clarity in this
+ * SPEC.adoc Part 2. Structure field names are chosen for clarity in this
  * clean-room reimplementation; they are NOT a claim of matching the
- * original driver's in-memory byte offsets (which SPEC.md Part 2 S2.9
+ * original driver's in-memory byte offsets (which SPEC.adoc Part 2 S2.9
  * documents for the original binary only). */
 #ifndef DLS_H
 #define DLS_H
@@ -15,13 +15,13 @@ typedef struct Wave {
     int32_t loop_start;        /* wsmp loop start, wave scope, samples */
     int32_t loop_end;          /* wsmp loop start+length, wave scope, samples */
     int16_t fine_tune;         /* wsmp sFineTune, wave scope */
-    int16_t attenuation_tenth_db; /* wsmp lAttenuation, (lScale*10)>>16, wave scope */
+    int16_t attenuation_hdb;   /* wsmp lAttenuation, (lScale*10)>>16, hundredths of a dB, wave scope */
     uint8_t unity_note;        /* wsmp usUnityNote, byte-truncated, wave scope */
     uint8_t no_loop;           /* wsmp cSampleLoops==0, wave scope */
 } Wave;
 
 /* art1 connection-block usSource values that gm.dls/the driver actually use,
- * SPEC.md S2.4.3. Not the full DLS-1 source enumeration -- just the rows
+ * SPEC.adoc S2.4.3. Not the full DLS-1 source enumeration -- just the rows
  * apply_art1() (dls.c) switches on. */
 enum ArtSource {
     ART_SRC_NONE           = 0x0000, /* unconditional (RPN-less) block */
@@ -31,7 +31,7 @@ enum ArtSource {
     ART_SRC_EG2            = 0x0005,
 };
 
-/* art1 connection-block usDestination values, SPEC.md S2.4.3. ART_DST_PAN is
+/* art1 connection-block usDestination values, SPEC.adoc S2.4.3. ART_DST_PAN is
  * the DLS-1-spec pan slot; ART_DST_PAN_COARSE is the driver's own reuse of
  * the spec's reserved 0x0002 slot for the same pan_cb field (see apply_art1). */
 enum ArtDest {
@@ -53,14 +53,14 @@ enum ArtDest {
     ART_DST_EG2_SUSTAINLEVEL_HI = 0x030e,
 };
 
-/* art1 usControl, src=ART_SRC_LFO -> dest=ART_DST_PITCH only, SPEC.md S2.4.4. */
+/* art1 usControl, src=ART_SRC_LFO -> dest=ART_DST_PITCH only, SPEC.adoc S2.4.4. */
 enum ArtLfoControl {
     ART_CTRL_NONE = 0x0000,
     ART_CTRL_CC1  = 0x0081, /* modwheel */
 };
 
-/* The 0x68-byte "resolved articulation block" of SPEC.md S3.2 -- distinct
- * from the Wave object (see SPEC_GAPS.md for the S2.9.2-vs-S3.2 field-
+/* The 0x68-byte "resolved articulation block" of SPEC.adoc S3.2 -- distinct
+ * from the Wave object (see SPEC_LOG.adoc for the S2.9.2-vs-S3.2 field-
  * ownership contradiction this resolves). Private per-region, or a single
  * shared instrument-level default adopted (refcount-free here; we just
  * point multiple regions at the same Artic, since this arena never frees). */
@@ -97,7 +97,7 @@ typedef struct Region {
     Artic *artic;
     int32_t loop_start, loop_end; /* region-scope wsmp override, samples */
     int16_t fine_tune;
-    int16_t attenuation_tenth_db;
+    int16_t attenuation_hdb; /* art1 lScale, (lScale*10)>>16, hundredths of a dB, region scope */
     uint8_t unity_note;
     uint8_t no_loop;
     uint8_t low_key, high_key;
@@ -129,10 +129,10 @@ extern DlsCollection g_dls;
 
 /* Parses `data`[0..len) as a DLS-1 RIFF collection in place. Returns 0 on
  * success, negative on a fatal parse error. Sample data is referenced
- * directly into `data`, never copied (SPEC.md S1.5.5). */
+ * directly into `data`, never copied (SPEC.adoc S1.5.5). */
 int dls_load(const uint8_t *data, uint32_t len);
 
-/* Three-tier bank/program/drum fallback + region lookup, SPEC.md S3.1. */
+/* Three-tier bank/program/drum fallback + region lookup, SPEC.adoc S3.1. */
 Region *dls_find_region(uint32_t locale, uint8_t note);
 
 #endif /* DLS_H */

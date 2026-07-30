@@ -1,7 +1,7 @@
-/* tables.c -- runtime-built lookup tables, SPEC.md Appendix T.
+/* tables.c -- runtime-built lookup tables, SPEC.adoc Appendix T.
  *
  * Every table below is built with the *truncating* toward-zero conversion
- * (SPEC.md S1.4.2: "every float->int conversion truncates toward zero,
+ * (SPEC.adoc S1.4.2: "every float->int conversion truncates toward zero,
  * never rounds" -- the driver's own 0x106e0 helper). A plain C `(int32_t)`
  * cast on a double truncates toward zero per the C standard, which is
  * exactly this semantic -- no rounding intrinsic is used anywhere here.

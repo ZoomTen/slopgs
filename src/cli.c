@@ -29,7 +29,7 @@
 
 /* ---------------------------------------------------------------------- */
 /* allocator: malloc, never freed -- gm.dls's sample data is referenced in
- * place (SPEC.md S1.5.5) and must outlive every render call, and the process
+ * place (SPEC.adoc S1.5.5) and must outlive every render call, and the process
  * renders exactly once and exits. */
 
 static uint32_t g_total = 0;
@@ -187,7 +187,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * anything and walks the whole pool into silence. That is exactly the
      * defect TOPUP_INTERVAL_FRAMES (voice.c) exists to prevent, and it is
      * invisible to the probe corpus (100ms event spacing) but audible on
-     * dense field MIDIs. SPEC.md S5.5 [M]: 80 held note-ons must leave 48
+     * dense field MIDIs. SPEC.adoc S5.5 [M]: 80 held note-ons must leave 48
      * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed, so
      * this renders through render_frames rather than smf_render: the song is
      * still loaded here, and smf_render would keep dispatching its events into
@@ -202,7 +202,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
     for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
     if (surviving != 48) {
         fprintf(stderr, "FAIL: 80 held note-ons left %d voices sounding, expected 48"
-                        " (SPEC.md S5.5 [M]) -- reserve top-up cadence?\n", surviving);
+                        " (SPEC.adoc S5.5 [M]) -- reserve top-up cadence?\n", surviving);
         fail = 1;
     }
 

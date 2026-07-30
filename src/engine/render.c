@@ -1,5 +1,5 @@
 /* render.c -- the mixer: interpolation, gain, saturating accumulate.
- * SPEC.md Part 6.
+ * SPEC.adoc Part 6.
  *
  *  - Q12 phase accumulator: bits[31:12] integer sample index, bits[11:0]
  *    12-bit interpolation fraction (S6.4.2).
@@ -13,7 +13,7 @@
  *    24000 Hz waves get a correctly non-unity phase step at this 22050 Hz
  *    render rate.
  *  - Loop-end handling is a single conditional subtraction, never a
- *    modulo/while loop (S6.4.8), with the same caveat SPEC.md itself states:
+ *    modulo/while loop (S6.4.8), with the same caveat SPEC.adoc itself states:
  *    this is only exact if the phase step never exceeds one loop length in
  *    a single output sample (true for any sane pitch/loop combination).
  */
@@ -129,7 +129,7 @@
  * boundary, so a blip shorter than one segment cannot reach the output even in
  * principle. */
 
-/* Sub-block modulation granularity, SPEC.md LFO section `[M: probe 06]`:
+/* Sub-block modulation granularity, SPEC.adoc LFO section `[M: probe 06]`:
  * render_frames is otherwise called once per MIDI-event-free chunk (smf.c
  * only splits chunks at dispatched events), so a held note with no events
  * for several seconds would get exactly one voices_update_modulation() call
@@ -208,7 +208,7 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames, uint32_t block
             v->amp_left = seg;
         }
 
-        /* SPEC.md S6.6/S6.4.1: phase step is a ramp accumulator, not a
+        /* SPEC.adoc S6.6/S6.4.1: phase step is a ramp accumulator, not a
          * direct write (see voice_update_pitch / RAMP_HORIZON_FRAMES in
          * voice.c for the measurement behind the fixed-duration linear slew
          * this applies one sample at a time). Advance it before use so
@@ -280,9 +280,9 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames, uint32_t block
 }
 
 void render_frames(int16_t *out, uint32_t frames) {
-    /* Per-block modulation recompute: pitch (bend, SPEC.md S4.4; LFO,
-     * SPEC.md LFO section `[M: probe 06]`) and gain (CC7 volume/CC11
-     * expression/CC10 pan/master volume, SPEC.md S3.5/S3.6/S3.10) both
+    /* Per-block modulation recompute: pitch (bend, SPEC.adoc S4.4; LFO,
+     * SPEC.adoc LFO section `[M: probe 06]`) and gain (CC7 volume/CC11
+     * expression/CC10 pan/master volume, SPEC.adoc S3.5/S3.6/S3.10) both
      * live-read every sub-chunk so a controller change reaches notes
      * already sounding, not just new note-ons. render_frames is the single
      * call site both smf_render's per-chunk playback and its
@@ -296,7 +296,7 @@ void render_frames(int16_t *out, uint32_t frames) {
     while (done < frames) {
         uint32_t chunk = frames - done;
         if (chunk > LFO_UPDATE_FRAMES) chunk = LFO_UPDATE_FRAMES;
-        /* SPEC.md S5.4: the reserve top-up runs once per audio service tick
+        /* SPEC.adoc S5.4: the reserve top-up runs once per audio service tick
            -- a wall-clock period, NOT once per call into this function.
            smf.c splits render_frames() at every dispatched MIDI event, so a
            per-call cadence runs at MIDI event density (measured: ~800/s on a

@@ -1,22 +1,22 @@
 /* voice.c -- voice pool, allocation, stealing, key-group choke, per-voice
- * parameter computation (pitch/envelopes/volume law/pan), SPEC.md Parts 3 & 5.
+ * parameter computation (pitch/envelopes/volume law/pan), SPEC.adoc Parts 3 & 5.
  *
- * Pool: SPEC.md S5.2/S5.5's explicit "48 primary + 6 reserve = 54" split is
+ * Pool: SPEC.adoc S5.2/S5.5's explicit "48 primary + 6 reserve = 54" split is
  * implemented as bookkeeping (Voice.in_reserve) on top of one flat NUM_VOICES
  * array, not a second data structure -- see NUM_PRIMARY/NUM_RESERVE below,
  * voice_topup_reserve() (S5.4), and the two distinct steal comparators
  * (S5.7: find_steal_candidate_symmetric / find_steal_candidate_asymmetric).
  *
- * Simplifications relative to SPEC.md still open (recorded in SPEC_GAPS.md):
+ * Simplifications relative to SPEC.adoc still open (recorded in SPEC_LOG.adoc):
  *  - Envelope is a per-sample linear-attack / exponential-decay-and-release
  *    state machine rather than a reproduction of the original's unrecovered
- *    ([O] per SPEC.md S3.4.2/S6.6) block-cadenced ramp mechanism.
+ *    ([O] per SPEC.adoc S3.4.2/S6.6) block-cadenced ramp mechanism.
  *  - The fast/choke release uses a fixed 70 ms time-constant clamp
- *    (SPEC.md S5.6's measured 70.0 ms figure) rather than the exact
- *    `region_field / 70` divisor whose base quantity SPEC.md itself marks
+ *    (SPEC.adoc S5.6's measured 70.0 ms figure) rather than the exact
+ *    `region_field / 70` divisor whose base quantity SPEC.adoc itself marks
  *    [O].
  *  - voice_topup_reserve()'s call CADENCE (once per render.c render_frames()
- *    call, TOPUP_PER_SUBCHUNK==0 default) is an `[O]` stand-in for SPEC.md
+ *    call, TOPUP_PER_SUBCHUNK==0 default) is an `[O]` stand-in for SPEC.adoc
  *    S5.4's "once per event-dispatch-call" -- this architecture has no true
  *    periodic tick. See the comment above voice_topup_reserve() below and
  *    render.c's comment above TOPUP_PER_SUBCHUNK.
@@ -29,7 +29,7 @@
 Voice g_voices[NUM_VOICES];
 uint32_t g_voice_age_counter;
 
-/* SPEC.md S5.5's explicit "Implementation requirement": 48 primary + 6
+/* SPEC.adoc S5.5's explicit "Implementation requirement": 48 primary + 6
  * reserve == 54 (NUM_VOICES, voice.h). TOPUP_RESERVE_COUNT is this project's
  * own tunable knob on top of that `[A]` figure, not a SPEC value itself --
  * overridable with -D so the orchestrator can A/B this whole change.
@@ -86,7 +86,7 @@ void voice_pool_reset(void) {
         v->lfo_freq_hz = 0.0;
         v->lfo_delay_s = 0.0;
         v->lfo_elapsed_s = 0.0;
-        /* SPEC.md S5.2/S5.5 48/6 split. Which physical index starts primary
+        /* SPEC.adoc S5.2/S5.5 48/6 split. Which physical index starts primary
          * vs. reserve is cosmetic/`[O]` -- nothing downstream distinguishes a
          * voice's tier once it becomes active, and voice_topup_reserve's own
          * Branch A retags nodes over time anyway. */
@@ -96,8 +96,8 @@ void voice_pool_reset(void) {
     g_voice_age_counter = 0;
 }
 
-/* SPEC.md S3.3.3: cents-to-Q12-ratio via the T2/T3 table decomposition.
- * The +-CENTS_CLAMP clamp below is NOT a reimplementation shortcut -- SPEC.md
+/* SPEC.adoc S3.3.3: cents-to-Q12-ratio via the T2/T3 table decomposition.
+ * The +-CENTS_CLAMP clamp below is NOT a reimplementation shortcut -- SPEC.adoc
  * S3.3.3 confirms it byte-for-byte in the real driver's CentsToRatio
  * (0x18e2c-0x18e6c, "clamp(cents, -4800, 4800) ... two-sided, sign-aware
  * clamp", matching T3's +-48-semitone table domain exactly). Left as-is
@@ -124,7 +124,7 @@ static int32_t cents_to_ratio_q12(int32_t cents) {
     return (int32_t)((t3 * scaled_t2) >> 12);
 }
 
-/* SPEC.md S3.4.1: tc = lScale/65536.0; duration = 2^(tc/1200), trunc toward
+/* SPEC.adoc S3.4.1: tc = lScale/65536.0; duration = 2^(tc/1200), trunc toward
  * zero (we keep this as a plain double, not truncated, since it feeds a
  * continuous-time envelope coefficient rather than an integer table). */
 /* Where inside the current render call the event being dispatched actually
@@ -166,7 +166,7 @@ static int32_t scale_tc_by_source(int32_t tc, int16_t depth, int src) {
     return tc + cents * 65536;
 }
 
-/* LFO rate, SPEC.md LFO section `[M: probe 06]` -- derived, not fit: the
+/* LFO rate, SPEC.adoc LFO section `[M: probe 06]` -- derived, not fit: the
  * standard DLS-1/SF2 "absolute pitch cents" convention, 8.176 Hz at 0
  * cents (lfo_freq_tc's own units, distinct from timecents_to_seconds'
  * period-domain convention used for EG times/LFO delay). Confirmed against
@@ -187,7 +187,7 @@ static double lfo_freq_from_tc(int32_t tc) {
 }
 
 /* Multiplicative per-sample coefficient for an exponential envelope segment
- * (SPEC.md S3.4.2: release shape confirmed exponential). SPEC.md S3.4.1
+ * (SPEC.adoc S3.4.2: release shape confirmed exponential). SPEC.adoc S3.4.1
  * confirms the timecent->duration formula and truncation but explicitly
  * marks the exact per-sample *consumption* of that duration [O] (S3.4.2:
  * "do not assume a specific sample-accurate update rate"). A prior version
@@ -198,12 +198,12 @@ static double lfo_freq_from_tc(int32_t tc) {
  * linearly in dB at ~100 dB/s from a 0.99s-duration patch, i.e. reaches full
  * silence AT the timecent-derived duration, not after ~7.6 tau of an
  * asymptote) this made release/decay ring 11x-33x longer than the
- * reference. SPEC.md S5.6 independently corroborates the same "reaches full
+ * reference. SPEC.adoc S5.6 independently corroborates the same "reaches full
  * silence AT the nominal duration" shape from a wholly separate measurement
  * (probe 18_key_groups fast/choke release: measured 70.0ms to full silence,
  * matching the 70ms rate-clamp constant directly, not ~7.6x that).
  *
- * ponytail: SPEC.md does not state the reference dB span the original
+ * ponytail: SPEC.adoc does not state the reference dB span the original
  * driver's real consumption code (S3.4.2/Part 5 +0x13c, outside every PAGE
  * range this project examined) calibrates against -- that exact formula is
  * [O]. This uses a "decays 100dB over exactly `seconds` seconds" calibration
@@ -235,9 +235,9 @@ static double lfo_freq_from_tc(int32_t tc) {
  * project has NOT confirmed it -- do not "clean it up" to 0.9633 without a
  * measurement that separates the two. RELEASE_RATE_MULT is untouched: probe
  * 35 measures decay only, and S5.6's 70ms fast-release still matches 100dB.
- * See FITTED.md Entry 15 and SPEC_GAPS.md #15.
+ * See FITTED.md Entry 15 and SPEC_LOG.adoc #15.
  *
- * SUPERSEDED 2026-07-26 by SPEC.md S5.1.2.1: this was a rate-multiplier on
+ * SUPERSEDED 2026-07-26 by SPEC.adoc S5.1.2.1: this was a rate-multiplier on
  * the OLD asymptotic approach-to-target decay shape, entangled with that
  * shape's own "100dB over `seconds`" calibration. The decay segment is now a
  * geometric ramp whose coefficient is derived directly from
@@ -249,7 +249,7 @@ static double lfo_freq_from_tc(int32_t tc) {
 #define RELEASE_RATE_MULT 1.0
 #endif
 /* Floor (seconds) on the ordinary note-off release duration only -- never
- * the fast/choke path (see start_release() below). [F:fitted] SPEC.md
+ * the fast/choke path (see start_release() below). [F:fitted] SPEC.adoc
  * S5.6/S3.8.2 state the only documented minimum-release mechanism (the 70ms
  * rate clamp at 0x19834) is reachable only from fast-release/choke path
  * 0x19aa4 and never from ordinary note-off 0x19a2c; there is no [A] floor on
@@ -259,7 +259,7 @@ static double lfo_freq_from_tc(int32_t tc) {
  * 90ms contaminated by alignment flip on probe 31, multiple probes turned
  * around by 90ms. GENERAL SERUM envelope r: 0.8673 (no floor) -> 0.8684 at
  * 60ms. field/corridor.mid: 1,159,168 frames (untruncated) at every floor
- * tested, confirming SPEC_GAPS.md #15 (release truncation) does not recur.
+ * tested, confirming SPEC_LOG.adoc #15 (release truncation) does not recur.
  * Corroborated: reference release measurement on a hand-cut excerpt shows
  * its authored 5-6ms releases need
  * ~6-11x stretch; 60ms sits inside. artifacts/probes/04_envelope.mid piano patch (990ms
@@ -300,7 +300,7 @@ static double lfo_freq_from_tc(int32_t tc) {
 
 /* Audible-level floor for release finish detection, linear. GAIN_CEILING
  * (~0.5) is a voice's structural maximum gain, so 1e-4 here is -74dB below
- * a full-scale voice -- SPEC.md's -80dB `[A:0x19733]` constant read against
+ * a full-scale voice -- SPEC.adoc's -80dB `[A:0x19733]` constant read against
  * a gain-inclusive envelope. See voice_step_envelope's ENV_RELEASE case for
  * why the bare-EG floor alone is not enough. Overridable -D. */
 #ifndef AUDIBLE_FLOOR
@@ -355,7 +355,7 @@ static double exp_coef_scaled(double seconds, double mult) {
  * above, which now supplies it per-key from gm.dls's own data. That is why
  * the constant fixed note 60 and regressed everything else. */
 
-/* SPEC.md S4.4: pitch bend -> cents is synth_pitch_bend_cents(), re-read
+/* SPEC.adoc S4.4: pitch bend -> cents is synth_pitch_bend_cents(), re-read
  * live here (never baked into a frozen value) so a bend arriving while a
  * note is held reaches it. LFO/EG2 hooks are additive zero-contribution
  * placeholders for the next steps -- same recompute path, no restructuring
@@ -366,8 +366,8 @@ static double exp_coef_scaled(double seconds, double mult) {
  * summed in live here, unlike bend: probe 23 (section D, a held note with
  * RPN2 coarse changed mid-note) measured no retune of the sounding voice,
  * so master tune is latched at note-on, not continuous. It is sampled once
- * into base_cents in voice_note_on instead (SPEC.md S4.4, `[M: probe 23]`). */
-/* Pitch-LFO (vibrato) depth, SPEC.md LFO section `[M: probe 06]`: CC1
+ * into base_cents in voice_note_on instead (SPEC.adoc S4.4, `[M: probe 23]`). */
+/* Pitch-LFO (vibrato) depth, SPEC.adoc LFO section `[M: probe 06]`: CC1
  * (mod-wheel, live/continuous, /127) scaling the region's CC1-gated
  * lfo_pitch_cc1_cents depth, times the current sine-table sample
  * (v->lfo_phase, held fixed for one render.c sub-chunk, advanced between
@@ -396,7 +396,7 @@ static double exp_coef_scaled(double seconds, double mult) {
 /* EG2 runs at the modulation sub-chunk cadence (LFO_UPDATE_FRAMES samples per
  * step), not per sample: its only consumer is the pitch sum, which is itself
  * recomputed once per sub-chunk, so stepping it faster would cost work without
- * changing any rendered sample. SPEC.md S6.6 explicitly marks the envelope
+ * changing any rendered sample. SPEC.adoc S6.6 explicitly marks the envelope
  * generator's own cadence `[O]` and warns against inferring it from the
  * mixer's ramp_period, so this is a documented choice, not a recovered one.
  * Currently tied to render.c's LFO_UPDATE_FRAMES (voice.h) via this alias --
@@ -415,7 +415,7 @@ static double exp_coef_scaled(double seconds, double mult) {
  * both poor, because a tire-screech SFX is hostile to pitch tracking, so the
  * shape claim rests on the visual and on the DLS units convention, not on that
  * margin). Overridable to compare the two.
- * SPEC.md S6.6 marks the envelope generator's own behaviour `[O]`. */
+ * SPEC.adoc S6.6 marks the envelope generator's own behaviour `[O]`. */
 #ifndef EG2_LINEAR_SEGMENTS
 #define EG2_LINEAR_SEGMENTS 1
 #endif
@@ -490,10 +490,10 @@ static int32_t voice_lfo_cents(Voice *v) {
     return (int32_t)(depth_cents * lfo_unit);
 }
 
-/* SPEC.md S6.6/S6.4.1 `[A]`: the mixer holds the phase step in a "ramp
+/* SPEC.adoc S6.6/S6.4.1 `[A]`: the mixer holds the phase step in a "ramp
  * accumulator" re-derived from a caller-supplied LINEAR step every
  * `ramp_period` samples, held constant between refreshes -- not written
- * directly (this project's prior defect, SPEC_GAPS.md #19) and not a
+ * directly (this project's prior defect, SPEC_LOG.adoc #19) and not a
  * one-pole exponential (that shape is a separate, already-fitted stand-in
  * used only for GAIN, see render.c's GAIN_SMOOTH_ALPHA / FITTED.md Entry 4;
  * probe 28/32 already showed a one-pole is the wrong shape there too, but
@@ -509,7 +509,7 @@ static int32_t voice_lfo_cents(Voice *v) {
  *   ref 10-90  23-24ms  24ms     21-22ms  20-22ms   29-31ms
  *
  * FLAT across a 30x range of step sizes -- so the ramp is fixed-DURATION,
- * not the fixed-RATE slew this project shipped before (SPEC_GAPS.md #19,
+ * not the fixed-RATE slew this project shipped before (SPEC_LOG.adoc #19,
  * FITTED.md Entry 9). A rate law predicts ~2ms for the 200c step and
  * ~400ms for the 6000c one; neither is observed. Section C's uptick to
  * ~29ms is confounded (bigger step AND a mid-note re-aim rather than a
@@ -610,7 +610,7 @@ static int32_t voice_lfo_cents(Voice *v) {
  * cause) and on the corpus as a spectral ripple at exactly the clock's
  * period (tests/radio.mid, 8.0 cents peak-to-peak at 14.50ms -- the period
  * to the resolution of the estimator). A held slope re-derived from the
- * CURRENT value every period was also tried (SPEC.md's own "re-derived ...
+ * CURRENT value every period was also tried (SPEC.adoc's own "re-derived ...
  * every ramp_period samples" read as literally as possible); at any period
  * other than the one chosen to size THIS message's ramp, it either
  * overshoots (short period, held past the point it should have stopped) or
@@ -675,7 +675,7 @@ static void ramp_reaim(Voice *v, uint32_t frames) {
     v->ramp_left = frames;
 }
 
-/* render.c's per-sample accumulator has no arrival test (SPEC.md S6.6: the
+/* render.c's per-sample accumulator has no arrival test (SPEC.adoc S6.6: the
  * mixer only ever consumes a caller-supplied slope, it has no notion of a
  * target) -- without this, a held slope keeps walking phase_step past the
  * target forever. Counts every active voice's ramp down and snaps it exactly
@@ -697,12 +697,12 @@ void voice_update_pitch(Voice *v) {
     if (!v->active || !v->wave) return;
     /* Two factors, deliberately: the note-on base (key offset, fine tune and
      * the latched RPN1/RPN2 master tune) goes through CentsToRatio's +-4800
-     * clamp per SPEC.md S3.3.2/S3.3.3 and is latched in v->base_ratio_q12;
+     * clamp per SPEC.adoc S3.3.2/S3.3.3 and is latched in v->base_ratio_q12;
      * live modulation (pitch bend, LFO) is a SEPARATE clamped factor applied
      * outside it.
      *
-     * `[M: probe 30]`. SPEC.md exhibits CentsToRatio only on the note-trigger
-     * path and leaves the continuous-bend path unrecovered (SPEC_GAPS.md
+     * `[M: probe 30]`. SPEC.adoc exhibits CentsToRatio only on the note-trigger
+     * path and leaves the continuous-bend path unrecovered (SPEC_LOG.adoc
      * #17), so which side of the clamp bend lands on was undetermined. Probe
      * 30 settles both halves against the real driver: section B (RPN2 +24, no
      * bend) collapses keys 119 and 127 to one frequency, 3028.8 Hz, in the
@@ -710,10 +710,10 @@ void voice_update_pitch(Voice *v) {
      * clamp. Section C adds a bend sweep to that same saturated base and the
      * reference moves (1685/1688 Hz) while a single-sum implementation stays
      * pinned at 3028.8 Hz -- so bend is outside it. */
-    int32_t bend_cents = synth_pitch_bend_cents(v->channel); /* SPEC.md S4.4 */
+    int32_t bend_cents = synth_pitch_bend_cents(v->channel); /* SPEC.adoc S4.4 */
     int32_t mod_cents = bend_cents
-                      + voice_lfo_cents(v) /* SPEC.md LFO section, `[M: probe 06]` */
-                      + voice_step_eg2(v); /* SPEC.md S2.4.3 `[A:0x15838]`, SPEC_GAPS.md #20 */
+                      + voice_lfo_cents(v) /* SPEC.adoc LFO section, `[M: probe 06]` */
+                      + voice_step_eg2(v); /* SPEC.adoc S2.4.3 `[A:0x15838]`, SPEC_LOG.adoc #20 */
     uint64_t raw = (uint64_t)v->wave->sample_rate * (uint64_t)v->base_ratio_q12;
     raw = (raw * (uint64_t)(uint32_t)cents_to_ratio_q12(mod_cents)) >> 12;
     uint32_t new_target = (uint32_t)(raw / RENDER_RATE);
@@ -748,7 +748,7 @@ void voice_update_pitch(Voice *v) {
 }
 
 /* Advances every active voice's pitch-LFO phase by freq_hz*frames/RENDER_RATE
- * cycles, gated on lfo_delay_s (SPEC.md LFO section, `[M: probe 06]`).
+ * cycles, gated on lfo_delay_s (SPEC.adoc LFO section, `[M: probe 06]`).
  * Called by render.c once per sub-chunk -- see render.c's file header for
  * why sub-chunking is required for a held note to actually oscillate. */
 void voices_advance_lfo(uint32_t frames) {
@@ -763,12 +763,12 @@ void voices_advance_lfo(uint32_t frames) {
     }
 }
 
-/* Pan law, SPEC.md S3.6 -- SHAPE `[M: probe 07]`, corroborating the
- * disassembly-derived linear/sqrt table `g_table_lin` (SPEC.md S3.6's
+/* Pan law, SPEC.adoc S3.6 -- SHAPE `[M: probe 07]`, corroborating the
+ * disassembly-derived linear/sqrt table `g_table_lin` (SPEC.adoc S3.6's
  * `gainA`, reverse-indexed by 127-pan). Both channels use this SAME table
  * (`gainB` is NOT the squared table `g_table_vel` as S3.6 also described --
  * that predicts -11.90 dB at center pan where probe 07 measures -3.72 dB;
- * REFUTED, see SPEC_GAPS.md S9). The two-anchor-table/lerp scheme this
+ * REFUTED, see SPEC_LOG.adoc S9). The two-anchor-table/lerp scheme this
  * project previously shipped (FITTED.md Entry 5, `artifacts/probes/25_pan_law.mid`)
  * is SUPERSEDED: probe 25's flat center plateau was gain-clamp saturation
  * (Sine patch driven ~4.78 dB above GAIN_CEILING, not the pan law itself --
@@ -778,12 +778,12 @@ void voices_advance_lfo(uint32_t frames) {
  * keeps today's centre-pan level unchanged (so the corpus-wide gain-staging
  * tuned around it does not shift) while letting the table's own reverse/
  * direct indexing supply the pan SHAPE; it is a fitted correction for
- * headroom this project has not recovered elsewhere (SPEC.md S6.4.5 "Open
+ * headroom this project has not recovered elsewhere (SPEC.adoc S6.4.5 "Open
  * items" #16, `[O]`), tagged `[F:fitted, SHIPPED]` -- see FITTED.md Entry 7
  * for the fit, the rejected un-recentred alternative, and the residual
  * shape error still open. */
 
-/* Per-voice output ceiling, SPEC.md S6.4.5 -- `[A]`, derived from the two
+/* Per-voice output ceiling, SPEC.adoc S6.4.5 -- `[A]`, derived from the two
  * confirmed MMX opcodes in the mixer's gain stage, not fit to any single
  * probe number:
  *   - the per-voice gain accumulator is narrowed with `packssdw` into a
@@ -797,7 +797,7 @@ void voices_advance_lfo(uint32_t frames) {
  * one bit wider than the signed 16-bit lane `packssdw` narrows it into.
  * True unity is therefore structurally unreachable: **no voice's gain can
  * ever exceed 32767/65536 (~0.499985) of computed unity**, regardless of
- * how the intermediate `<<8>>5` scaling (SPEC.md S6.4.5 "Open items" #16,
+ * how the intermediate `<<8>>5` scaling (SPEC.adoc S6.4.5 "Open items" #16,
  * still `[O]`) maps hundredths-of-a-dB attenuation to the raw register --
  * that mapping is irrelevant to *this* bound, which falls straight out of
  * "signed 16-bit register, Q16 multiply" alone.
@@ -815,7 +815,7 @@ void voices_advance_lfo(uint32_t frames) {
  * assignment's scope; see report.) */
 #define GAIN_CEILING (32767.0 / 65536.0)
 
-/* SPEC.md S3.5 (squared volume law via g_table_vel), S3.10 (attenuation
+/* SPEC.adoc S3.5 (squared volume law via g_table_vel), S3.10 (attenuation
  * sum), S3.6 (pan law). Re-read live here (never baked into a frozen value)
  * so a CC7/CC10/CC11 change -- or a Master Volume SysEx -- arriving while a
  * note is held reaches it, mirroring voice_update_pitch's treatment of
@@ -868,7 +868,7 @@ static Voice *find_free_reserve(void) {
     return 0;
 }
 
-/* SPEC.md S5.7, 0x12426 analogue -- used ONLY by voice_topup_reserve's
+/* SPEC.adoc S5.7, 0x12426 analogue -- used ONLY by voice_topup_reserve's
  * Branch B (S5.4). Fully symmetric: whichever side (candidate or best) is
  * released always wins, checked both ways. Skips any voice already
  * committed to a fast release (the +0x138 gate, S5.6) so one top-up call
@@ -894,15 +894,15 @@ static Voice *find_steal_candidate_symmetric(void) {
     return best;
 }
 
-/* SPEC.md S5.7, 0x124a8 analogue -- used ONLY by voice_note_on's own final
+/* SPEC.adoc S5.7, 0x124a8 analogue -- used ONLY by voice_note_on's own final
  * fallback, reached when BOTH a free primary and a free reserve voice were
- * unavailable. NOT symmetric (SPEC.md S5.7): a candidate that is still HELD
+ * unavailable. NOT symmetric (SPEC.adoc S5.7): a candidate that is still HELD
  * is compared to `best` purely on age, regardless of whether `best` is
  * itself released -- a released `best` is not protected from being
  * displaced by an older held candidate. Never reads fast_release_committed
- * (SPEC.md: "0x124a8 never reads or writes +0x138"), so it CAN immediately
+ * (SPEC.adoc: "0x124a8 never reads or writes +0x138"), so it CAN immediately
  * repurpose a voice the top-up had just marked mid-fade -- intended, see
- * SPEC.md S5.6. */
+ * SPEC.adoc S5.6. */
 static Voice *find_steal_candidate_asymmetric(void) {
     Voice *best = 0;
     for (int i = 0; i < NUM_VOICES; i++) {
@@ -921,13 +921,13 @@ static Voice *find_steal_candidate_asymmetric(void) {
 }
 
 static void start_release(Voice *v, int fast) {
-    if (fast) v->fast_release_committed = 1; /* SPEC.md S5.6 +0x138: set
+    if (fast) v->fast_release_committed = 1; /* SPEC.adoc S5.6 +0x138: set
         unconditionally before any branch in the real ScheduleFastRelease;
         our start_release already collapses ScheduleFastRelease's two
         internal paths into one (a pre-existing, separate simplification),
         so `if (fast)` is the closest honest match to "unconditional, but
         only on the fast-release path" given that collapse. Ordinary
-        note-off (fast==0) never touches this field (SPEC.md S5.6: "note-off
+        note-off (fast==0) never touches this field (SPEC.adoc S5.6: "note-off
         never touches +0x138"). */
     v->held = 0;
     v->sustain_deferred = 0;
@@ -953,7 +953,7 @@ static void start_release(Voice *v, int fast) {
     }
     if (!fast && rel_s < RELEASE_FLOOR_S) rel_s = RELEASE_FLOOR_S;
     v->env_release_coef = exp_coef_scaled(rel_s, RELEASE_RATE_MULT);
-    /* EG2 releases on BOTH note-off paths. SPEC.md Part 7 records that the
+    /* EG2 releases on BOTH note-off paths. SPEC.adoc Part 7 records that the
      * choke/steal routine `0x19aa4` "shares only the pitch-EG release call"
      * with ordinary note-off `0x19a2c` -- the 70 ms rate clamp applies to the
      * amplitude segment specifically, NOT to this one, so no `fast` handling
@@ -961,7 +961,7 @@ static void start_release(Voice *v, int fast) {
     if (v->eg2_stage != ENV_IDLE) v->eg2_stage = ENV_RELEASE;
 }
 
-/* SPEC.md S5.4 `[A]` mechanism: tops the reserve tier back up to NUM_RESERVE
+/* SPEC.adoc S5.4 `[A]` mechanism: tops the reserve tier back up to NUM_RESERVE
  * free voices. Branch A moves already-free PRIMARY nodes to the reserve tag
  * (never touches an active voice, never allocates new capacity). Branch B
  * runs ONLY if primary was ALSO empty: it marks up to the remaining shortfall
@@ -972,7 +972,7 @@ static void start_release(Voice *v, int fast) {
  * envelope finishes draining.
  *
  * CADENCE `[F:fitted]`: a fixed wall-clock period, TOPUP_INTERVAL_FRAMES.
- * SPEC.md S5.4 is explicit that the real TopUpReserve runs "exactly once per
+ * SPEC.adoc S5.4 is explicit that the real TopUpReserve runs "exactly once per
  * call" to the event dispatcher (0x12bd6), whose sole caller is the
  * per-BUFFER service routine (0x13054) -- i.e. once per audio service tick,
  * a wall-clock period. Earlier versions of this project instead tied the
@@ -990,7 +990,7 @@ static void start_release(Voice *v, int fast) {
  * two audible total-silence dropouts (t=23.09-23.15s and t=23.44-23.51s)
  * that the reference does not have.
  *
- * SPEC.md S5.5's own `[M]` measurement bounds the period from the other
+ * SPEC.adoc S5.5's own `[M]` measurement bounds the period from the other
  * side: probes 20/21 (80 note-ons, no note-off) cut exactly 32 voices = 26
  * forced by pigeonhole + 6, i.e. Branch B contributes exactly ONE batch of
  * TOPUP_RESERVE_COUNT over an entire saturated 8-second run. That only holds
@@ -1078,9 +1078,9 @@ void voice_note_on(int channel, int note, int velocity) {
 
     uint32_t locale = synth_channel_locale(channel);
     Region *r = dls_find_region(locale, (uint8_t)note);
-    if (!r) return; /* SPEC.md S3.1.2/S3.2.2: silently dropped */
+    if (!r) return; /* SPEC.adoc S3.1.2/S3.2.2: silently dropped */
 
-    /* Key-group choke, SPEC.md S3.8/S5.8: same channel + key group + locale. */
+    /* Key-group choke, SPEC.adoc S3.8/S5.8: same channel + key group + locale. */
     if (r->key_group != 0) {
         for (int i = 0; i < NUM_VOICES; i++) {
             Voice *v = &g_voices[i];
@@ -1090,7 +1090,7 @@ void voice_note_on(int channel, int note, int velocity) {
         }
     }
 
-    /* Same-note retrigger scan, SPEC.md S5.6 ("the same-note retrigger scan
+    /* Same-note retrigger scan, SPEC.adoc S5.6 ("the same-note retrigger scan
      * inside note-on (0x12ec6)") / S5.6 field table (+0x144 channel matched
      * at the retrigger scan's 0x12ea7, +0x146 key matched at 0x12eb5): a
      * note-on for a (channel, note) that is already sounding must
@@ -1108,7 +1108,7 @@ void voice_note_on(int channel, int note, int velocity) {
         }
     }
 
-    /* SPEC.md S5.3: allocation always tries primary before reserve, and only
+    /* SPEC.adoc S5.3: allocation always tries primary before reserve, and only
      * falls back to a forced steal (0x124a8 analogue, the asymmetric
      * comparator, S5.7) if BOTH free lists are empty. Guard-rail: this
      * fallback can never dead-end note-on -- find_steal_candidate_asymmetric
@@ -1122,11 +1122,11 @@ void voice_note_on(int channel, int note, int velocity) {
     if (!v) v = find_steal_candidate_asymmetric();
     if (!v) return;
 
-    v->in_reserve = 0;              /* SPEC.md S5.3: recycling always targets
+    v->in_reserve = 0;              /* SPEC.adoc S5.3: recycling always targets
         primary only -- reset here so whatever tier this voice occupied while
         free (or, for a stolen voice, whatever it was tagged before going
         active) is irrelevant the moment it's active again. */
-    v->fast_release_committed = 0;  /* SPEC.md S5.6: cleared only by SetupNote */
+    v->fast_release_committed = 0;  /* SPEC.adoc S5.6: cleared only by SetupNote */
 
     v->active = 1;
     v->channel = channel;
@@ -1139,20 +1139,20 @@ void voice_note_on(int channel, int note, int velocity) {
     v->held = 1;
     v->sustain_deferred = 0;
 
-    /* Pitch: SPEC.md S3.3.2-S3.3.4. base_cents excludes bend (SPEC.md S4.4)
+    /* Pitch: SPEC.adoc S3.3.2-S3.3.4. base_cents excludes bend (SPEC.adoc S4.4)
      * -- that and other live modulation are re-read every block by
      * voice_update_pitch, not baked in here. RPN1/RPN2 master tune IS baked
      * in here (sampled once, at note-on): probe 23 measured it as latched,
-     * not continuous -- see voice_update_pitch's comment (SPEC.md S4.4,
+     * not continuous -- see voice_update_pitch's comment (SPEC.adoc S4.4,
      * `[M: probe 23]`). RPN2 (Channel Coarse Tuning) is skipped for rhythm
-     * parts -- RPN1 is not gated (SPEC.md S3.3.2). */
+     * parts -- RPN1 is not gated (SPEC.adoc S3.3.2). */
     v->base_cents = (int)r->fine_tune + (note - (int)r->unity_note) * 100
                   + (g_channels[channel].is_rhythm ? 0 : g_channels[channel].rpn2_coarse_cents)
                   + g_channels[channel].rpn1_fine_cents;
     /* Latched here and clamped once, `[M: probe 30]` -- see voice_update_pitch. */
     v->base_ratio_q12 = (uint32_t)cents_to_ratio_q12(v->base_cents);
 
-    /* Pitch-LFO state, SPEC.md LFO section `[M: probe 06]`: rate/delay
+    /* Pitch-LFO state, SPEC.adoc LFO section `[M: probe 06]`: rate/delay
      * cached once per this voice's own region's artic (per-instrument, see
      * lfo_freq_from_tc); phase starts at 0 and is only advanced between
      * render.c sub-chunks by voices_advance_lfo, never here. */
@@ -1165,7 +1165,7 @@ void voice_note_on(int channel, int note, int velocity) {
     /* New note: play at the true target from sample 0, no glide-in from
      * whatever phase_step this (possibly pool-recycled) Voice slot last
      * held -- the ramp is for modulation reaching an ALREADY-sounding
-     * voice (SPEC.md S6.6), not for note-on itself. */
+     * voice (SPEC.adoc S6.6), not for note-on itself. */
     v->phase_step = v->phase_step_target;
     v->phase_step_ramp_step = 0;
     v->phase_step_ramp_acc = 0;
@@ -1185,8 +1185,9 @@ void voice_note_on(int channel, int note, int velocity) {
         if (v->loop_len_s <= 0) { v->loop_len_s = 0; v->sample_end_s = v->wave->sample_count; }
     }
 
-    /* Volume law, SPEC.md S3.5 (see SPEC_GAPS.md for the unit-consistency
-     * and the depth-sentinel-sign resolutions applied here). Only the part
+    /* Volume law, SPEC.adoc S3.5 (see SPEC_LOG.adoc for the depth-sentinel-sign
+     * resolution applied here; the attenuation unit is hundredths of a dB
+     * throughout, S1.4.4/S3.10). Only the part
      * that is fixed for the voice's whole life -- velocity attenuation and
      * the region's own (wsmp) attenuation -- is computed here, into
      * atten_const_hdb. The CC7/CC11/CC10/master-volume-dependent part is
@@ -1197,29 +1198,19 @@ void voice_note_on(int channel, int note, int velocity) {
     int32_t vel_atten = g_table_vel[velocity];
     int32_t depth = r->artic->vel_to_atten_depth;
     int32_t scaled = (int32_t)(((int64_t)vel_atten * depth) / -9600);
-    /* SPEC.md S3.5/S3.10 sums only the region's own (wsmp) attenuation here
+    /* SPEC.adoc S3.5/S3.10 sums only the region's own (wsmp) attenuation here
      * -- NOT a separate wave-level term ("region overrides wave", S2.6/
      * S3.3.2: every gm.dls region carries its own wsmp).
      *
-     * Units: region.attenuation_tenth_db is stored in tenths of a dB
-     * (S2.3.4/S1.4.4) while velAtten/chanVol/expr are hundredths of a dB
-     * (S3.5/T.2). S3.10's own consolidated pseudocode adds
-     * `atten_sum += (int16)region[0x24]` with no explicit x10 conversion
-     * shown, which is a literal unit mismatch against S1.4.4's own adjacent
-     * warning about exactly this class of confusion -- see SPEC_GAPS.md.
-     * Tested BOTH readings against real gm.dls bytes: the unit-consistent
-     * (x10) reading drives ordinary notes to roughly -75dB (a handful of
-     * LSBs out of 32767 at full velocity on an Acoustic Grand Piano note,
-     * verified against that region's own on-disk wsmp.lAttenuation and its
-     * wave's own PCM peak, ~31783), which is not plausibly what a
-     * widely-deployed default OS synth sounds like. The literal
-     * (no-conversion) reading instead produces a moderate, plausible
-     * headroom-leaving level (~17% of full scale) for the same note. This
-     * implementation uses the literal S3.10 pseudocode reading (no x10)
-     * on that empirical basis. */
-    v->atten_const_hdb = scaled + (int32_t)r->attenuation_tenth_db;
+     * Units: region.attenuation_hdb is already hundredths of a dB, the
+     * same unit as velAtten/chanVol/expr (S3.5/T.2). The on-disk wsmp
+     * lAttenuation/art1 lScale is 16.16 fixed point at 0.1 dB per integer
+     * step; dls.c's `(lScale*10)>>16` conversion scales that to
+     * hundredths, so it is summed in directly here with no further
+     * conversion, per S1.4.4/S3.10. */
+    v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb;
 
-    /* Pan, SPEC.md S3.6 (L/R assignment is an inference; see SPEC_GAPS.md).
+    /* Pan, SPEC.adoc S3.6 (L/R assignment is an inference; see SPEC_LOG.adoc).
      * The region's own pan offset (artic->pan_cb) is fixed; the channel's
      * live CC10 pan is combined with it fresh in voice_update_gain. */
     voice_update_gain(v);
@@ -1238,12 +1229,12 @@ void voice_note_on(int channel, int note, int velocity) {
      * across a whole segment -- measured as a 23 ms ramp-up on every note of
      * probe 14, 5x too quiet at 4 ms in. */
 
-    /* Envelope (EG1, amplitude), SPEC.md S3.4 */
+    /* Envelope (EG1, amplitude), SPEC.adoc S3.4 */
     double attack_s = timecents_to_seconds(
         scale_tc_by_source(r->artic->eg1_attack_tc, r->artic->eg1_attack_vel_tc, velocity));
     double decay_s = timecents_to_seconds(
         scale_tc_by_source(r->artic->eg1_decay_tc, r->artic->eg1_decay_kf_tc, note));
-    /* SPEC.md S5.1.2 [A:0x18d3d-0x18d49 / 0x18b4a-0x18b8b]: at CONSUMPTION
+    /* SPEC.adoc S5.1.2 [A:0x18d3d-0x18d49 / 0x18b4a-0x18b8b]: at CONSUMPTION
      * time the real driver does not read the raw sustain permille as a
      * linear-amplitude fraction (that reading is only the on-disk STORAGE
      * format, S5.1 Part 2). The decay segment's advance routine treats it as
@@ -1258,14 +1249,14 @@ void voice_note_on(int channel, int note, int velocity) {
     v->env_sustain_level = rt_pow(10.0, sustain_hundredths_db / 100.0 / 20.0);
     if (v->env_sustain_level < 0.0) v->env_sustain_level = 0.0;
     if (v->env_sustain_level > 1.0) v->env_sustain_level = 1.0;
-    /* SPEC.md S5.1.2 [A:0x19968-0x1997e]: note-on setup overwrites the
+    /* SPEC.adoc S5.1.2 [A:0x19968-0x1997e]: note-on setup overwrites the
      * (velocity-scaled) decay duration with decay*(1000-sustainPermille)/1000
      * before the decay segment's advance routine ever consumes it -- the
      * decay segment only has to travel down to sustainPermille, not to 0,
      * so its real duration is shorter than the full authored decay time by
      * exactly that fraction. */
     double decay_to_sustain_s = decay_s * (double)(1000 - sustain_permille) / 1000.0;
-    /* SPEC.md S5.1.2.1: the decay segment's SHAPE is a plain geometric ramp
+    /* SPEC.adoc S5.1.2.1: the decay segment's SHAPE is a plain geometric ramp
      * (env_level *= env_decay_coef every sample), the same per-sample
      * mechanism ENV_RELEASE below already uses -- NOT the asymptotic
      * approach-to-target shape this project used pre-fix. S5.1.2.1 derives
@@ -1302,7 +1293,7 @@ void voice_note_on(int channel, int note, int velocity) {
         v->env_attack_step = 1.0 / (attack_s * (double)RENDER_RATE);
     }
 
-    /* EG2 (pitch envelope), SPEC.md S2.4.3 `[A:0x15838]` / SPEC_GAPS.md #20.
+    /* EG2 (pitch envelope), SPEC.adoc S2.4.3 `[A:0x15838]` / SPEC_LOG.adoc #20.
      * Same segment structure as EG1 above, but its output scales
      * eg2_to_pitch_cents rather than amplitude. A zero depth (the documented
      * default, S2.4.3's "WORD +0x1e = 0 -- no EG2->pitch by default") leaves
@@ -1345,7 +1336,7 @@ void voice_note_off(int channel, int note) {
 }
 
 void voice_all_sound_off(int channel) {
-    /* SPEC.md S5.9/S4.3 (CC120): bypasses the sustain hold entirely. */
+    /* SPEC.adoc S5.9/S4.3 (CC120): bypasses the sustain hold entirely. */
     for (int i = 0; i < NUM_VOICES; i++) {
         Voice *v = &g_voices[i];
         if (v->active && v->channel == channel && v->held) {
@@ -1355,7 +1346,7 @@ void voice_all_sound_off(int channel) {
 }
 
 void voice_all_notes_off(int channel) {
-    /* SPEC.md S5.9/S4.3 (CC123): honours the sustain hold. */
+    /* SPEC.adoc S5.9/S4.3 (CC123): honours the sustain hold. */
     for (int i = 0; i < NUM_VOICES; i++) {
         Voice *v = &g_voices[i];
         if (v->active && v->channel == channel && v->held) {
@@ -1414,7 +1405,7 @@ double voice_step_envelope(Voice *v) {
             }
             break;
         case ENV_DECAY:
-            /* SPEC.md S5.1.2.1: geometric ramp, same mechanism as ENV_RELEASE
+            /* SPEC.adoc S5.1.2.1: geometric ramp, same mechanism as ENV_RELEASE
              * below (env_level *= coef), not an approach-to-target -- see the
              * note-on setup comment above for the coefficient's derivation.
              * env_decay_samples_left is the exact countdown that snaps
@@ -1433,7 +1424,7 @@ double voice_step_envelope(Voice *v) {
             break;
         case ENV_RELEASE:
             v->env_level *= v->env_release_coef;
-            /* Tried SPEC.md Part 5's confirmed -80dB finish-detection floor
+            /* Tried SPEC.adoc Part 5's confirmed -80dB finish-detection floor
              * (`0xffffe0c0`, `[A:0x19733]`) here instead of this -66dB
              * value; measured byte-identical spec_ovr across every graded
              * probe and a very slightly worse (further from reference)

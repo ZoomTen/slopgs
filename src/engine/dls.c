@@ -1,17 +1,17 @@
-/* dls.c -- RIFF/DLS parse of gm.dls, SPEC.md Part 2.
+/* dls.c -- RIFF/DLS parse of gm.dls, SPEC.adoc Part 2.
  *
- * Chunk walk shape follows SPEC.md S2.2.1 exactly: `next = cur + 8 + size`,
+ * Chunk walk shape follows SPEC.adoc S2.2.1 exactly: `next = cur + 8 + size`,
  * no RIFF odd-size padding, except inside an INFO list where size is rounded
  * up to even (S2.2.1's stated single exception) -- gm.dls's own chunks are
  * all even-sized anyway (S2.2.1), so this only matters for defensive
  * correctness on a hypothetical odd-sized foreign file.
  *
  * Deviations from the original binary's *internal mechanism* (not from its
- * observable output) are documented in SPEC_GAPS.md: this parser resolves
+ * observable output) are documented in SPEC_LOG.adoc: this parser resolves
  * ptbl/wvpl directly via a two-pass offset array rather than replicating the
- * placeholder-linked-list-with-pointer-fixup mechanism SPEC.md S2.8
+ * placeholder-linked-list-with-pointer-fixup mechanism SPEC.adoc S2.8
  * describes; the wave-level fmt/data/wsmp decode happens eagerly during that
- * pass rather than at the deferred/unlocated point SPEC.md S2.8.6 flags as
+ * pass rather than at the deferred/unlocated point SPEC.adoc S2.8.6 flags as
  * [O] in the original driver. Both produce the same resolved Region->Wave
  * structure for a well-formed file such as gm.dls.
  */
@@ -41,7 +41,7 @@ static int fourcc_is(const uint8_t *p, char a, char b, char c, char d) {
 #define WSMP_LOOP_MIN_SIZE (WSMP_MIN_SIZE + 0x10)
 
 /* -------------------------------------------------------------------- */
-/* Wave-chunk contents: fmt / data / wsmp / edit (SPEC.md S2.3.4, S2.7)   */
+/* Wave-chunk contents: fmt / data / wsmp / edit (SPEC.adoc S2.3.4, S2.7)   */
 
 static void wave_defaults(Wave *w) {
     w->sample_rate = 22050;
@@ -50,7 +50,7 @@ static void wave_defaults(Wave *w) {
     w->loop_start = 0;
     w->loop_end = 0;
     w->fine_tune = 0;
-    w->attenuation_tenth_db = 0;
+    w->attenuation_hdb = 0;
     w->unity_note = DLS_DEFAULT_UNITY_NOTE;
     w->no_loop = 1;
 }
@@ -83,13 +83,13 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w) 
             if (have_fmt) {
                 if (bits_per_sample == 16) {
                     w->sample_count = (int32_t)(size / 2);
-                    /* Referenced in place, never copied (SPEC.md S1.5.5). */
+                    /* Referenced in place, never copied (SPEC.adoc S1.5.5). */
                     w->samples = (int16_t *)(uintptr_t)cdata;
                 } else if (bits_per_sample == 8) {
                     /* Hypothetical for gm.dls (which is 495/495 16-bit,
-                     * SPEC.md S2.7.3): convert to int16 via a small copy
+                     * SPEC.adoc S2.7.3): convert to int16 via a small copy
                      * rather than reference in place, since our render path
-                     * only implements the 16-bit fetch tap (SPEC_GAPS.md). */
+                     * only implements the 16-bit fetch tap (SPEC_LOG.adoc). */
                     uint32_t n = size;
                     int16_t *buf = (int16_t *)rt_alloc(n * 2);
                     for (uint32_t i = 0; i < n; i++) {
@@ -105,7 +105,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w) 
                 w->unity_note = cdata[4]; /* low byte only, S2.3.4 */
                 w->fine_tune = rd_i16(cdata + 6);
                 int32_t latten = rd_i32(cdata + 8);
-                w->attenuation_tenth_db = (int16_t)((int32_t)(((int64_t)latten * 10) >> 16));
+                w->attenuation_hdb = (int16_t)((int32_t)(((int64_t)latten * 10) >> 16));
                 uint32_t nloops = rd_u32(cdata + 0x10);
                 if (nloops == 0) {
                     w->no_loop = 1;
@@ -127,7 +127,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w) 
 }
 
 /* -------------------------------------------------------------------- */
-/* art1 connection-block decoder, SPEC.md S2.4                           */
+/* art1 connection-block decoder, SPEC.adoc S2.4                           */
 
 static void artic_defaults(Artic *a) {
     a->eg1_attack_tc = a->eg1_decay_tc = a->eg1_release_tc = (int32_t)0x80000000;
@@ -135,7 +135,7 @@ static void artic_defaults(Artic *a) {
     a->eg2_attack_tc = a->eg2_decay_tc = a->eg2_release_tc = (int32_t)0x80000000;
     a->eg2_sustain_permille = 1000;
     a->eg2_to_pitch_cents = 0;
-    a->vel_to_atten_depth = (int16_t)0xda80; /* -9600, see SPEC_GAPS.md for the
+    a->vel_to_atten_depth = (int16_t)0xda80; /* -9600, see SPEC_LOG.adoc for the
                                                  S2.5-vs-S3.5 sign/meaning note */
     a->pan_cb = 0;
     a->lfo_freq_tc = (int32_t)0x80000000;
@@ -159,7 +159,7 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
     if (csize < 8) return;
     uint32_t cb_size = rd_u32(cdata + 0);
     uint32_t n_blocks = rd_u32(cdata + 4);
-    /* SPEC.md S2.3.6: array unconditionally at chunk_data+8, ignoring the
+    /* SPEC.adoc S2.3.6: array unconditionally at chunk_data+8, ignoring the
      * chunk's own declared cbSize field. */
     (void)cb_size;
     const uint8_t *block = cdata + 8;
@@ -207,7 +207,7 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
                scale_tc_by_source). 27 of gm.dls's 235 instruments author a
                non-zero one -- louder notes attack faster on those patches. */
             else if (udest == ART_DST_EG1_ATTACKTIME) a->eg1_attack_vel_tc = (int16_t)(lscale >> 16);
-        } else if (usrc == ART_SRC_KEYNUMBER) { /* SPEC.md S2.4.3 "Source = 3" table.
+        } else if (usrc == ART_SRC_KEYNUMBER) { /* SPEC.adoc S2.4.3 "Source = 3" table.
                                    169 of gm.dls's 235 instruments carry the
                                    EG1_DECAYTIME row -- every acoustic patch,
                                    most synth leads/pads/SFX not; dropping it
@@ -217,23 +217,23 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a) {
             else if (udest == ART_DST_EG2_DECAYTIME) a->eg2_decay_kf_tc = (int16_t)(lscale >> 16);
         } else if (usrc == ART_SRC_EG2) {
             if (udest == ART_DST_PITCH) a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
-        } else if (usrc == ART_SRC_LFO) { /* LFO -> PITCH, SPEC.md S2.4.3 "Source = 1" table,
+        } else if (usrc == ART_SRC_LFO) { /* LFO -> PITCH, SPEC.adoc S2.4.3 "Source = 1" table,
                                     `[M: probe 06]` for the rate/depth model this
                                     feeds (voice.c). usDestination==ART_DST_ATTENUATION
                                     (tremolo/attenuation) is intentionally left
-                                    unparsed -- out of scope, SPEC_GAPS.md. */
+                                    unparsed -- out of scope, SPEC_LOG.adoc. */
             if (udest == ART_DST_PITCH) {
                 int16_t v = clamp_cents(lscale >> 16);
                 if (uctrl == ART_CTRL_NONE) a->lfo_pitch_inherent_cents = v;
                 else if (uctrl == ART_CTRL_CC1) a->lfo_pitch_cc1_cents = v;
-                /* any other usControl: dropped, matches SPEC.md S2.4.4 (gate
+                /* any other usControl: dropped, matches SPEC.adoc S2.4.4 (gate
                    only accepts exactly 0 or 0x81). */
             }
         }
         /* usSource==ART_SRC_KEYNUMBER (key-follow) to any destination other
-         * than the two decay rows above is still dropped -- SPEC.md S2.4.3's
+         * than the two decay rows above is still dropped -- SPEC.adoc S2.4.3's
          * own "Source = 3" table lists only those two, and gm.dls authors
-         * nothing else. usSource==4 is correctly dropped per SPEC.md S2.4
+         * nothing else. usSource==4 is correctly dropped per SPEC.adoc S2.4
          * (matches original's own quirk). */
     }
 }
@@ -248,7 +248,7 @@ static void region_defaults(Region *r) {
     r->loop_start = 0;
     r->loop_end = 0;
     r->fine_tune = 0;
-    r->attenuation_tenth_db = 0;
+    r->attenuation_hdb = 0;
     r->unity_note = DLS_DEFAULT_UNITY_NOTE;
     r->no_loop = 1;
     r->low_key = 0;
@@ -282,7 +282,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen) {
                 r->unity_note = cdata[4];
                 r->fine_tune = rd_i16(cdata + 6);
                 int32_t latten = rd_i32(cdata + 8);
-                r->attenuation_tenth_db = (int16_t)((int32_t)(((int64_t)latten * 10) >> 16));
+                r->attenuation_hdb = (int16_t)((int32_t)(((int64_t)latten * 10) >> 16));
                 uint32_t nloops = rd_u32(cdata + 0x10);
                 if (nloops == 0) {
                     r->no_loop = 1;
@@ -391,7 +391,7 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen) {
         p = cdata + size;
     }
 
-    /* SPEC.md S3.2.2: regions lacking their own lart adopt the instrument's
+    /* SPEC.adoc S3.2.2: regions lacking their own lart adopt the instrument's
      * shared default block. */
     if (inst_default_artic) {
         for (Region *r = inst->first_region; r; r = r->next) {
@@ -419,7 +419,7 @@ int dls_load(const uint8_t *data, uint32_t len) {
 
     const uint8_t *ptbl_offsets_raw = 0; /* the file's raw ulOffset[] array */
     uint32_t ptbl_cues = 0;
-    const uint8_t *wvpl_data_base = 0; /* per SPEC.md S2.8.3: wvpl chunk data + 4 */
+    const uint8_t *wvpl_data_base = 0; /* per SPEC.adoc S2.8.3: wvpl chunk data + 4 */
     uint32_t wvpl_data_size = 0;
     Instrument *inst_tail = 0;
 
@@ -438,7 +438,7 @@ int dls_load(const uint8_t *data, uint32_t len) {
                     ptbl_cues = ccues;
                 } else if (arr <= end) {
                     /* array runs past end mid-array: take as many cues as fit,
-                     * silently (SPEC.md S2.2.2's stated non-error case). */
+                     * silently (SPEC.adoc S2.2.2's stated non-error case). */
                     ptbl_offsets_raw = arr;
                     ptbl_cues = (uint32_t)((end - arr) / 4);
                 }
@@ -467,12 +467,12 @@ int dls_load(const uint8_t *data, uint32_t len) {
             /* INFO and any other LIST subtype: skipped. */
         }
         /* colh, vers, msyn, edit: parsed off, no state needed beyond size
-         * validation (which we treat leniently -- see SPEC_GAPS.md). */
+         * validation (which we treat leniently -- see SPEC_LOG.adoc). */
         p = cdata + size;
     }
 
     /* Post-pass: build the wave array and resolve every region's wave
-     * pointer, mirroring SPEC.md S2.8.4's own post-pass (0x15dde), without
+     * pointer, mirroring SPEC.adoc S2.8.4's own post-pass (0x15dde), without
      * replicating its placeholder-linked-list mechanism (see file header). */
     if (ptbl_offsets_raw && wvpl_data_base && ptbl_cues > 0) {
         Wave **arr = (Wave **)rt_alloc(ptbl_cues * sizeof(Wave *));
@@ -505,7 +505,7 @@ int dls_load(const uint8_t *data, uint32_t len) {
                 /* [A: DLS-1 wsmp inheritance] A region with no wsmp chunk of
                  * its own falls back to its wave's wsmp-derived unity note /
                  * fine tune (standard DLS-1 region-overrides-wave
-                 * convention). SPEC.md S3.3.2 flags this exact fallback path
+                 * convention). SPEC.adoc S3.3.2 flags this exact fallback path
                  * as never exercised by gm.dls (every one of its 1498
                  * regions carries its own wsmp) and, for the driver in
                  * general, [O] -- not disassembly-confirmed, only the
@@ -526,7 +526,7 @@ int dls_load(const uint8_t *data, uint32_t len) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Instrument/region lookup, SPEC.md S3.1                                */
+/* Instrument/region lookup, SPEC.adoc S3.1                                */
 
 static Region *find_region_for_note(Instrument *inst, uint8_t note) {
     for (Region *r = inst->first_region; r; r = r->next) {
@@ -535,7 +535,7 @@ static Region *find_region_for_note(Instrument *inst, uint8_t note) {
     return 0;
 }
 
-/* SPEC.md S3.1.3 `[A:0x147b7]`: the key-range walk is part of FindInstrument,
+/* SPEC.adoc S3.1.3 `[A:0x147b7]`: the key-range walk is part of FindInstrument,
  * not a step after it -- an instrument whose regions do not cover the note is
  * rejected like a locale mismatch, so the caller's next fallback tier gets a
  * turn. That is what makes a drum kit with a hole in its key map (gm.dls's
