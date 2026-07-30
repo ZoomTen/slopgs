@@ -190,6 +190,99 @@ are history, not current measurements.
 
 '''
 
+[#item40]
+== 2026-07-30 — Probe 50's reference is recorded: the per-voice ceiling is confirmed in the real synth, slopgs's flat top sits 1.61 dB high, and its sub-knee levels sit 1.35–2.96 dB low — item40
+
+`artifacts/probe-results/50.flac` now exists (44.1 kHz stereo, 53.79 s,
+resampled to 22050 Hz mono for analysis; global lag −339.2 ms, envelope
+`r` 0.979). Both renders reach digital full scale in section E, so no level
+normalisation is applied and every number below is absolute. Peak of a
+250 ms window from each manifest onset.
+
+=== The ceiling is real in the hardware, and both engines clamp
+
+Section A, Sine Wave `008:080` key 60 at `CC7=127`/`CC11=127`:
+
+|===
+| velocity | reference | slopgs | slopgs − ref
+
+| 8 | 41.73 dB | 38.84 dB | −2.89 dB
+| 16 | 53.57 dB | 50.94 dB | −2.63 dB
+| 32 | 65.96 dB | 62.99 dB | −2.96 dB
+| 48 | 71.41 dB | 70.03 dB | −1.38 dB
+| 64 | 76.41 dB | 75.03 dB | −1.38 dB
+| 80 | 80.26 dB | 78.91 dB | −1.35 dB
+| 96 | **82.41 dB** | 82.07 dB | −0.34 dB
+| 104 | **82.41 dB** | 83.46 dB | +1.05 dB
+| 108 | **82.41 dB** | **84.02 dB** | +1.61 dB
+| 112 | **82.41 dB** | **84.02 dB** | +1.61 dB
+| 116 | **82.41 dB** | **84.02 dB** | +1.61 dB
+| 120 | **82.41 dB** | **84.02 dB** | +1.61 dB
+| 124 | **82.41 dB** | **84.02 dB** | +1.61 dB
+| 127 | **82.41 dB** | **84.02 dB** | +1.61 dB
+|===
+
+The reference flattens across eight consecutive velocities. That upgrades the
+per-voice clamp of xref:SPEC.adoc#s6-4-5[§6.4.5] from a structural argument
+corroborated by one probe to a directly observed flat top on a second,
+independent capture. 82.41 dB is a linear sample value of **13200**, which is
+exactly the flat top §6.4.5 already records from probe 27 — two captures,
+different probe, same number. The analysis method is therefore cross-checked,
+not just self-consistent.
+
+=== Two separate engine-side discrepancies, not one
+
+|===
+| | reference | slopgs
+
+| flat-top level | 82.41 dB (13200) | 84.02 dB (15887) — **1.61 dB high**
+| knee (first clamped velocity) | 96 | 108 — **12 steps late**
+| tracking region, vel 48–80 | — | **1.35–1.38 dB low**
+| tracking region, vel 8–32 | — | **2.63–2.96 dB low**
+|===
+
+These have opposite signs, so no single constant can close both: slopgs is
+too quiet where it tracks and too loud where it clamps. The step in the
+tracking deficit between velocity 32 (−2.96 dB) and 48 (−1.38 dB) is sharp
+and repeats across sections B/C, so it is structure rather than noise — a
+velocity-table or low-level quantisation difference is the obvious candidate
+and is the best lead for the next pass. The 1.61 dB figure matches the
+"~1.6–1.7 dB hotter" note already standing in `voice.c` at `GAIN_CEILING`,
+which is thereby confirmed rather than superseded.
+
+=== Three fits tried, all rejected by the corpus gate
+
+Scratch builds only; `voice.c` was restored and verified with `cmp`, and
+nothing was shipped.
+
+|===
+| build | probe 50 `r` | probe 50 residual | MEAN `r` | MEAN residual
+
+| shipped | 0.988 | **−27.11 dB** | 0.929 | −31.58 dB
+| `GAIN_CEILING` −1.61 dB | 0.990 | −23.50 dB | 0.931 | −31.99 dB
+| `GAIN_TRIM_DB` +1.37 | 0.991 | −26.92 dB | 0.930 | −31.95 dB
+| both together | 0.991 | −26.79 dB | 0.932 | −32.39 dB
+|===
+
+Every variant worsens the targeted item's residual even where envelope `r`
+and the corpus mean improve, so none passes the gate. Recorded so they are
+not retried: lowering the ceiling alone is actively the worst of the three,
+because the sub-knee cases are the majority of the probe and dropping the
+clamped cases shifts the level-normalised fit against them.
+
+=== Sections that cannot be read from this capture
+
+Sine Wave notes ring past the 1.0–1.3 s case spacing, so section E's
+eight-voice full-scale case bleeds into section F's window and both read
+90.31/84.02 dB in the two renders alike. **E and F are inconclusive here and
+their numbers above should not be used**; a future revision should widen
+those gaps or pick a shorter-decay patch. A, A2, B, C and G are clean.
+
+**Status: `[O]`.** No engine change. xref:#item35[Item 35] stays open, now
+with the level error bracketed on both sides of the knee.
+
+'''
+
 [#item39]
 == 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; the mid-note expression collapse is measured and rejected as the cause of its level excess — item39
 
