@@ -70,7 +70,9 @@ effect (§<<scc>>) to select an instrument.
 * Center is `00 40` (8192, no bend)
 * Applied continuously to every sounding note on the channel — a bend
 arriving mid-note is heard *immediately*, not just on the next note. Range
-is set by RPN0, default ±2 semitones (§<<scc>>).
+is set by RPN0, default ±2 semitones (§<<scc>>). This includes rhythm/drum
+Parts: bending a drum channel bends its sounding notes too, using that
+channel's RPN0 range the same as any other Part.
 
 [#scc]
 === Control Change
@@ -166,7 +168,8 @@ LSB ignored.
 −64 … +63 semitones.
 
 LSB ignored.
-| **Latched at Note On**, same as Fine Tuning.
+| **Latched at Note On**, same as Fine Tuning. Has **no effect on a rhythm
+(drum) Part** — the value is stored, but drum Parts ignore it.
 | `7F 7F`
 | *Null* (no parameter selected).
 | —
@@ -352,11 +355,25 @@ The addresses listed below are DT1 addresses, to be filled in the
 
 **Also fires a Reset All Controllers on every channel** — all notes cut,
 controllers back to defaults. Bank/Program survive.
+// The retuning behavior below is confirmed for the hardware this chart
+// describes, but slopgs does not implement the twelve-entry grid yet
+// (synth.c: "No 12-entry-per-part GS Scale Tuning grid"). Held back so the
+// chart does not promise a musician something the synth ignores; restore it
+// over the "Recognized." cell once the engine implements Scale Tuning.
+//
+// | Recognized, and it actually retunes the Part: each of the twelve values
+// shifts every note of that semitone class (C, C♯, D, …) on that Part by a
+// signed number of cents equal to the received value minus `40` (one cent per
+// step, so `40` = no change, roughly −64…+63 cents). **Latched at Note On**,
+// exactly like Fine Tuning — changing it does not retune a note already
+// sounding. Twelve data bytes are consumed, always starting at semitone
+// class C.
 | `40 1n 40`–`4B`
 | Scale Tuning
 
 One signed offset per semitone class (C…B), centred on `40`, stored per Part `n`
-| Recognized. Twelve data bytes are consumed, always starting at semitone class C.
+| Recognized. Twelve data bytes are consumed, always starting at semitone
+class C.
 | `40 1n` _any other_
 | Anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, …)
 | **Not individually implemented.**

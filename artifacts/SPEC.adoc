@@ -2124,23 +2124,47 @@ Spot values: `T[0x1bfc0][−100] = 1294` (a round-to-nearest builder would give
 1295) and `T[0x1ad00][−100] = 3866`, both reproduced in xref:s3-7[§3.7].
 
 [#s3-3-2]
-==== Unity note, fine tune, key, and pitch-bend combination
+==== The note-on tuning accumulator, unity note/fine tune combination, and live pitch bend
 
-At note-trigger time, `0x19b54` calls `0x18ef4(voice, &region+4, ..., key,
-pitchBendCents, ...)` (six-parameter `__stdcall`, `ret 0x18`). Inside
-`0x18ef4`, the passed pointer is used both to bulk-copy the region's own
-`+0x04..+0x1f` span into the new voice object (`rep movs`, 7 DWORDs,
-`0x18f2c`–`0x18f3b` — this is how `voice+0x00` ends up holding the region's
-resolved *wave*-object pointer, consistent with the voice section's own field
-map (`voice+0x00` = wave/sample descriptor object)), and, via the **same
-pointer re-biased by the compiler's own `+4` baseline**, to read region
-fields directly:
+**(a) The note-on tuning accumulator.** Before `0x19b54` calls `0x18ef4`,
+the note-trigger function builds a per-note cents accumulator and passes it
+in as its own argument — `ebp+0x38`, a wholly different argument slot from
+the master-volume attenuation sum at `ebp+0x34` (xref:s3-5[§3.5]):
+
+[source,c]
+----
+semitoneClass = note % 12;                                 // remainder-by-12 at 0x12f54
+tuningCents  = channel->scaleTuning[semitoneClass];        // 0x12f60, device+0xfbc, §4.2.2
+tuningCents += channel->rpn1FineCents;                     // 0x12f67, device+0xf7c
+if (!channel->useRhythmPart)                               // 0x12f6e, branch 0x12f76
+    tuningCents += channel->rpn2CoarseCents;               // 0x12f78, device+0x12bc
+tuningCents += (int16)instrument[0x26];                    // 0x19b8d: per-instrument pitch offset
+----
+
+GS Scale Tuning and RPN1 Channel Fine Tuning are added **unconditionally**.
+**RPN2 Channel Coarse Tuning is the only pitch modifier skipped on a rhythm
+part**: the gate at `0x12f6e` tests the part's USE RHYTHM PART flag and
+skips exactly the RPN2 add when it is set. The scale-tuning grid is indexed
+by the note's own semitone class (`part*12 + note%12` against
+`device+0xfbc`), matching the write indexing in xref:s4-2-2[§4.2.2].
+
+`0x19b54` calls `0x18ef4(voice, &region+4, ..., key, tuningCents, ...)`
+(six-parameter `__stdcall`, `ret 0x18`). Inside `0x18ef4`, the passed
+pointer is used both to bulk-copy the region's own `+0x04..+0x1f` span into
+the new voice object (`rep movs`, 7 DWORDs, `0x18f2c`–`0x18f3b` — this is
+how `voice+0x00` ends up holding the region's resolved *wave*-object
+pointer, consistent with the voice section's own field map (`voice+0x00` =
+wave/sample descriptor object)), and, via the **same pointer re-biased by
+the compiler's own `+4` baseline**, to read region fields directly.
+
+**(b) The per-region combination.** The argument reaching this arithmetic is
+the tuning accumulator above, not pitch bend:
 
 [source,c]
 ----
 unityNote = (BYTE)region[0x1e]; // 0x18f4f: BYTE at (&region+4)+0x1a == region+0x1e
 fineTune  = (int16)region[0x18]; // 0x18f58: WORD at (&region+4)+0x14 == region+0x18
-cents     = fineTune + (key - unityNote) * 100 + pitchBendCentsParam; // 0x18f53-0x18f62
+cents     = fineTune + (key - unityNote) * 100 + tuningCents; // 0x18f53-0x18f62
 ratio_q12 = CentsToRatio(cents); // 0x18f65: call 0x18e1c, see §3.3.3
 ----
 
@@ -2153,15 +2177,40 @@ chunk (verified xref:s3-7[§3.7]), so the never-located fallback to the *wave* o
 unity-note/fine-tune (xref:s2-6[§2.6]'s flagged `[O]`) is never
 exercised by this file; it remains `[O]` for the driver in general.
 
-`pitchBendCentsParam` is threaded in from the channel's pitch-bend
-controller object (`device+0x3d0 + chan*0x28`), default-initialized with
-14-bit center `0x2000` (8192) and default RPN0 pitch-bend range `0xc8`
-(200 cents = 2 semitones) `[A:0x16e3d]` `[A:0x16e44]`.
-The exact instruction that scales the raw 14-bit bend value by the range
-before it reaches this cents sum is **`[O]`**; the
-standard-MIDI scaling (`(raw14 − 8192)/8192 × rangeCents`) is consistent with
-every value observed (center and default range) but the scaling arithmetic
-itself is not independently confirmed here.
+**(c) Pitch bend is a separate, live term.** Bend never enters the note-on
+accumulator in (a). It is evaluated per render block, together with the
+pitch envelope and pitch LFO, and summed into a live cents delta by the
+voice's own pitch-delta helper `0x195a2`:
+
+[source,c]
+----
+delta  = PitchEnvelope(voice+0x08, t); // 0x195ba
+delta += PitchLfo(voice+0x38, t);      // 0x195f6
+delta += BendCents(voice->bendController, t); // 0x19628 reads voice+0xf4, 0x19631
+----
+
+and the bend term itself, `0x16d60`, is a thiscall evaluated against the
+channel's scheduled controller object `device+0x3d0+chan*0x28`:
+
+[source,c]
+----
+raw14     = ScheduledValueAt(bendController, t); // 0x16d6e
+bendCents = ((raw14 - 8192) * bendController->rpn0RangeCents) >> 13; // 0x16d73, 0x16d78, 0x16d7c
+----
+
+i.e. exactly `(raw14 − 8192)/8192 × rangeCents`, with an arithmetic right
+shift — truncation toward negative infinity, not toward zero. The RPN0
+range is re-read here on every evaluation, so **RPN0 is live, not
+latched**. `0x195a2` has exactly two call sites, both unconditional:
+`0x1970c`, inside the per-tick DSP advance `0x19644`, and `0x19da1`, in
+``SetupNote``'s own tail. `voice+0xf4` holds the pointer to the channel's
+controller object, bound once at note setup (`0x19d30`). The constructor
+defaults are confirmed: centre `0x2000` (8192) and default RPN0 range
+`0xc8` (200 cents = 2 semitones) `[A:0x16e3d]` `[A:0x16e44]`.
+
+**(d)** No rhythm-part gate exists on Pitch Bend, RPN0, RPN1 or GS Scale
+Tuning — RPN2 Channel Coarse Tuning is the only pitch modifier gated for
+rhythm parts, as in (a).
 
 [#s3-3-3]
 ==== Cents-to-ratio combination — `0x18e1c`
@@ -2415,11 +2464,13 @@ curve):**
   instruction read of the sentinel-dispatch branch.
 
 At note-trigger time these terms are summed (additively, in the
-hundredths-of-a-dB domain — equivalent to multiplying linear gains): `TriggerVoiceEvent` builds
-a running per-channel attenuation sum from `device+0xf78` (master volume)
-plus per-channel/per-part additive terms (`0x12f60`–`0x12f78`, one of which
-is gated off for rhythm parts, `[A:0x12f6e]`), and the note-setup function
-(`0x19b54`) folds in the velocity term and the region's own static
+hundredths-of-a-dB domain — equivalent to multiplying linear gains). The sum
+is seeded with `device+0xf78` (Master Volume attenuation) and passed to the
+note-setup function `0x19b54` as its own argument, pushed at `0x12fa0` —
+a wholly separate argument slot from the note-on pitch-cents accumulator
+built over an adjacent address range (xref:s3-3-2[§3.3.2]). The channel
+Volume/Expression term is added next, at `0x19b78`–`0x19b86`, and
+``0x19b54`` then folds in the velocity term and the region's own static
 attenuation:
 
 [source,c]
@@ -2428,14 +2479,17 @@ velAtten   = table_1c9d0[velocity]; // 0x19b94/0x19bad: call 0x16b94
 depth      = (int16)articulationBlock[0x64]; // 0x19bb5: velocity-sensitivity depth (§2.4.3)
 scaled     = (velAtten * depth) / -9600; // 0x19bb9-0x19bc2
 atten_sum  = runningChannelSum + scaled; // 0x19bc4-0x19bc7
-atten_sum += (int16)region[0x24]; // 0x19bc9: region's own wsmp attenuation (§2.3.4)
+atten_sum += (int16)region[0x24] + 1200; // 0x19bc9, 0x19bcd: region wsmp attenuation and a constant term
 ----
 
-`[A:0x19b94]`–`[A:0x19bc9]`, full trace. `velocity` here is
+`[A:0x19b94]`–`[A:0x19bcd]`, full trace. `velocity` here is
 ``0x19b54``'s own velocity parameter, a small integer consumed exactly as a
 `table_1c9d0` index — behaviorally this is the note-on velocity; the exact
 identity of the stack slot as "MIDI velocity" specifically (as opposed to
-some other 0-127 value) is `[I]`, the arithmetic itself is `[A]`.
+some other 0-127 value) is `[I]`, the arithmetic itself is `[A]`. The
+`+1200` instruction is `[A]` and not in doubt; what the constant is *for*
+is `[O]`, and it interacts with the still-open hundredths-of-a-dB-to-raw-
+gain-register mapping (xref:s6-4-5[§6.4.5]).
 
 A **second, linear/√-law table** exists at `0x1bfd4` (`trunc(1000 ·
 log10(v/127))`, v=1..127, v=0 → −2500 at `0x1bfd0`, builder `0x16a3e`).
@@ -2648,11 +2702,17 @@ if (!region) return NO_VOICE;
 AB = region.articulationBlock; // 0x68-byte block, private or instrument-shared
 if (!AB) return NO_VOICE; // only possible if neither region nor instrument had a lart
 
-// 3. Pitch (§3.3)
-cents = (int16)region.fineTune + (key - (BYTE)region.unityNote) * 100 + PitchBendCents(channel);
+// 3. Pitch (§3.3, §3.3.2) — note-on tuning accumulator, latched
+tuningCents = channel.scaleTuning[note % 12] + channel.rpn1FineCents
+            + (channel.useRhythmPart ? 0 : channel.rpn2CoarseCents)
+            + (int16)instrument.pitchOffset; // RPN2 is the only term gated for rhythm parts
+cents = (int16)region.fineTune + (key - (BYTE)region.unityNote) * 100 + tuningCents;
 ratio_q12 = CentsToRatio(cents); // via T2/T3 tables, §3.3.3, clamp +-4800 cents
 phaseIncRaw = region.rateField * ratio_q12; // region.rateField structurally == wave sample rate; write site [O]
 phaseInc = phaseIncRaw / renderSampleRate;
+
+// 3b. Live pitch delta (§3.3.2c) — re-evaluated every render block, never at note-on
+liveDelta = PitchEnvelope(voice) + PitchLfo(voice) + BendCents(channel.bendController); // 0x195a2
 
 // 4. Envelopes (§3.4)
 EG1 = { attack: TimecentsToDuration(AB.eg1Attack), decay: ..., sustain: AB.eg1Sustain, release: ... };
@@ -2666,9 +2726,9 @@ scaled   = (velAtten * depth) / -9600; // hundredths-of-a-dB [A:0x19bb9]-[A:0x19
 atten    = MasterVolumeTerm // hundredths-of-a-dB, table_1c9d0
          + ChannelVolumeExpressionTerm // hundredths-of-a-dB, table_1c9d0
          + scaled // hundredths-of-a-dB
-         + (int16)region.attenuation; // (lAttenuation*10)>>16; summed unscaled here, i.e. it
+         + (int16)region.attenuation + 1200; // (lAttenuation*10)>>16 plus a constant term; summed unscaled here, i.e. it
                                                              // functions as hundredths-of-a-dB in this sum, no x10
-                                                             // (§1.4.4) [A:0x19bc9]-[A:0x19bcd]
+                                                             // (§1.4.4) [A:0x19bc9], [A:0x19bcd]
 gain = 10 ** (atten / 2000.0); // dB = atten/100; linear_gain = 10**(dB/20)
 
 // 6. Pan (§3.6)
@@ -2689,10 +2749,6 @@ if (region.keyGroup != 0) {
 [#s3-11]
 === Open items
 
-* **`[O]`** The exact scaling arithmetic that converts a channel's raw
-  14-bit pitch-bend value (center 8192) and its RPN0 range (default 200
-  cents) into the cents figure consumed at xref:s3-3-2[§3.3.2] — the default values
-  themselves are `[A]`; the scaling instruction is not located.
 * **`[O]`** The write site that populates `region+0x14` (consumed at
   `0x18f6f` as the phase-increment's rate multiplicand) — not located in
   either the region-creation code (`0x14ff4`) or the region-body dispatcher
@@ -2888,10 +2944,10 @@ not sorted-queue objects, confirmed by direct index arithmetic in
 | `0xf10` | dword×16 | Current RPN/NRPN parameter-select register (`MSB<<7\|LSB`, or `0x3FFF` = Null) | CC100/101 (combine) `[A:0x13500]`/`[A:0x134f2]`; CC98/99 (force to `0x3FFF`) `[A:0x13514]` | CC6/CC38 data-entry handlers (branch on its value) `[A:0x133d4]`/`[A:0x13471]`
 | `0xf58` | word×16 | Combined 14-bit Data-Entry value (`MSB<<7\|LSB`) used while building an RPN/NRPN value | CC6 (MSB half) `[A:0x133d1]`; CC38 (LSB half) `[A:0x1346e]` | CC6/CC38 (each reads the other half back before combining) `[A:0x133c3]`/`[A:0x13464]`; RPN1 fine-tune calc `[A:0x1347a]`
 | `0xf78` | dword (device-global, not per-channel) | Master Volume attenuation, in hundredths of a dB (dB = value/100) (`0`=unity, from the same curve as note-on velocity, xref:s4-4[§4.4], Appendix T §xref:t2[T.2]) | SysEx Master Volume `[A:0x12d2d]` | folded into the note-on attenuation sum, xref:s3-5[§3.5]
-| `0xf7c` | dword×16 | RPN1 (Channel Fine Tuning) result, in cents | RPN1 calc, shared tail for CC6/CC38 `[A:0x1348a]` | `[O]` — consumer not located
-| `0xfbc` | dword×16×12 (16 parts, 12 sub-entries each) | Per-part 12-entry tuning grid, one entry per semitone class; value = `(incoming byte - 0x40)`, i.e. signed offset from a center of `0x40` | GS `DT1` fallthrough case (any address not matched as GS Reset/RCV CHANNEL/USE RHYTHM PART) `[A:0x13797]` | `[O]` — no confirmed reader in the control-plane; plausibly consumed by pitch/DSP code. Address family and 12-per-part shape are consistent with the Roland GS "Scale Tuning" parameter (12 signed semitone-class offsets per part) `[I]`, inferred from the grid shape and the `-0x40` center-normalization, not from an independently obtained Roland GS specification document
-| `0x12bc` | dword×16 | RPN2 (Channel Coarse Tuning) result, in cents | RPN2 calc (CC6 only, param==2) `[A:0x133f2]` | `[O]` — consumer not located
-| `0x12fc` | byte×16 | RCV CHANNEL: which physical MIDI channel index (0–15) feeds internal Part *i* | `ResetDevice` (from the static table, xref:s4-6[§4.6]) `[A:0x123aa]`; GS SysEx RCV CHANNEL `[A:0x137ae]` | ``ShortMsg``'s per-Part CC/note dispatch loop (matches incoming channel against this array) `[A:0x13267]`
+| `0xf7c` | dword×16 | RPN1 (Channel Fine Tuning) result, in cents | RPN1 calc, shared tail for CC6/CC38 `[A:0x1348a]` | The note-on tuning accumulator, added unconditionally `[A:0x12f67]` (xref:s3-3-2[§3.3.2])
+| `0xfbc` | dword×16×12 (16 parts, 12 sub-entries each) | Per-part 12-entry GS Scale Tuning grid, one entry per semitone class; value = `(incoming byte - 0x40)`, i.e. signed offset from a center of `0x40` | GS `DT1` fallthrough case (any address not matched as GS Reset/RCV CHANNEL/USE RHYTHM PART) `[A:0x13797]` | The note-on tuning accumulator `[A:0x12f60]`, indexed `part*12 + note%12` (xref:s3-3-2[§3.3.2]) — the indexing by semitone class is itself what confirms this grid is GS Scale Tuning
+| `0x12bc` | dword×16 | RPN2 (Channel Coarse Tuning) result, in cents | RPN2 calc (CC6 only, param==2) `[A:0x133f2]` | The note-on tuning accumulator `[A:0x12f78]` — skipped when the part's USE RHYTHM PART flag is set `[A:0x12f6e]` (xref:s3-3-2[§3.3.2])
+| `0x12fc` | byte×16 | RCV CHANNEL: which physical MIDI channel index (0–15) feeds internal Part *i* | `ResetDevice` (from the static table, xref:s4-6[§4.6]) `[A:0x123aa]`; GS SysEx RCV CHANNEL, arm matched at `[A:0x13756]`, gated at `[A:0x137b7]`, re-dispatched through the internal-message path, store `[A:0x12d11]` | ``ShortMsg``'s per-Part CC/note dispatch loop (matches incoming channel against this array) `[A:0x13267]`
 | `0x130c` | byte×16 | USE RHYTHM PART: `0`=melodic, nonzero=rhythm part | `ResetDevice` `[A:0x12395]`/`[A:0x123ce]` (Part 0 forced to `1`); GS SysEx USE RHYTHM PART `[A:0x137ae]` | Program Change's drum-locale propagation `[A:0x132e8]`; ``TriggerVoiceEvent``'s drum-bit injection `[A:0x12dcf]` (xref:s4-8[§4.8]); ``ResetAllProgramsAndRhythmGroups``'s per-channel drum-bit OR `[A:0x127ce]`
 | `0x131c` | dword×16 | Mono mode flag (CC126/127): nonzero = Mono | CC126 sets `1` `[A:0x13621]`; CC127 clears `0` `[A:0x13618]`; `ResetDevice` clears all `[A:0x123b1]` | ``TriggerVoiceEvent``'s mono-retrigger pre-pass `[A:0x12ddd]`
 | `0xf54` | dword (device-global) | GS-mode flag: gates CC0/CC32 storage (xref:s4-3[§4.3], xref:s4-4[§4.4]) | GS Reset sets `1` `[A:0x137f4]`; GM System On clears `0` `[A:0x136f5]`; `ResetDevice` clears `0` `[A:0x123c5]` | CC0 `[A:0x1341e]`, CC32 `[A:0x13492]`; RCV CHANNEL/USE RHYTHM PART SysEx gate `[A:0x137a2]`,`[A:0x1376e]`
@@ -3111,25 +3167,24 @@ write a derived parameter:
 [options="header"]
 |===
 | Parameter (register value) | CC6 (Data Entry MSB) effect | CC38 (Data Entry LSB) effect | Store target | Formula
-| `0` — RPN0, Pitch Bend Sensitivity | Writes `(u8)data2 * 100` cents | **No effect** (LSB not consumed for RPN0) | `device+0x3d0+chan*0x28+0x20` | `[A:0x13404]`–`[A:0x13407]`
+| `0` — RPN0, Pitch Bend Sensitivity | Writes `(u8)data2 * 100` cents | **No effect** (LSB not consumed for RPN0) | `device+0x3d0+chan*0x28+0x20` | `[A:0x13404]`–`[A:0x13407]`; read live on every bend evaluation, not latched `[A:0x16d78]`
 | `1` — RPN1, Channel Fine Tuning | Writes `((combined14bit - 8192) * 100) / 8192` cents, C-style truncation toward zero | Same recompute, using the just-updated combined word | `device+0xf7c+chan*4` | `[A:0x1347d]`–`[A:0x1348a]`; range `-100`..`+99` cents
-| `2` — RPN2, Channel Coarse Tuning | Writes `((u8)data2 - 64) * 100` cents | **No effect** (LSB not consumed for RPN2) | `device+0x12bc+chan*4` | `[A:0x133ed]`–`[A:0x133f2]`; range `-6400`..`+6300` cents
+| `2` — RPN2, Channel Coarse Tuning | Writes `((u8)data2 - 64) * 100` cents | **No effect** (LSB not consumed for RPN2) | `device+0x12bc+chan*4` | `[A:0x133ed]`–`[A:0x133f2]`; range `-6400`..`+6300` cents; the stored value is **ignored on a rhythm part** — the note-on accumulator skips it `[A:0x12f6e]`
 | any other value (incl. `0x3FFF` Null) | No effect beyond the raw combined-word store | No effect beyond the raw combined-word store | — | `[A:0x133e3]` (falls to the shared skip tail)
 |===
 
-**RPN1/RPN2 are note-on-latched, not continuous, unlike Pitch Bend.**
-Pitch Bend (RPN0's target) is read live by the voice-pitch recompute on
-every render block, so a bend arriving while a note is held audibly
-reaches that sounding voice. RPN1 (Channel Fine Tuning) and RPN2 (Channel
-Coarse Tuning), by contrast, are sampled once, at note-on, into the
-voice's fixed per-voice pitch base, and do **not** retune an already-
-sounding voice: a coarse/fine-tune change sent while a note is held has no
-audible effect on that note, only on subsequent note-ons. `[M: probe 23]`
-— `probes/23_rpn_tune.mid` section D holds a single note and sends an
+**RPN1/RPN2 are note-on-latched, not continuous, unlike Pitch Bend —
+`[A]`-confirmed, not measurement-only.** RPN1 and RPN2 are read only on the
+note-trigger path, by the note-on tuning accumulator (`0x12f67`/`0x12f78`,
+xref:s3-3-2[§3.3.2]), into the voice's fixed per-voice pitch base; the live
+per-block path (`0x195a2`) reads only the pitch envelope, pitch LFO and
+Pitch Bend — RPN1/RPN2 are not among its inputs. A coarse/fine-tune change
+sent while a note is held therefore has no audible effect on that note,
+only on subsequent note-ons. `[M: probe 23]` corroborates this:
+`probes/23_rpn_tune.mid` section D holds a single note and sends an
 RPN2 Coarse Tune change (`+12` semitones) 1.5 s into the held note; the
 rendered fundamental stays flat across that point (no octave jump),
-confirming the latch-at-note-on model against the continuous model a
-per-block re-read would predict.
+matching the latch-at-note-on model the instruction read confirms.
 
 RPN0's power-on/reset default is `200` cents (2 semitones), set only by the
 Pitch Bend ctor `0x16e36` `[A:0x16e44]`; **RPN0/RPN1/RPN2 and the
@@ -3157,7 +3212,7 @@ All addresses below are relative to the SysEx buffer, byte 0 = the leading
 | `F0 7E <any> 09 02 F7` | GM System Off | Calls `ResetDevice`, which **clears** the GS-mode flag; then **releases** the instrument collection (`0x150bc` with argument `0`), tearing down every cached instrument handle (xref:s4-9[§4.9]) | same entry point. `[A:0x136e1]` is reached before the sub-ID2 byte is examined `[A:0x136eb]`, so `ResetDevice` runs on this path exactly as it does for System On; `[A:0x13700]` (collection call)
 | `F0 7F <any> 04 01 <lsb> <msb> F7` | Master Volume (Universal Realtime, sub-ID1=`04`, sub-ID2=`01`) | Only the **MSB** byte is used; the LSB is never read. MSB is looked up in the same 128-entry attenuation table as note-on velocity and stored to `device+0xf78` (device-global) | `[A:0x136a7]` (mfr `0x7F`), `[A:0x136ae]`/`[A:0x136b8]` (sub-IDs), `[A:0x136c2]` (reads byte 6 = MSB; byte 5 = LSB is never referenced), `[A:0x12d28]` (table lookup), `[A:0x12d2d]` (store)
 | `F0 41 <any> 42 12 40 00 7F 00 <chk> F7` | Roland GS Reset (`DT1`, address `40 00 7F`, data `00`) | Calls `ResetDevice`; **sets** the GS-mode flag to `1`; then calls `ResetAllChannelControllers` and `ResetAllProgramsAndRhythmGroups` | `[A:0x1369d]` (mfr `0x41`), `[A:0x13717]`/`[A:0x13721]` (model `0x42`/command `0x12`), `[A:0x1374a]` (address match `400 07F`), `[A:0x137ea]` (`call 0x12354`), `[A:0x137f4]` (set flag), `[A:0x137fa]`–`[A:0x13816]` (both reset calls, shared with GM On/Off)
-| `F0 41 <any> 42 12 40 1x 02 <data> <chk> F7` | RCV CHANNEL (per-Part MIDI-channel remap), gated on GS-mode flag | Writes `data` into `device+0x12fc+part*1` | `[A:0x13756]` (address match), `[A:0x137b7]` (gate test), `[A:0x137ae]` (store)
+| `F0 41 <any> 42 12 40 1x 02 <data> <chk> F7` | RCV CHANNEL (per-Part MIDI-channel remap), gated on GS-mode flag | Writes `data` into `device+0x12fc+part*1`, via a re-dispatch through the internal-message path | `[A:0x13756]` (address match), `[A:0x137b7]` (gate test), `[A:0x12d11]` (store, in the internal-message dispatcher)
 | `F0 41 <any> 42 12 40 1x 15 <data> <chk> F7` | USE RHYTHM PART (per-Part rhythm-map assignment), gated on GS-mode flag | Writes `data` into `device+0x130c+part*1`, then enters the shared reset tail and calls `ResetAllChannelControllers` — releasing every sounding voice and resetting every controller on all 16 channels. It does **not** call `ResetAllProgramsAndRhythmGroups`, so Bank/Program survive | `[A:0x1375e]` (address match), `[A:0x137a2]` (gate test), `[A:0x137ae]` (store), `[A:0x137b5]` (`jmp` into the tail), `[A:0x13807]` (tail gate, false on this path); `[M]` every sounding voice cut, Volume/Pan/Expression back at their defaults on channels sent no message of their own
 | `F0 41 <any> 42 12 40 1x yy ... F7` (any other address in the `40 1x` family), gated on GS-mode flag | Per-Part 12-entry tuning-grid write (xref:s4-2-2[§4.2.2], `device+0xfbc`) | 12 iterations, one per semitone class, each storing `byte - 0x40` | `[A:0x1376c]` (gate test), `[A:0x13797]` (store loop)
 | any other manufacturer ID / model ID / command ID / address | Unrecognized | No state change; function returns success (`1`), the buffer is consumed and dropped, no error is raised | `[A:0x13818]`
@@ -3551,17 +3606,6 @@ locale that is already current costs nothing.
    plus the helper VMAs cited above); it lives in the render/DSP region. The
    squared-law claim for CC7/CC11 is carried as `[M:probe]`, not
    independently re-verified here.
-. `device+0xf78` (Master Volume attenuation) and `device+0xf7c`/`0x12bc`
-   (RPN1/RPN2 cent results) have no confirmed reader anywhere in the
-   control-plane's traced range; presumed consumed by DSP/gain code out of
-   scope.
-. The 16×12-entry tuning grid at `device+0xfbc` (written by the GS `DT1`
-   fallthrough case) has no confirmed reader in the control plane. Its
-   identity as the Roland GS "Scale Tuning" parameter is an inference from
-   its shape (12 bytes per part, `-0x40` center normalization, same
-   address family as the confirmed RCV-CHANNEL/USE-RHYTHM-PART GS
-   addresses) rather than a directly-read label or an independently
-   consulted Roland GS specification document.
 . Which pending events survive each of the two reset orderings. The shared
    tail runs `ResetAllChannelControllers` before
    `ResetAllProgramsAndRhythmGroups`; System Reset (`0xFF`) runs them in the
@@ -3608,6 +3652,7 @@ convention assigns at each call site (x86 `__thiscall`/`__fastcall`).
 | `+0x44` | DWORD | Phase accumulator (12-bit fraction + integer sample index); zeroed at note setup (`voice->0x44 = 0`) at `0x18f7d` | `0x17003` | `0x16ec3` `[A]`
 | `+0x68` | 0x28 bytes | Amplitude-EG (EG1) record — own `+0x10`/`+0x14` = release duration in samples, own `+0x28`/`+0x2c` = release-onset timestamp; full layout in xref:s5-1-2[§5.1.2]. Configured by `0x197dc` (note-off) or `0x19834` (fast/choke, duration-clamped) | see xref:s5-6[§5.6] | —
 | `+0x38` | 0x28 bytes | Attack/hold-envelope-segment sub-object, same layout as `+0x68` | see xref:s5-6[§5.6] | —
+| `+0xf4` | DWORD | Pointer to the channel's scheduled-controller object, `device+0x3d0+chan*0x28` — the object the live pitch-bend term is evaluated against (xref:s3-3-2[§3.3.2]) | note setup (`0x19d30`) | live pitch-delta helper `0x19628` `[A]`
 | `+0x104` | DWORD | Pointer to the **device** object: `[ptr+0x0]` is the 22050 Hz render rate the fast-release clamp divides (xref:s5-6[§5.6]), `[ptr+0x4]` a gain term read by the DSP-advance routine, `[ptr+0x18]`/`[ptr+0x1c]` its next-event ceiling | note setup (`0x19ba7`), from ``0x19b54``'s first argument | `0x19ac7`,`0x19b1b`,`0x196f0`,`0x19743` `[A]`; layout beyond these offsets: `[O]` (xref:o12[O12])
 | `+0x108`/`+0x10c` | QWORD | Envelope-scheduling timestamp pair (running "next segment-boundary" bookkeeping consumed by the DSP-advance routine `0x19644`) | `0x194cc`/`0x194d2`,`0x19c56`/`0x19c5f`, others | `0x195c4`+ region, `0x196cd`+ region `[A]`; precise scheduling semantics beyond "a 64-bit timestamp pair used by envelope advance": `[O]`
 | `+0x118`/`+0x11c` | QWORD | Second 64-bit timestamp pair, same family as `+0x108`/`+0x10c`, used in the same advance routine | `0x197b5`/`0x197bb`,`0x19a8c`/`0x19a93`,`0x19b3b`/`0x19b42` | `0x19683`/`0x19686` `[A]`
@@ -5344,7 +5389,7 @@ conditional on facts that could change, not on the binary.
 [#s7-2]
 === The open-questions register
 
-Twenty-four distinct `[O]` items. Seven are **behaviourally significant** —
+Twenty-one distinct `[O]` items. Five are **behaviourally significant** —
 a wrong guess produces audibly different output. The rest are cosmetic: no
 output consequence for `gm.dls`, or already narrowed to a near-certain value
 even though the exact instruction is unlocated.
@@ -5358,11 +5403,8 @@ even though the exact instruction is unlocated.
 | xref:o4[4] | How `0x19c12`–``0x19c2a``'s two-table read reconciles with the measured pan curve | Cosmetic
 | xref:o5[5] | The write site that populates `region+0x14`, the phase-increment's rate multiplicand | Cosmetic
 | xref:o6[6] | Design intent behind the 48-primary + 6-reserve pool split | Cosmetic
-| xref:o7[7] | The scaling arithmetic converting a raw 14-bit pitch-bend value and its RPN0 range into cents | Behaviourally significant
 | xref:o8[8] | The real-time unit of the choke/steal release clamp divisor `70` at `0x19834` | Behaviourally significant
 | xref:o9[9] | `device+0xf10` (RPN/NRPN-select register) at driver-add time | Cosmetic
-| xref:o10[10] | The disassembly address of the RPN1/RPN2 (fine/coarse tune) consumer | Cosmetic
-| xref:o11[11] | The consumer of the per-part 16×12 tuning grid at `device+0xfbc` | Behaviourally significant
 | xref:o12[12] | The layout of the object at voice `+0x104` beyond its four exercised offsets, and the scheduling semantics of the `+0x118`/`+0x11c` timestamp pair | Cosmetic
 | xref:o13[13] | The semantic identity of `region+0x28`, the third region-selection gate | Behaviourally significant
 | xref:o14[14] | The runtime value of `flagByte`, which governs 16-bit-source storage policy | Behaviourally significant
@@ -5444,17 +5486,6 @@ even though the exact instruction is unlocated.
 
 *Significance.* Cosmetic — reproducing the mechanics exactly is correct regardless of the motive.
 
-[#o7]
-==== The scaling arithmetic converting a raw 14-bit pitch-bend value and its RPN0 range into cents
-
-*Known.* The defaults are confirmed at their constructor: centre 8192, range 200 cents `[A:0x16e3d]` `[A:0x16e44]`. The standard MIDI formula `(raw14 − 8192)/8192 × rangeCents` is consistent with every value observed.
-
-*Not known.* The specific multiply/divide sequence performing the scaling.
-
-*How it would be settled.* Trace forward from the pitch-bend controller's `+0x18` field to its first consumer inside `0x18ef4`; or render a bend sweep at several RPN0 range settings and check the pitch shift against the linear formula.
-
-*Significance.* **Behaviourally significant** — a wrong formula gives an audibly wrong bend response curve.
-
 [#o8]
 ==== The real-time unit of the choke/steal release clamp divisor `70` at `0x19834`
 
@@ -5476,28 +5507,6 @@ even though the exact instruction is unlocated.
 *How it would be settled.* Not resolvable statically — would need a live memory dump immediately after device construction.
 
 *Significance.* Cosmetic — real content always sends an explicit select before a Data Entry.
-
-[#o10]
-==== The disassembly address of the RPN1/RPN2 (fine/coarse tune) consumer
-
-*Known.* Write sites and values are confirmed (xref:s4-4[§4.4]). The **behaviour** is settled by measurement: RPN1/RPN2 are sampled once at note-on into the voice's fixed pitch base and do not retune a sounding voice, unlike Pitch Bend — a mid-note RPN2 change leaves the rendered fundamental flat `[M: probe 23]`
-
-*Not known.* Only the VMA of the code that reads `device+0xf7c`/`+0x12bc`
-
-*How it would be settled.* Locate the instruction inside the pitch chain that reads those fields at note-trigger time, by analogy with the confirmed pitch-bend chain (xref:s3-3-2[§3.3.2])
-
-*Significance.* Cosmetic — the behaviourally significant question is measured and settled.
-
-[#o11]
-==== The consumer of the per-part 16×12 tuning grid at `device+0xfbc`
-
-*Known.* Write site and shape are confirmed: 12 signed semitone-class offsets per part, `value = byte − 0x40`, written by the GS `DT1` fallthrough case `[A:0x13797]`
-
-*Not known.* No confirmed reader anywhere in the control plane. The identification as Roland GS "Scale Tuning" is `[I]` from the grid's shape and centre normalization, not from a label or an independently consulted specification.
-
-*How it would be settled.* Render a probe sending SysEx address `40 1x 40` with distinct per-semitone-class values and check for a semitone-class-selective pitch shift.
-
-*Significance.* **Behaviourally significant if real content uses it** — niche in practice.
 
 [#o12]
 ==== The layout of the device object at voice `+0x104` beyond its five exercised offsets, and the scheduling semantics of the `+0x118`/`+0x11c` timestamp pair

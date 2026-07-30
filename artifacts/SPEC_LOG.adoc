@@ -18,7 +18,7 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item33`) are discrepancies and gaps between
+throughout: **items** (`item1`…`item36`) are discrepancies and gaps between
 `SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
@@ -187,6 +187,187 @@ before/after tables in Entries 1–6. Those tables are kept as recorded; they
 are history, not current measurements.
 
 '''
+
+'''
+
+[#s3-5-pitch-cents-correction]
+== 2026-07-30 — SPEC §3.5 mislocated the note-on pitch-cents accumulator as part of the attenuation sum; `0x12f60`–`0x12f78` is pitch, and RPN2 Coarse Tuning is skipped for rhythm parts — retires o7/o10/o11
+
+All findings below are `[A]`, verified by direct instruction read.
+
+=== Superseded reading
+
+xref:SPEC.adoc#s3-5[§3.5] read: "``TriggerVoiceEvent`` builds a running
+per-channel attenuation sum from `device+0xf78` (master volume) plus
+per-channel/per-part additive terms (`0x12f60`–`0x12f78`, one of which is
+gated off for rhythm parts, `[A:0x12f6e]`)." That range is not attenuation at
+all. xref:SPEC.adoc#s3-3-2[§3.3.2] additionally named `0x18ef4`'s cents
+argument `pitchBendCents`; it is the tuning accumulator, and pitch bend
+reaches the voice by a different route.
+
+=== 1. `0x12f4c`–`0x12f8f` is the note-on pitch-cents accumulator
+
+[source,c]
+----
+semitoneClass = note % 12;                              // remainder-by-12 at 0x12f54
+cents  = device->scaleTuning[part*12 + semitoneClass];  // 0x12f60
+cents += device->rpn1FineCents[part];                   // 0x12f67
+if (!device->useRhythmPart[part])                       // test 0x12f6e, branch 0x12f76
+    cents += device->rpn2CoarseCents[part];              // 0x12f78
+SetupNote(voice, ..., masterVolumeAtten, cents);         // cents 0x12f8f, atten 0x12fa0, call 0x12feb
+----
+
+The two values occupy **different** argument slots of `SetupNote` (`0x19b54`):
+cents is `ebp+0x38`, master-volume attenuation is `ebp+0x34`. Nothing between
+`0x12f60` and `0x12fa0` combines them. So the attenuation sum
+xref:SPEC.adoc#s3-5[§3.5] describes is real, but it is built from
+`device+0xf78` seeded at `0x19b78`–`0x19b86` (the CC7/CC11 term), the
+velocity term at `0x19bc4`–`0x19bc7`, and the region's own wsmp attenuation
+at `0x19bc9` — not from this range.
+
+=== 2. The gate at `0x12f6e` is USE RHYTHM PART, and it skips RPN2 Channel Coarse Tuning
+
+The branch skips the add when the flag byte is **nonzero**. `device+0x130c`
+is the byte[16] per-part rhythm flag: the reset function zeroes all sixteen
+(`0x12395`) and then forces part 0 to `1` (`0x123ce`); part 0's default RCV
+CHANNEL is `9` (MIDI channel 10) per the static default table at `0x1a600`.
+It is written live by GS `DT1` address `40 1p 15` — the address-compare
+chain subtracts cumulatively (`0x1374a` → `40 00 7F`, `0x13756` →
+`40 1p 02`, `0x1375e` → `40 1p 15`, `0x13763` → `40 1p 40`), and the
+`40 1p 15` arm stores at `0x137ae`.
+
+=== 3. o7 is retired: the pitch-bend scaling instruction is `0x16d60`
+
+It is a thiscall on the channel controller struct `device+0x3d0+part*0x28`:
+
+[source,c]
+----
+raw14     = ScheduledValueAt(bendStruct, timeLo, timeHi);            // 0x16d6e
+bendCents = ((raw14 - 0x2000) * bendStruct->rpn0RangeCents) >> 13;    // 0x16d73, 0x16d78, 0x16d7c
+----
+
+i.e. exactly `(raw14 - 8192)/8192 * rangeCents`, with an arithmetic right
+shift (truncation toward negative infinity, not toward zero). Note the RPN0
+range is re-read here on every evaluation, so RPN0 is live, not latched.
+xref:SPEC.adoc#o7[O7] is retired.
+
+=== 4. Pitch bend reaches the voice on a live per-block path, never through the note-on cents accumulator
+
+`0x16d60`'s only caller is `0x19631`, inside the live per-voice pitch-delta
+helper `0x195a2` (thiscall on the voice):
+
+[source,c]
+----
+delta  = PitchEnvelope(voice+0x08, t);   // 0x195ba
+delta += PitchLfo(voice+0x38, t);        // 0x195f6
+delta += BendCents(voice->bendStruct, t); // 0x19628 fetches voice+0xf4, call 0x19631
+----
+
+`voice+0xf4` holds the pointer to the channel's controller struct, stored
+once at note setup (`0x19d30`, from the `device+0x3d0+part*0x28` argument
+pushed at `0x12fd8`). `0x195a2` has exactly two call sites, both
+unconditional: `0x1970c` inside the per-tick DSP advance `0x19644` (reached
+from the per-buffer service routine at `0x130d3`), and `0x19da1` in
+``SetupNote``'s own tail. Both immediately feed the delta into `0x19490`.
+
+=== 5. Rhythm-part gating across every pitch modifier — RPN2 is the ONLY one gated
+
+[options="header"]
+|===
+| Modifier | Applied to rhythm parts | Evidence
+| Pitch Bend | YES, ungated | Wheel write path `0x132a1`–`0x132c4`; live read `0x16d60`/`0x19631`; the `voice+0xf4` fetch at `0x19628` is unconditional
+| RPN0 Pitch Bend Sensitivity | YES, ungated | Store `0x133fd`–`0x1340d`; re-read live at `0x16d78`
+| RPN1 Channel Fine Tuning | YES, ungated | Added before the gate, `0x12f67`
+| RPN2 Channel Coarse Tuning | **NO, skipped for rhythm parts** | `0x12f6e`/`0x12f78`
+| GS Scale Tuning | YES, ungated | Added before the gate, `0x12f60`; SysEx write loop `0x1376c`–`0x1379e` has no rhythm test either
+| Master / master-coarse tuning | does not exist in this driver | The Roland-exclusive dispatcher (`0x1367a`–`0x1381f`) recognizes only GS Reset, RCV CHANNEL, USE RHYTHM PART and Scale Tuning; the only "master" parameter anywhere is Master Volume, an attenuation
+|===
+
+Exhaustiveness basis for the "ungated" rows, because it is what makes them
+checkable: `device+0x130c` has exactly nine references in the whole binary
+— writes `0x12395`, `0x123ce`, `0x137ae`; reads `0x127e2`, `0x12dcf`,
+`0x12f6e`, `0x132f7`; address-taken `0x127c7`, `0x13228`. The four reads
+are, in order: the per-part broadcast match in
+``ResetAllProgramsAndRhythmGroups``, the drum-bit injection onto the patch
+selector at note-trigger, the RPN2 gate, and Program Change's drum
+propagation. None lies on any pitch path. No channel-number-equals-9 test
+exists anywhere (the single compare-against-9 in the binary, `0x136d5`, is
+the GM System On sub-ID byte), and every `0x80000000` drum-bit test sits on
+the instrument-lookup path.
+
+=== 6. o10 and o11 are retired
+
+`device+0xf7c`'s reader is `0x12f67`; `device+0x12bc`'s is `0x12f78`;
+`device+0xfbc`'s is `0x12f60`. The `0xfbc` reader indexes
+`part*12 + note%12`, matching the writer's `part*12 + entry` indexing at
+`0x13797` — so the grid genuinely is per-semitone-class Scale Tuning, and
+that identification is now `[A]`, no longer `[I]` from the grid's shape.
+Because all three are read only on the note-trigger path while the live
+path reads only envelope/LFO/bend, "RPN1/RPN2 latched at note-on, not
+continuous" is now `[A]`-confirmed and no longer rests on `[M: probe 23]`
+alone. xref:SPEC.adoc#o10[O10] and xref:SPEC.adoc#o11[O11] are retired.
+
+[#item34]
+=== Item 34 — SPEC's `0x137ae` attribution is crossed
+
+xref:SPEC.adoc#s4-4[§4.4]'s `device+0x12fc` field row and its SysEx table
+both cite `[A:0x137ae]` as the RCV CHANNEL store. `0x137ae` stores to
+`device+0x130c` (USE RHYTHM PART, address `40 1p 15`). The RCV CHANNEL arm
+(`40 1p 02`, matched at `0x13756`, GS-mode gate at `0x137b7`) re-dispatches
+a synthetic internal message through `0x16c7e`; the actual `device+0x12fc`
+store is `0x12d11`, in the internal-message dispatcher. Both semantic facts
+were right; the VMA was on the wrong one. Resolved in `SPEC.adoc` by this
+pass.
+
+[#item35]
+=== Item 35 — the attenuation sum carries an undocumented `+1200` constant
+
+At `0x19bcd` the driver folds a literal `0x4b0` into the note-on attenuation
+sum alongside the region's wsmp attenuation, i.e.
+`atten += regionAtten + 1200`. In the sum's own hundredths-of-a-dB units
+that is +12.00 dB of gain. Neither xref:SPEC.adoc#s3-5[§3.5]'s pseudocode
+nor §3.10's consolidated pseudocode mentions it. The instruction is `[A]`
+and not in doubt; what the constant MEANS is not settled — it interacts
+with the still-`[O]` mapping from hundredths-of-a-dB to the raw Q16 gain
+register (§6.4.5), and the engine's own measured level error is ~1.6-1.7 dB,
+not 12 dB, so it is plainly compensated somewhere downstream.
+**Status: `[O]`-flavoured, NOT implemented.** A future pass should settle
+it together with the raw-gain-register unit; no gain change was made in
+this pass.
+
+[#item36]
+=== Item 36 — GS Scale Tuning is confirmed live in the driver and is not implemented in the engine
+
+Now that `0x12f60` is confirmed as its reader, the 12-entry per-part grid
+demonstrably retunes notes by semitone class, latched at note-on. The engine
+has no scale-tuning state at all. Behaviourally significant only for
+content that sends `40 1p 40`-`4B`; deferred, not implemented in this pass.
+
+=== Measurement — corpus gate before/after
+
+The 18-item corpus gate was run before and after the engine change — the
+RPN2 rhythm gate, now shipped in `src/engine/voice.c` — with identical
+results. Items 35 and 36 (the `+1200` attenuation constant and GS Scale
+Tuning) were deliberately NOT implemented in this pass. **This is the
+expected outcome, not a failure**: nothing in the corpus sends RPN2, so
+gating it off for rhythm parts is a no-op on this corpus.
+
+[options="header"]
+|===
+| Item | BEFORE | AFTER
+| MEAN | r 0.837 / −21.94 dB | r 0.837 / −21.94 dB
+| `HueArme-Weekend` | r 0.766 / −19.38 dB | r 0.766 / −19.38 dB
+|===
+
+=== Refuted hypothesis — pitch bend is NOT gated on rhythm parts
+
+A parallel investigation suspected the driver gates pitch bend on rhythm
+parts, which would have explained an audible defect (slopgs applying +496
+cents of bend to a channel-10 castanet, RPN0=10 semitones, where the
+reference sounds 200-600 Hz darker in spectral centroid). §5 above refutes
+it directly: bend is ungated on rhythm parts (`0x16d60`/`0x19631`/`0x19628`
+run unconditionally). The hypothesis was worth raising and worth refuting —
+that defect has some other cause and remains open.
 
 '''
 

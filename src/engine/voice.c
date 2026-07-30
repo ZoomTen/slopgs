@@ -1144,9 +1144,10 @@ void voice_note_on(int channel, int note, int velocity) {
      * voice_update_pitch, not baked in here. RPN1/RPN2 master tune IS baked
      * in here (sampled once, at note-on): probe 23 measured it as latched,
      * not continuous -- see voice_update_pitch's comment (SPEC.md S4.4,
-     * `[M: probe 23]`). */
+     * `[M: probe 23]`). RPN2 (Channel Coarse Tuning) is skipped for rhythm
+     * parts -- RPN1 is not gated (SPEC.md S3.3.2). */
     v->base_cents = (int)r->fine_tune + (note - (int)r->unity_note) * 100
-                  + g_channels[channel].rpn2_coarse_cents
+                  + (g_channels[channel].is_rhythm ? 0 : g_channels[channel].rpn2_coarse_cents)
                   + g_channels[channel].rpn1_fine_cents;
     /* Latched here and clamped once, `[M: probe 30]` -- see voice_update_pitch. */
     v->base_ratio_q12 = (uint32_t)cents_to_ratio_q12(v->base_cents);
