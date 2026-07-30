@@ -191,10 +191,11 @@ are history, not current measurements.
 '''
 
 [#item39]
-== 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; expression is cut to 0 forty-four ms later, which is an untested candidate for the level discrepancy — item39
+== 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; the mid-note expression collapse is measured and rejected as the cause of its level excess — item39
 
-Two loose ends closed by direct measurement, and one new candidate mechanism
-recorded so it is not lost.
+Three loose ends closed by direct measurement: the clap's note-on is located
+in the file, the mid-note expression collapse is eliminated as the cause of
+its level excess, and a negative gain-trim result is put on record.
 
 === The note-on exists
 
@@ -221,25 +222,45 @@ the instant and the voice identification both stand. The file contains 2119
 key-39 note-ons across twelve channels; the one on channel 11 at 77.5482 s is
 unique within ±0.35 s.
 
-=== Candidate mechanism for the ~11 dB level error: `[O]`
+=== Expression collapse is NOT the mechanism — measured and rejected
 
 Expression on the rhythm channel is driven `127` at the note-on and `0`
-**44 ms later**, while the voice is still sounding — the note-off does not
-arrive until 77.6364 s, a further 44 ms after that. The reference's burst
-prominence is +3.0 dB against slopgs's +14.2 dB, and a mid-note expression
-collapse is the right shape to produce exactly that: the real synth's clap is
-cut off part-way through its decay, slopgs's is not.
+**44 ms later**, while the voice is still sounding; the note-off does not
+arrive until 77.6364 s, a further 44 ms after that. That shape invites the
+hypothesis that the real synth's clap is cut part-way through its decay
+where slopgs's is not. Measurement rejects it.
 
-This is a hypothesis, not a finding. It has not been measured, and it is
-independent of the per-voice ceiling that xref:#item35-followup-probe50[probe
-50] tests — both could be contributing. What makes it worth chasing before
-another gain-scale pass: `CC11` here is toggled on a *sounding* drum voice,
-which is the one case probe 28 (expression gate) does not cover, and the
-engine's `CC11` handling reaches the voice through the smoothed
-`voice_update_gain()` path rather than being latched at note-on. If slopgs
-applies that collapse more slowly than the driver, or applies it to the
-target rather than the current gain, the tail survives and the burst reads
-hotter. **Status: `[O]`, not implemented, no engine change made.**
+1–5 kHz band level, 5 ms windows, reference against slopgs, on the aligned
+excerpt pair (excerpt origin 75.4306 s, so the note-on is at excerpt 2.1176
+and the expression cut at 2.1617):
+
+|===
+| excerpt t | event | reference | slopgs | slopgs − ref
+
+| 2.1176 | note-on | 108.7 dB | 115.0 dB | +6.3 dB
+| 2.1500 | | 103.5 dB | 117.0 dB | +13.5 dB
+| 2.1550 | | 103.3 dB | 117.5 dB | +14.2 dB
+| 2.1617 | `CC11` → 0 | 104.4 dB | 112.5 dB | +8.1 dB
+| 2.1700 | | 101.9 dB | 100.8 dB | −1.1 dB
+| 2.1850 | | 100.7 dB | 97.8 dB | −3.0 dB
+| 2.2058 | note-off | 103.7 dB | 103.9 dB | +0.2 dB
+|===
+
+The divergence ends at the expression cut. Past it the two agree within a few
+dB and slopgs frequently sits *below* the reference. So slopgs does apply
+`CC11` to a sounding drum voice, and applies it promptly — were it ignoring
+the controller, the voice would ring on to the note-off 44 ms later, and it
+does not. The ramp-up variant of the hypothesis fails too: `CC11` was already
+`127` from 77.3717 s, 176 ms before the note-on, so there is no ramp the
+driver could still be climbing when the cut arrives.
+
+**Consequence.** The whole excess lives in the ~45 ms the note actually
+sounds, which makes it a note-on level question rather than a release or
+controller-timing one. It belongs to xref:#item35[Item 35] and the `[O]`
+hundredths-to-raw-Q16 mapping, and it is what
+xref:#item35-followup-probe50[probe 50] is built to resolve. No separate
+probe is needed for the expression path, and probe 28 does not need
+extending on this account.
 
 === `GAIN_TRIM_DB` has been exercised, and the result was negative
 
