@@ -97,14 +97,27 @@ before the next is touched:
   invalidates. Same for any table, open-item list or appendix entry that
   repeated the old reading; grep for it, a superseded claim usually has
   copies.
-. The engine under `src/` — implement, then run the corpus gate.
+. `unit.c` — add or replace the test for this finding, and confirm it fails
+  against the current engine. *Red.*
+. The engine under `src/` — implement until the test passes, then run the
+  corpus gate. *Green.*
+. Optimize what you just added. *Refactor.*
 . `impl-chart/CHART.adoc` — only if a musician would notice.
 
 Do NOT reorder this because the code change is small or obvious. Writing the
 log first is what forces you to say what you actually know, and the SPEC edit
 is what finds the other passages that were wrong for the same reason — both of
 which routinely change what the engine edit should be. Landing the code first
-means the docs get written to justify the diff.
+means the docs get written to justify the diff. The red test is what forces
+the SPEC edit to be checkable instead of merely asserted — a passage that
+can't be turned into a failing assertion probably wasn't specific enough yet.
+
+**Whenever a `unit.c` assertion and `src/` disagree, `SPEC.adoc` wins.** A
+`unit.c` test exists to check the engine against the SPEC, not against itself
+— if it fails, the fix is the engine (step 4), never loosening the assertion
+and never rewriting the SPEC to match what `src/` happens to do. Only a new
+finding, landed the normal way starting at step 1, may change what a test
+asserts.
 
 The one thing that legitimately precedes step 1 is **measurement**: you cannot
 write down a number you have not taken. Explore, disassemble, build scratch
