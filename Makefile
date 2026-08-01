@@ -27,7 +27,9 @@ LDFLAGS_WASM := -Wl,--no-entry -Wl,--export-dynamic
 
 CFLAGS_NATIVE := -std=c11 -O2 -Wall -Wextra -Isrc
 
-.PHONY: all clean probes test
+UNIT_SRCS := src/unit.c src/unit_tap.c $(ENGINE_SRCS)
+
+.PHONY: all clean probes test unit
 
 all: $(DIST)/msgs.wasm $(DIST)/msgs-render
 
@@ -37,14 +39,20 @@ $(DIST)/msgs.wasm: $(WASM_SRCS) $(ENGINE_HDRS) | $(DIST)
 $(DIST)/msgs-render: $(CLI_SRCS) $(ENGINE_HDRS) | $(DIST)
 	$(CC) $(CFLAGS_NATIVE) -o $@ $(CLI_SRCS) -lm
 
+$(DIST)/msgs-unit: $(UNIT_SRCS) $(ENGINE_HDRS) src/unit_tap.h | $(DIST)
+	$(CC) $(CFLAGS_NATIVE) -o $@ $(UNIT_SRCS) -lm
+
 $(DIST):
 	mkdir -p $(DIST)
 
 clean:
-	rm -f $(DIST)/msgs.wasm $(DIST)/msgs-render
+	rm -f $(DIST)/msgs.wasm $(DIST)/msgs-render $(DIST)/msgs-unit
 
 probes:
 	python3 artifacts/make_probes.py
 
 test: $(DIST)/msgs-render
 	./$(DIST)/msgs-render --selftest $(DIST)/gm.dls artifacts/probes/01_programs.mid
+
+unit: $(DIST)/msgs-unit
+	./$(DIST)/msgs-unit

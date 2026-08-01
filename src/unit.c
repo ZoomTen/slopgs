@@ -1,0 +1,2495 @@
+/* unit.c -- unit test suite for the msgs engine (the .c files under
+ * src/engine/) against artifacts/SPEC.adoc. Run with `make unit` (builds
+ * dist/msgs-unit and runs it) or directly as `./dist/msgs-unit`. Output is
+ * TAP version 14.
+ *
+ * Every assertion's description cites the SPEC.adoc section it traces to
+ * (e.g. "S4.3", "S T.5", "S3.4.1"). Where src/ and SPEC.adoc disagree, the
+ * governing rule is: SPEC is right and the assertion is written to SPEC's
+ * own value, so a "not ok" here can mean a real, documented src/SPEC
+ * disagreement rather than a bug in this file -- see each failing test's own
+ * description/tap_diag for the citation. Assembled mechanically from four
+ * fragments (tables/rt, synth, voice/render, dls) plus this header, the
+ * PRELUDE below, and main(); see the assignment brief in git history for the
+ * assembly process and the three deliberate fixes applied while assembling.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "unit_tap.h"
+#include "engine/tables.h"
+#include "engine/rt.h"
+#include "engine/synth.h"
+#include "engine/voice.h"
+#include "engine/dls.h"
+#include "engine/render.h"
+
+static int have_dls;   /* set by main(): 1 if dist/gm.dls loaded and parsed */
+
+/* frag_tables.c -- SPEC.adoc Appendix T / S3.3.1 / S1.4 vs. tables.c/rt.c.
+ * Concatenated into src/unit.c verbatim. Governing rule: where src/ and
+ * SPEC disagree, SPEC is right and the test asserts SPEC's value -- so it
+ * fails. See SCRATCH/claims_tables.md for the full claim inventory this
+ * fragment tests against.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Golden data, mechanically extracted from SCRATCH/golden_tables.h by
+ * SCRATCH/gen_golden.py (verified byte-for-byte round-trip against the
+ * source by SCRATCH/verify_golden.py -- see report). Do not hand-edit. */
+
+static const int32_t tb_golden_vel[128] = {
+    -9600, -8415, -7211, -6506, -6006, -5619, -5302, -5034, -4802, -4598, -4415, -4249, -4098, -3959, -3830, -3710,
+    -3598, -3493, -3394, -3300, -3211, -3126, -3045, -2968, -2894, -2823, -2755, -2689, -2626, -2565, -2506, -2449,
+    -2394, -2341, -2289, -2238, -2190, -2142, -2096, -2050, -2006, -1964, -1922, -1881, -1841, -1802, -1764, -1726,
+    -1690, -1654, -1619, -1584, -1551, -1518, -1485, -1453, -1422, -1391, -1361, -1331, -1302, -1273, -1245, -1217,
+    -1190, -1163, -1137, -1110, -1085, -1059, -1034, -1010, -985, -961, -938, -914, -891, -869, -846, -824,
+    -802, -781, -759, -738, -718, -697, -677, -657, -637, -617, -598, -579, -560, -541, -522, -504,
+    -486, -468, -450, -432, -415, -397, -380, -363, -347, -330, -313, -297, -281, -265, -249, -233,
+    -218, -202, -187, -172, -157, -142, -127, -113, -98, -84, -69, -55, -41, -27, -13, 0,
+};
+
+static const int32_t tb_golden_lin[127] = {
+    -2103, -1802, -1626, -1501, -1404, -1325, -1258, -1200, -1149, -1103, -1062, -1024, -989, -957, -927, -899,
+    -873, -848, -825, -802, -781, -761, -742, -723, -705, -688, -672, -656, -641, -626, -612, -598,
+    -585, -572, -559, -547, -535, -524, -512, -501, -491, -480, -470, -460, -450, -441, -431, -422,
+    -413, -404, -396, -387, -379, -371, -363, -355, -347, -340, -332, -325, -318, -311, -304, -297,
+    -290, -284, -277, -271, -264, -258, -252, -246, -240, -234, -228, -222, -217, -211, -206, -200,
+    -195, -189, -184, -179, -174, -169, -164, -159, -154, -149, -144, -140, -135, -130, -126, -121,
+    -117, -112, -108, -103, -99, -95, -90, -86, -82, -78, -74, -70, -66, -62, -58, -54,
+    -50, -46, -43, -39, -35, -31, -28, -24, -21, -17, -13, -10, -6, -3, 0,
+};
+
+static const int16_t tb_golden_tablec[201] = {
+    0, 520, 583, 620, 646, 666, 682, 696, 708, 719, 728, 737, 745, 752, 759, 765,
+    771, 776, 782, 787, 791, 796, 800, 804, 808, 811, 815, 818, 822, 825, 828, 831,
+    834, 836, 839, 842, 844, 847, 849, 852, 854, 856, 858, 860, 863, 865, 867, 868,
+    870, 872, 874, 876, 878, 879, 881, 883, 884, 886, 887, 889, 891, 892, 894, 895,
+    896, 898, 899, 901, 902, 903, 905, 906, 907, 908, 910, 911, 912, 913, 914, 915,
+    917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932,
+    933, 934, 935, 936, 937, 938, 939, 939, 940, 941, 942, 943, 944, 945, 945, 946,
+    947, 948, 949, 949, 950, 951, 952, 953, 953, 954, 955, 956, 956, 957, 958, 958,
+    959, 960, 961, 961, 962, 963, 963, 964, 965, 965, 966, 967, 967, 968, 969, 969,
+    970, 970, 971, 972, 972, 973, 973, 974, 975, 975, 976, 976, 977, 978, 978, 979,
+    979, 980, 980, 981, 982, 982, 983, 983, 984, 984, 985, 985, 986, 986, 987, 987,
+    988, 988, 989, 989, 990, 990, 991, 991, 992, 992, 993, 993, 994, 994, 995, 995,
+    996, 996, 997, 997, 998, 998, 999, 999, 999,
+};
+
+static const int16_t tb_golden_sine[256] = {
+    0, 2, 4, 7, 9, 12, 14, 17, 19, 21, 24, 26, 29, 31, 33, 35,
+    38, 40, 42, 44, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 68,
+    70, 72, 74, 75, 77, 78, 80, 81, 83, 84, 85, 87, 88, 89, 90, 91,
+    92, 93, 94, 94, 95, 96, 97, 97, 98, 98, 98, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 98, 98, 98, 97, 97, 96, 95, 94, 94, 93,
+    92, 91, 90, 89, 88, 87, 85, 84, 83, 81, 80, 78, 77, 75, 74, 72,
+    70, 68, 67, 65, 63, 61, 59, 57, 55, 53, 51, 49, 47, 44, 42, 40,
+    38, 35, 33, 31, 29, 26, 24, 21, 19, 17, 14, 12, 9, 7, 4, 2,
+    0, -2, -4, -7, -9, -12, -14, -17, -19, -21, -24, -26, -29, -31, -33, -35,
+    -38, -40, -42, -44, -47, -49, -51, -53, -55, -57, -59, -61, -63, -65, -67, -68,
+    -70, -72, -74, -75, -77, -78, -80, -81, -83, -84, -85, -87, -88, -89, -90, -91,
+    -92, -93, -94, -94, -95, -96, -97, -97, -98, -98, -98, -99, -99, -99, -99, -99,
+    -99, -99, -99, -99, -99, -99, -98, -98, -98, -97, -97, -96, -95, -94, -94, -93,
+    -92, -91, -90, -89, -88, -87, -85, -84, -83, -81, -80, -78, -77, -75, -74, -72,
+    -70, -68, -67, -65, -63, -61, -59, -57, -55, -53, -51, -49, -47, -44, -42, -40,
+    -38, -35, -33, -31, -29, -26, -24, -21, -19, -17, -14, -12, -9, -7, -4, -2,
+};
+
+static const uint8_t tb_golden_companding[2048] = {
+    0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3,
+    3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6,
+    6, 6, 6, 6, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 9,
+    9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 12,
+    12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14,
+    14, 15, 15, 15, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 17, 17,
+    17, 17, 17, 17, 18, 18, 18, 18, 18, 18, 19, 19, 19, 19, 19, 19,
+    19, 20, 20, 20, 20, 20, 20, 21, 21, 21, 21, 21, 21, 21, 22, 22,
+    22, 22, 22, 22, 22, 23, 23, 23, 23, 23, 23, 23, 24, 24, 24, 24,
+    24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 26, 26, 26, 26, 26, 26,
+    26, 26, 27, 27, 27, 27, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28,
+    28, 29, 29, 29, 29, 29, 29, 29, 30, 30, 30, 30, 30, 30, 30, 30,
+    31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
+    33, 33, 33, 33, 33, 33, 33, 33, 34, 34, 34, 34, 34, 34, 34, 34,
+    34, 35, 35, 35, 35, 35, 35, 35, 35, 36, 36, 36, 36, 36, 36, 36,
+    36, 36, 37, 37, 37, 37, 37, 37, 37, 37, 38, 38, 38, 38, 38, 38,
+    38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40,
+    40, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42,
+    42, 42, 42, 42, 42, 42, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43,
+    43, 43, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 45, 45, 45, 45,
+    45, 45, 45, 45, 45, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46,
+    47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 48, 48, 48, 48, 48, 48,
+    48, 48, 48, 48, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 50,
+    50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 51, 51, 51, 51, 51, 51,
+    51, 51, 51, 51, 51, 52, 52, 52, 52, 52, 52, 52, 52, 52, 52, 52,
+    53, 53, 53, 53, 53, 53, 53, 53, 53, 53, 53, 54, 54, 54, 54, 54,
+    54, 54, 54, 54, 54, 54, 54, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+    55, 55, 55, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 57, 57,
+    57, 57, 57, 57, 57, 57, 57, 57, 57, 57, 57, 58, 58, 58, 58, 58,
+    58, 58, 58, 58, 58, 58, 58, 59, 59, 59, 59, 59, 59, 59, 59, 59,
+    59, 59, 59, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
+    61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 62, 62, 62,
+    62, 62, 62, 62, 62, 62, 62, 62, 62, 62, 63, 63, 63, 63, 63, 63,
+    63, 63, 63, 63, 63, 63, 63, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+    64, 64, 64, 64, 64, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65,
+    65, 65, 65, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
+    66, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 68,
+    68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 69, 69, 69,
+    69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 70, 70, 70, 70,
+    70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 71, 71, 71, 71,
+    71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72, 72, 72, 73, 73, 73, 73, 73, 73,
+    73, 73, 73, 73, 73, 73, 73, 73, 73, 74, 74, 74, 74, 74, 74, 74,
+    74, 74, 74, 74, 74, 74, 74, 74, 74, 75, 75, 75, 75, 75, 75, 75,
+    75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 76, 76, 76, 76, 76, 76,
+    76, 76, 76, 76, 76, 76, 76, 76, 76, 76, 77, 77, 77, 77, 77, 77,
+    77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 78, 78, 78, 78, 78,
+    78, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78, 79, 79, 79, 79,
+    79, 79, 79, 79, 79, 79, 79, 79, 79, 79, 79, 79, 79, 80, 80, 80,
+    80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 81,
+    81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81, 81,
+    81, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82, 82,
+    82, 82, 82, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83,
+    83, 83, 83, 83, 83, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84,
+    84, 84, 84, 84, 84, 84, 84, 84, 85, 85, 85, 85, 85, 85, 85, 85,
+    85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 85, 86, 86, 86, 86, 86,
+    86, 86, 86, 86, 86, 86, 86, 86, 86, 86, 86, 86, 86, 86, 87, 87,
+    87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87, 87,
+    87, 87, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
+    88, 88, 88, 88, 88, 88, 89, 89, 89, 89, 89, 89, 89, 89, 89, 89,
+    89, 89, 89, 89, 89, 89, 89, 89, 89, 89, 90, 90, 90, 90, 90, 90,
+    90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 91,
+    91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91, 91,
+    91, 91, 91, 91, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92,
+    92, 92, 92, 92, 92, 92, 92, 92, 92, 93, 93, 93, 93, 93, 93, 93,
+    93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 94,
+    94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94, 94,
+    94, 94, 94, 94, 94, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95,
+    95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 96, 96, 96, 96,
+    96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96,
+    96, 96, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97,
+    97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 98, 98, 98, 98, 98, 98,
+    98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98, 98,
+    98, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99, 99, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+    101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 102, 102, 102, 102, 102, 102,
+    102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
+    102, 102, 102, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103,
+    103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 105, 105, 105, 105, 105, 105, 105, 105, 105,
+    105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105, 105,
+    105, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106,
+    106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 107, 107, 107, 107,
+    107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107, 107,
+    107, 107, 107, 107, 107, 107, 107, 108, 108, 108, 108, 108, 108, 108, 108, 108,
+    108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108, 108,
+    108, 108, 108, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109,
+    109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 109, 110,
+    110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110,
+    110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 111, 111, 111, 111,
+    111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111, 111,
+    111, 111, 111, 111, 111, 111, 111, 111, 111, 112, 112, 112, 112, 112, 112, 112,
+    112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112, 112,
+    112, 112, 112, 112, 112, 112, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113,
+    113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113, 113,
+    113, 113, 113, 113, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114,
+    114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114, 114,
+    114, 114, 114, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115,
+    115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115, 115,
+    115, 115, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116,
+    116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116, 116,
+    116, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117,
+    117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117, 117,
+    117, 117, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118,
+    118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118,
+    118, 118, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119,
+    119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119,
+    119, 119, 119, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120,
+    120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120,
+    120, 120, 120, 120, 120, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121,
+    121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121, 121,
+    121, 121, 121, 121, 121, 121, 121, 122, 122, 122, 122, 122, 122, 122, 122, 122,
+    122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 122,
+    122, 122, 122, 122, 122, 122, 122, 122, 122, 122, 123, 123, 123, 123, 123, 123,
+    123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+    123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 124, 124, 124,
+    124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124,
+    124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124, 124,
+    124, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125,
+    125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125,
+    125, 125, 125, 125, 125, 125, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+    126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+    126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 127, 127, 127, 127, 127,
+    127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+    127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+};
+
+/* ------------------------------------------------------------------ */
+
+static void t_tables(void) {
+    int i;
+
+    /* S T.2 -- velocity/attenuation table, whole-table compare */
+    {
+        int mism = 0, first = -1;
+        for (i = 0; i < 128; i++) {
+            if (g_table_vel[i] != tb_golden_vel[i]) {
+                if (first < 0) first = i;
+                mism++;
+            }
+        }
+        if (mism) tap_diag("first mismatch at [%d]: got %d, SPEC %d (%d/%d entries differ)",
+                            first, (int)g_table_vel[first], (int)tb_golden_vel[first], mism, 128);
+        is_int(mism, 0, "S T.2 velocity->attenuation table matches SPEC byte-exact dump (128 entries)");
+    }
+
+    is_int(g_table_vel[0], -9600, "S T.2 velocity table[0] is the hardcoded -9600 silence floor, not a curve point");
+
+    /* S T.3 -- linear/pan table, whole-table compare. g_table_lin is indexed
+     * by raw MIDI velocity v (0..127, index 0 = the separate v=0 floor
+     * scalar); tb_golden_lin[k] is SPEC's row for v=k+1 (SPEC T.3: "index
+     * k = v-1, i.e. table[0] corresponds to v=1"), so compare g_table_lin[v]
+     * against tb_golden_lin[v-1] for v=1..127. */
+    {
+        int v, mism = 0, first = -1;
+        for (v = 1; v <= 127; v++) {
+            if (g_table_lin[v] != tb_golden_lin[v - 1]) {
+                if (first < 0) first = v;
+                mism++;
+            }
+        }
+        if (mism) tap_diag("first mismatch at v=%d: got %d, SPEC %d (%d/127 entries differ)",
+                            first, (int)g_table_lin[first], (int)tb_golden_lin[first - 1], mism);
+        is_int(mism, 0, "S T.3 linear/pan table matches SPEC byte-exact dump (127 entries, v=1..127)");
+    }
+
+    is_int(g_table_lin[0], -2500, "S T.3 v=0 floor scalar (0x1bfd0) is -2500, folded into g_table_lin[0] per tables.h's documented layout");
+    is_int(g_table_lin[1], -2103, "S T.3 SPEC's own check: v=1 -> -2103");
+    is_int(g_table_lin[64], -297, "S T.3 SPEC's own check: v=64 -> -297");
+    is_int(g_table_lin[127], 0, "S T.3 SPEC's own check: v=127 -> 0");
+
+    /* S T.4 -- Table C, whole-table compare. EXPECT FAIL: tables.c's loop
+     * (tables.c:64-68) computes trunc(1000 + x*x*10000/96) -- it is missing
+     * the log10() call SPEC's formula requires entirely, so all 200 non-
+     * zero entries differ (claims_tables.md claim #9 / disagreement #1). */
+    {
+        int mism = 0, first = -1;
+        for (i = 0; i <= 200; i++) {
+            if (g_table_envshape[i] != tb_golden_tablec[i]) {
+                if (first < 0) first = i;
+                mism++;
+            }
+        }
+        if (mism) tap_diag("first mismatch at [%d]: got %d, SPEC %d (%d/%d entries differ) -- tables.c's Table C loop computes a parabola (x*x*10000/96), missing the log10() call SPEC's formula requires",
+                            first, (int)g_table_envshape[first], (int)tb_golden_tablec[first], mism, 201);
+        is_int(mism, 0, "S T.4 Table C matches SPEC byte-exact dump (201 entries)");
+    }
+
+    is_int(g_table_envshape[0], 0, "S T.4 Table C t[0] is the explicit zeroing, not part of the trunc formula");
+    is_int(g_table_envshape[200], 999, "S T.4 SPEC's own check: t[200] -> 999 (tables.c's missing-log10 bug gives 1104 instead, see disagreement #1)");
+
+    /* S T.5 -- Table D (sine LFO), whole-table compare. Executed check (not
+     * an EXPECT FAIL, unlike Table C above): tables_build() populates all
+     * 256 entries identically to SPEC's golden dump (mism=0), including at
+     * i=64/i=192. tables.c:72 does use the full double-precision 2*pi
+     * literal (6.28318530717958647692) rather than the binary's stored
+     * float32-rounded 2*pi (0x11d18 = 6.2831854820251465), but that constant
+     * mismatch never survives rt_sin's own Taylor-series undershoot plus the
+     * final trunc-to-int16 at any of the 256 sampled phases -- verified by
+     * direct execution, not merely at the two spot-checked indices below
+     * (claims_tables.md claim #12 / disagreement #2 describes the
+     * theoretical mismatch; it does not manifest in this table's actual
+     * output). */
+    {
+        int mism = 0, first = -1;
+        for (i = 0; i < 256; i++) {
+            if (g_table_sine[i] != tb_golden_sine[i]) {
+                if (first < 0) first = i;
+                mism++;
+            }
+        }
+        if (mism) tap_diag("first mismatch at [%d]: got %d, SPEC %d (%d/%d entries differ) -- tables.c's Table D loop uses the full-double 2*pi literal, not the binary's float32-rounded 2*pi (0x11d18 = 6.2831854820251465)",
+                            first, (int)g_table_sine[first], (int)tb_golden_sine[first], mism, 256);
+        is_int(mism, 0, "S T.5 Table D (sine LFO) matches SPEC byte-exact dump (256 entries)");
+    }
+
+    is_int(g_table_sine[64], 99, "S T.4's note applied to S T.5: SPEC's own check t[64] -> 99; tables.c matches SPEC here, though via rt_sin's Taylor undershoot rather than SPEC's float32 2*pi -- the two errors cancel at this index");
+    is_int(g_table_sine[192], -99, "S T.4's note applied to S T.5: SPEC's own check t[192] -> -99; tables.c matches SPEC here, though via rt_sin's Taylor undershoot rather than SPEC's float32 2*pi -- the two errors cancel at this index");
+
+    /* S T.6 -- Table E, whole-table compare */
+    {
+        int mism = 0, first = -1;
+        for (i = 0; i < 2048; i++) {
+            if (g_table_companding[i] != tb_golden_companding[i]) {
+                if (first < 0) first = i;
+                mism++;
+            }
+        }
+        if (mism) tap_diag("first mismatch at [%d]: got %d, SPEC %d (%d/%d entries differ)",
+                            first, (int)g_table_companding[first], (int)tb_golden_companding[first], mism, 2048);
+        is_int(mism, 0, "S T.6 Table E (log-companding) matches SPEC byte-exact dump (2048 entries)");
+    }
+
+    is_int(g_table_companding[0], 0, "S T.6 SPEC's own check: t[0] -> 0");
+    is_int(g_table_companding[2047], 127, "S T.6 SPEC's own check: t[2047] -> 127");
+
+    /* S3.3.1 -- entry counts/domains for the three pitch/attenuation ratio tables */
+    is_int((int)(sizeof(g_table_cents) / sizeof(g_table_cents[0])), 201, "S3.3.1 cents ratio table (0x1ad00) has 201 entries (domain n=-100..100)");
+    is_int((int)(sizeof(g_table_semi) / sizeof(g_table_semi[0])), 97, "S3.3.1 semitone ratio table (0x1af58) has 97 entries (domain n=-48..48)");
+    is_int((int)(sizeof(g_table_dbamp) / sizeof(g_table_dbamp[0])), 1001, "S3.3.1 dB->linear amplitude table (0x1bfc0) has 1001 entries (domain n=-1000..0)");
+
+    is_int(g_table_dbamp[900], 1294, "S3.3.1 spot value T[0x1bfc0][-100] = 1294 (index n+1000=900)");
+    is_int(g_table_cents[0], 3866, "S3.3.1 spot value T[0x1ad00][-100] = 3866 (index n+100=0)");
+
+    /* S1.4.4 -- Q12 unity: 4096 represents a pitch ratio of 1.0 */
+    is_int(g_table_cents[100], 4096, "S1.4.4 Q12 unity: cents table n=0 (index 100) is 4096");
+    is_int(g_table_semi[48], 4096, "S1.4.4 Q12 unity: semitone table n=0 (index 48) is 4096");
+
+    /* S1.4.2 -- every float->int conversion truncates toward zero, never rounds */
+    is_int((int32_t)(-6506.72987141667), -6506, "S1.4.2 language-level check: C's (int32_t) cast truncates toward zero (matches the driver's shared 0x106e0 helper), not round()");
+
+    {
+        /* Table-level consequence, S1.4.2 applied to S T.2's own v=3 entry:
+         * recompute SPEC's formula with libm directly here (not via the
+         * golden table) and show the table took the truncating branch. */
+        double val = 1000.0 * log10(pow(3.0 / 127.0, 4.0));
+        int32_t t = (int32_t)val;        /* truncate toward zero, matches tables.c's trunc_i32() */
+        int32_t r = (int32_t)round(val); /* round to nearest -- NOT what the driver does */
+        is_int(t, -6506, "S1.4.2/S T.2 libm recompute of the v=3 formula truncates to -6506");
+        is_int(g_table_vel[3], -6506, "S T.2 g_table_vel[3] took the truncating branch: matches -6506, not the round()-would-give value");
+        is_int(r, -6507, "S1.4.2 round() of the same v=3 value gives -6507, one unit away from the truncating result the table actually stores");
+    }
+
+    {
+        /* S T.2's own divergence claim: "64 of 127 entries would differ by
+         * one unit under round-to-nearest instead of truncate". Recompute
+         * all 127 entries with libm and count. */
+        int v, diff_count = 0;
+        for (v = 1; v <= 127; v++) {
+            double ratio = (double)v / 127.0;
+            double val = 1000.0 * log10(pow(ratio, 4.0));
+            int32_t t = (int32_t)val;
+            int32_t r = (int32_t)round(val);
+            if (t != r) diff_count++;
+        }
+        is_int(diff_count, 64, "S T.2/S1.4.2 64 of 127 velocity-table entries would differ by one unit under round-to-nearest instead of truncate-toward-zero (SPEC's own claim)");
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
+static void t_rt(void) {
+    int i;
+
+    /* rt_pow(2.0,x) vs libm pow(2.0,x) across the cents domain the driver
+     * actually uses (x = -4800/1200 .. 4800/1200). Tolerance is this
+     * test's own choice, not a SPEC number -- SPEC S1.4.3 only says plain
+     * double is sufficient and bit-exactness vs MSVC's CRT is not required. */
+    {
+        int cents;
+        double maxrel = 0.0, worst_x = 0.0;
+        for (cents = -4800; cents <= 4800; cents++) {
+            double x = (double)cents / 1200.0;
+            double got = rt_pow(2.0, x);
+            double want = pow(2.0, x);
+            double rel = (want != 0.0) ? fabs(got - want) / fabs(want) : fabs(got - want);
+            if (rel > maxrel) { maxrel = rel; worst_x = x; }
+        }
+        if (maxrel >= 1e-8) tap_diag("rt_pow(2.0,x) worst relative error %.3e at x=%.6f", maxrel, worst_x);
+        ok(maxrel < 1e-8, "S1.4.3 rt_pow(2.0,x) agrees with libm pow(2.0,x) to < 1e-8 relative error across the cents domain x=-4..4 (cents=-4800..4800); tolerance is this test's own choice (rt.c is a from-scratch Taylor-series exp/log, not required to be bit-exact per S1.4.3; observed worst case is ~2.7e-10, this bound gives headroom), not SPEC's number");
+    }
+
+    /* rt_pow(10.0,x) vs libm pow(10.0,x) over the dB->linear domain
+     * (reusing S3.3.1's own n=-1000..0 domain, x=n/100 -> -10.0..0.0). */
+    {
+        double maxrel = 0.0, worst_x = 0.0;
+        for (i = -1000; i <= 0; i++) {
+            double x = (double)i / 100.0;
+            double got = rt_pow(10.0, x);
+            double want = pow(10.0, x);
+            double rel = (want != 0.0) ? fabs(got - want) / fabs(want) : fabs(got - want);
+            if (rel > maxrel) { maxrel = rel; worst_x = x; }
+        }
+        if (maxrel >= 1e-8) tap_diag("rt_pow(10.0,x) worst relative error %.3e at x=%.6f", maxrel, worst_x);
+        ok(maxrel < 1e-8, "S1.4.3 rt_pow(10.0,x) agrees with libm pow(10.0,x) to < 1e-8 relative error over the dB->linear domain x=-10.0..0.0 (S3.3.1's n=-1000..0 domain); tolerance is this test's own choice (observed worst case is ~2.7e-10, this bound gives headroom), not SPEC's number");
+    }
+
+    /* rt_log10 vs libm log10 over (0,1] on the velocity domain v/127, v=1..127. */
+    {
+        int v;
+        double maxrel = 0.0, worst_v = 0.0;
+        for (v = 1; v <= 127; v++) {
+            double x = (double)v / 127.0;
+            double got = rt_log10(x);
+            double want = log10(x);
+            double rel = (want != 0.0) ? fabs(got - want) / fabs(want) : fabs(got - want);
+            if (rel > maxrel) { maxrel = rel; worst_v = v; }
+        }
+        if (maxrel >= 1e-10) tap_diag("rt_log10 worst relative error %.3e at v=%.0f", maxrel, worst_v);
+        ok(maxrel < 1e-10, "S1.4.3 rt_log10(v/127.0) agrees with libm log10(v/127.0) to < 1e-10 relative error across the S T.2 velocity domain v=1..127; tolerance is this test's own choice (observed worst case is ~1.2e-12, this bound gives headroom), not SPEC's number");
+    }
+
+    /* rt_sqrt exactness: both rt_sqrt and libm sqrt should lower to the
+     * hardware sqrtsd instruction, so bit-for-bit equality is expected
+     * (not merely close). */
+    {
+        static const double vals[] = { 0.0, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 96.04, 100.0, 1.0/3.0, 1.0e10 };
+        int n = (int)(sizeof(vals) / sizeof(vals[0]));
+        int j, mism = 0, first = -1;
+        for (j = 0; j < n; j++) {
+            if (rt_sqrt(vals[j]) != sqrt(vals[j])) { if (first < 0) first = j; mism++; }
+        }
+        if (mism) tap_diag("rt_sqrt mismatch at vals[%d]=%.17g: rt_sqrt=%.17g sqrt=%.17g", first, vals[first], rt_sqrt(vals[first]), sqrt(vals[first]));
+        is_int(mism, 0, "rt.c's own contract (both rt_sqrt and libm sqrt lower to the hardware sqrtsd instruction): rt_sqrt(x) == sqrt(x) bit-for-bit for a spread of test values");
+    }
+
+    /* rt_sin vs libm sin at the 256 Table-D LFO phases, using the same
+     * full-double 2*pi both sides so this isolates rt_sin's own polynomial
+     * accuracy from the float32-2pi table-building issue tracked separately
+     * in t_tables (S T.5). Absolute (not relative) error, since sin crosses 0. */
+    {
+        const double pi2 = 6.28318530717958647692;
+        double maxabs = 0.0, worst_ph = 0.0;
+        for (i = 0; i < 256; i++) {
+            double phase = (double)i * pi2 / 256.0;
+            double got = rt_sin(phase);
+            double want = sin(phase);
+            double d = fabs(got - want);
+            if (d > maxabs) { maxabs = d; worst_ph = phase; }
+        }
+        if (maxabs >= 1e-5) tap_diag("rt_sin worst absolute error %.3e at phase=%.10f", maxabs, worst_ph);
+        ok(maxabs < 1e-5, "S1.4.3 rt_sin agrees with libm sin to < 1e-5 absolute error across the 256 Table-D LFO phases i*2*pi/256; tolerance is this test's own choice (rt.c's Taylor series is truncated at x^17, observed worst case ~7.7e-7 near phase=pi; 1e-5 abs error is still far below the ~0.01 amplitude-fraction granularity Table D stores), not SPEC's number");
+    }
+
+    /* rt_exp/rt_log round-trip: rt_log(rt_exp(x)) ~= x. */
+    {
+        double maxabs = 0.0, worst_x = 0.0;
+        for (double x = -20.0; x <= 20.0; x += 0.5) {
+            double got = rt_log(rt_exp(x));
+            double d = fabs(got - x);
+            if (d > maxabs) { maxabs = d; worst_x = x; }
+        }
+        if (maxabs >= 1e-9) tap_diag("rt_log(rt_exp(x)) round-trip worst absolute error %.3e at x=%.3f", maxabs, worst_x);
+        ok(maxabs < 1e-9, "S1.4.3 rt_log(rt_exp(x)) round-trips x to < 1e-9 absolute error over x=-20.0..20.0; tolerance is this test's own choice, not SPEC's number");
+    }
+
+    /* Documented edge-case contracts from rt.c's own comments (not SPEC
+     * behavioral claims -- S1.5.1 only establishes that the module must
+     * supply its own runtime math primitives, it makes no statement about
+     * these specific edge cases). */
+    ok(rt_sqrt(-1.0) == 0.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own sqrt primitive): rt_sqrt(-1.0) == 0.0 per rt.c's x<=0 domain clamp");
+    ok(rt_pow(0.0, 2.0) == 0.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own pow primitive): rt_pow(0.0, 2.0) == 0.0 per rt.c's base==0 special case");
+    ok(rt_pow(0.0, -1.0) == 1.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own pow primitive): rt_pow(0.0, -1.0) == 1.0 per rt.c's base==0,exponent<=0 special case");
+
+    /* SPEC S3.4.1's own documented worst case (a real, checkable number, not
+     * an invented tolerance): tc=4330.571090698242 evaluated as
+     * rt_pow(2.0, tc/1200.0)*22050.0 must truncate to 269009 samples.
+     * Executed check: libm gives 269009.99992038216 -- exactly SPEC's own
+     * printed figure -- and rt_pow gives 269009.99992788181; both truncate
+     * to 269009. */
+    {
+        double tc = 4330.571090698242;
+        double got = rt_pow(2.0, tc / 1200.0) * 22050.0;
+        tap_diag("rt_pow(2.0, tc/1200.0)*22050.0 = %.17g (SPEC's own printed value: 269009.99992038216)", got);
+        is_int((int32_t)got, 269009, "S3.4.1 SPEC's documented worst-case timecent (tc=4330.571090698242) truncates to 269009 samples");
+    }
+
+    /* Margin-headroom test: S3.4.1 says the minimum distance to a truncation
+     * boundary on gm.dls's actual timecent values is 1,367,824 ULP. Convert
+     * that to a relative-error margin at the worst-case magnitude (269010
+     * samples) and assert rt_pow's OWN measured worst relative error against
+     * libm, over the driver's timecent domain, stays below it -- reporting
+     * via tap_diag exactly how much of the margin is consumed, since SPEC's
+     * "over a million ULP" prose reads far roomier than the measured number. */
+    {
+        double margin_ulp = 1367824.0;
+        double ulp_at_269010 = nextafter(269010.0, INFINITY) - 269010.0;
+        double margin_rel = margin_ulp * ulp_at_269010 / 269010.0;
+
+        double tc;
+        double maxrel = 0.0, worst_tc = 0.0;
+        for (tc = -12000.0; tc <= 8000.0; tc += 50.0) {
+            double x = tc / 1200.0;
+            double got = rt_pow(2.0, x);
+            double want = pow(2.0, x);
+            double rel = (want != 0.0) ? fabs(got - want) / fabs(want) : fabs(got - want);
+            if (rel > maxrel) { maxrel = rel; worst_tc = tc; }
+        }
+        tap_diag("rt_pow(2.0, tc/1200.0) worst relative error %.3e at tc=%.1f; SPEC's 1,367,824 ULP margin at 269010 samples is %.3e relative -- %.1f%% of the margin consumed",
+                 maxrel, worst_tc, margin_rel, 100.0 * maxrel / margin_rel);
+        ok(maxrel < margin_rel, "S3.4.1 rt_pow(2.0, tc/1200.0)'s own worst relative error across tc=-12000..8000 stays below SPEC's documented 1,367,824-ULP margin (converted to relative terms at the 269010-sample worst-case magnitude) -- with far less headroom than the 'over a million ULP' prose suggests");
+    }
+}
+
+/* frag_synth.c -- unit tests for src/engine/synth.c against artifacts/SPEC.adoc
+ * Part 4 (MIDI Control Plane), claims S-1..S-63 in SCRATCH/claims_core.md.
+ *
+ * Governing rule for this fragment: where src/ and SPEC.adoc disagree, SPEC
+ * is right and the assertion below is written to SPEC's own text -- expected
+ * failures are the point, not a bug in this file. Every failing assertion
+ * carries a comment naming the disagreement.
+ *
+ * have_dls is 0 in this harness (see SCRATCH/harness_synth.c's main()), so
+ * dls_find_region() can never resolve a region and voice_note_on() can never
+ * allocate a voice. Anything that requires an actually-sounding Voice (S-19's
+ * instrument-collection test, CC120/CC123's "releases/defers a held voice"
+ * half) is impossible to exercise here and is explicitly tap_skip()'d rather
+ * than faked.
+ */
+
+/* ---- helpers: build SysEx buffers matching S4.5's layouts. `buf` excludes
+ * the leading 0xF0 (synth_sysex's own contract, synth.h). ---- */
+
+static void sy_gs_reset(void) {
+    uint8_t b[9] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x00};
+    synth_sysex(b, sizeof b);
+}
+
+static void sy_use_rhythm(int block, int on) {
+    uint8_t b[9] = {0x41, 0x10, 0x42, 0x12, 0x40, (uint8_t)(0x10 | block), 0x15,
+                     (uint8_t)(on ? 1 : 0), 0x00};
+    synth_sysex(b, sizeof b);
+}
+
+static void sy_rcv_channel(int block, int target_channel) {
+    uint8_t b[9] = {0x41, 0x10, 0x42, 0x12, 0x40, (uint8_t)(0x10 | block), 0x02,
+                     (uint8_t)target_channel, 0x00};
+    synth_sysex(b, sizeof b);
+}
+
+static void sy_gm(int on) {
+    uint8_t b[4] = {0x7E, 0x10, 0x09, (uint8_t)(on ? 1 : 2)};
+    synth_sysex(b, sizeof b);
+}
+
+static void sy_master_vol(uint8_t lsb, uint8_t msb) {
+    uint8_t b[6] = {0x7F, 0x10, 0x04, 0x01, lsb, msb};
+    synth_sysex(b, sizeof b);
+}
+
+/* Select an RPN via CC101 (MSB) then CC100 (LSB) so rpn_select == rpn exactly. */
+static void sy_select_rpn(int ch, uint16_t rpn) {
+    synth_midi((uint32_t)(0xB0 | ch), 101, (rpn >> 7) & 0x7F);
+    synth_midi((uint32_t)(0xB0 | ch), 100, rpn & 0x7F);
+}
+
+static void t_synth(void) {
+    tap_diag("=== synth.c: SPEC.adoc Part 4 (MIDI Control Plane), claims S-1..S-63 ===");
+
+    /* ---------------------------------------------------------------
+     * S4.6.4 reset-state summary table -- System Reset (0xFF) net effect.
+     * ---------------------------------------------------------------
+     * synth_reset() stands in for BOTH device construction (where SPEC's
+     * ctor defaults of 200/0x3FFF/sustain=0 per S4.2.1 ARE correct) AND the
+     * System-Reset/GM-On/GS-Reset paths (where S4.6.4 says those same three
+     * fields are "unchanged"/"not touched"). We distinguish the two by
+     * driving each field away from its ctor default with real MIDI first,
+     * *then* invoking the reset path under test, then checking S4.6.4's
+     * stated post-reset value -- not the ctor value.
+     */
+    tap_diag("--- S4.6.4 reset-state summary table: System Reset (0xFF) net effect ---");
+    {
+        int ch = 0;
+        synth_reset();
+        sy_gs_reset();          /* GS mode on, so CC0/CC32 bank writes aren't gated off below */
+        sy_use_rhythm(4, 1);    /* flip is_rhythm on channel 3 (block4's default channel) --
+                                  * MUST happen before the other mutations below, since this
+                                  * message also fires a device-wide controller reset
+                                  * (reset_all_channel_controllers_device) that would otherwise
+                                  * wipe them straight back to their defaults. */
+        synth_midi(0xB0 | ch, 0, 5);     /* CC0  bank_msb = 5 */
+        synth_midi(0xB0 | ch, 32, 3);    /* CC32 bank_lsb = 3 */
+        synth_midi(0xC0 | ch, 7, 0);     /* Program Change: program = 7, relatches locale */
+        synth_midi(0xE0 | ch, 0, 15);    /* pitch bend raw = 15<<7 = 1920, away from 8192 */
+        sy_select_rpn(ch, 0);
+        synth_midi(0xB0 | ch, 6, 5);     /* RPN0: pb_range_cents = 500 */
+        synth_midi(0xB0 | ch, 7, 40);    /* CC7  volume = 40 */
+        synth_midi(0xB0 | ch, 11, 10);   /* CC11 expression = 10 */
+        synth_midi(0xB0 | ch, 10, 20);   /* CC10 pan = 20 */
+        synth_midi(0xB0 | ch, 1, 64);    /* CC1  modulation = 64 */
+        sy_select_rpn(ch, 1);
+        synth_midi(0xB0 | ch, 6, 60);    /* RPN1: nonzero rpn1_fine_cents */
+        synth_midi(0xB0 | ch, 38, 10);
+        sy_select_rpn(ch, 2);
+        synth_midi(0xB0 | ch, 6, 70);    /* RPN2: rpn2_coarse_cents = 600 */
+        /* rpn_select is left at 2 (not re-Nulled) so the "unchanged" claim (S-10) is testable. */
+        synth_midi(0xB0 | ch, 64, 127);  /* CC64 sustain down, raw cache = 127 */
+        synth_midi(0xB0 | ch, 126, 0);   /* CC126 mono on */
+        sy_master_vol(0x55, 64);         /* nonzero master volume attenuation */
+
+        ok(g_gs_mode != 0, "S4.6.4 setup: GS mode is on before System Reset");
+
+        synth_midi(0xFF, 0, 0);          /* System Reset */
+
+        is_int(g_channels[ch].bank_msb, 0, "S4.6.4 Bank MSB -> 0 after System Reset");
+        is_int(g_channels[ch].bank_lsb, 0, "S4.6.4 Bank LSB -> 0 after System Reset");
+        is_int(g_channels[ch].program, 0, "S4.6.4 Program (scheduled locale) -> 0 after System Reset");
+        is_int(g_channels[ch].pitch_bend, 8192, "S4.6.4 Pitch Bend -> 8192 after System Reset");
+        is_int(g_channels[ch].pb_range_cents, 500,
+               "S4.6.4 RPN0 unchanged by System Reset (SPEC: 'unchanged'; src (S-4) forces 200)");
+        is_int(g_channels[ch].volume, 100, "S4.6.4 Channel Volume -> 100 after System Reset");
+        is_int(g_channels[ch].expression, 127, "S4.6.4 Expression -> 127 after System Reset");
+        is_int(g_channels[ch].pan, 64, "S4.6.4 Pan -> 64 after System Reset");
+        is_int(g_channels[ch].modulation, 0, "S4.6.4 Modulation Wheel -> 0 after System Reset");
+        is_int(g_channels[ch].rpn1_fine_cents, 0, "S4.6.4 RPN1 result field -> 0 after System Reset");
+        is_int(g_channels[ch].rpn2_coarse_cents, 0, "S4.6.4 RPN2 result field -> 0 after System Reset");
+        is_int(g_channels[ch].rpn_select, 2,
+               "S4.6.4 RPN-select register unchanged by System Reset (SPEC: 'unchanged'; src (S-10) forces 0x3FFF)");
+        is_int(g_channels[ch].data_entry_combined, 0, "S4.6.4 Data-Entry combined word -> 0 after System Reset");
+        is_int(g_channels[9].is_rhythm, 1, "S4.6.4 USE RHYTHM PART: Part 0 (channel 9) -> 1 after System Reset");
+        is_int(g_channels[3].is_rhythm, 0, "S4.6.4 USE RHYTHM PART: non-Part-0 channel -> 0 after System Reset");
+        is_int(g_channels[ch].mono_mode, 0, "S4.6.4 Mono flag -> 0 (poly) after System Reset");
+        is_int(g_channels[ch].sustain, 127,
+               "S4.6.4 Sustain raw value not force-zeroed by System Reset (SPEC: only a release EVENT is queued; src (S-16) zeroes the byte)");
+        is_int(g_master_vol_hdb, 0, "S4.6.4 Master Volume attenuation -> 0 after System Reset");
+        is_int(g_gs_mode, 0, "S4.6.4 GS-mode flag -> 0 after System Reset");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.6.4 net effect via GS Reset SysEx.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.6.4 reset-state summary table: GS Reset SysEx net effect ---");
+    {
+        int ch = 1;
+        synth_reset();
+        synth_midi(0xE0 | ch, 0, 10);   /* pitch bend raw = 10<<7 = 1280 */
+        sy_select_rpn(ch, 0);
+        synth_midi(0xB0 | ch, 6, 9);    /* pb_range_cents = 900 */
+        sy_select_rpn(ch, 1);           /* leave rpn_select == 1, non-Null */
+        synth_midi(0xB0 | ch, 64, 100); /* sustain raw = 100 */
+
+        sy_gs_reset();
+
+        is_int(g_gs_mode, 1, "S4.5/S4.6.4 GS-mode flag -> 1 after GS Reset (set after ResetDevice)");
+        is_int(g_channels[ch].pitch_bend, 8192, "S4.6.4 Pitch Bend -> 8192, GS Reset net effect");
+        is_int(g_channels[ch].pb_range_cents, 900,
+               "S4.6.4 RPN0 unchanged by GS Reset (SPEC: 'unchanged'; src (S-4) forces 200)");
+        is_int(g_channels[ch].rpn_select, 1,
+               "S4.6.4 RPN-select register unchanged by GS Reset (SPEC: 'unchanged'; src (S-10) forces 0x3FFF)");
+        is_int(g_channels[ch].sustain, 100,
+               "S4.6.4 Sustain raw value not force-zeroed by GS Reset (SPEC: only a release event queued; src (S-16) zeroes the byte)");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.6.4 net effect via GM System On/Off SysEx.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.6.4 reset-state summary table: GM System On/Off net effect ---");
+    {
+        int ch = 2;
+        synth_reset();
+        sy_gs_reset();
+        ok(g_gs_mode != 0, "S4.5 setup: GS mode is on before GM System On");
+        sy_gm(1); /* GM System On */
+        is_int(g_gs_mode, 0, "S4.5/S4.6.4 GM System On clears the GS-mode flag");
+
+        sy_gs_reset();
+        synth_midi(0xE0 | ch, 0, 10);
+        sy_select_rpn(ch, 0);
+        synth_midi(0xB0 | ch, 6, 9);
+        sy_select_rpn(ch, 1);
+        synth_midi(0xB0 | ch, 64, 100);
+
+        sy_gm(2); /* GM System Off */
+
+        is_int(g_gs_mode, 0, "S4.5/S4.6.4 GM System Off also clears the GS-mode flag");
+        is_int(g_channels[ch].pb_range_cents, 900,
+               "S4.6.4 RPN0 unchanged by GM System Off (SPEC: 'unchanged'; src (S-4) forces 200)");
+        is_int(g_channels[ch].sustain, 100,
+               "S4.6.4 Sustain raw value not force-zeroed by GM System Off (src (S-16) zeroes the byte)");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.1.2/S4.1.3 entry-point semantics.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.1.2/S4.1.3 entry-point semantics ---");
+    {
+        int ch = 0;
+        synth_reset();
+        synth_midi(0xB0 | ch, 7, 55);
+        is_int(g_channels[ch].volume, 55, "setup: volume mutated before entry-point tests");
+
+        synth_midi(0xFF, 5, 9); /* status==0xFF triggers reset regardless of d1/d2 */
+        is_int(g_channels[ch].volume, 100, "S4.1.2 status==0xFF triggers System Reset regardless of data bytes");
+
+        synth_midi(0xB0 | ch, 7, 55);
+        synth_midi(0xF1, 0, 0); /* shares high nibble 0xF with 0xFF but is not itself 0xFF */
+        is_int(g_channels[ch].volume, 55,
+               "S4.1.2 ShortMsg checks the full status byte, not just the high nibble (0xF1 must not reset)");
+
+        uint8_t gs_a[9] = {0x41, 0x00, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x00};
+        uint8_t gs_b[9] = {0x41, 0x7F, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x00};
+        synth_reset();
+        synth_sysex(gs_a, sizeof gs_a);
+        int mode_a = g_gs_mode;
+        synth_reset();
+        synth_sysex(gs_b, sizeof gs_b);
+        int mode_b = g_gs_mode;
+        ok(mode_a == 1 && mode_b == 1,
+           "S4.1.3 device-ID byte (buf[1]) is never read/compared -- identical effect regardless of its value");
+
+        uint8_t gs_nochk[8] = {0x41, 0x00, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00}; /* no checksum byte at all */
+        synth_reset();
+        synth_sysex(gs_nochk, sizeof gs_nochk);
+        is_int(g_gs_mode, 1, "S4.1.3 no checksum is ever computed/checked -- GS Reset with the checksum byte absent still processed");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.3 Control Change table -- implemented controllers.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.3 CC table: implemented controllers ---");
+    {
+        int ch = 0;
+        synth_reset();
+        g_gs_mode = 0;
+        g_channels[ch].bank_msb = 9;
+        synth_midi(0xB0 | ch, 0, 5);
+        is_int(g_channels[ch].bank_msb, 9, "S4.3 CC0 Bank Select MSB gated off when GS-mode is 0 (unmoved)");
+        g_gs_mode = 1;
+        synth_midi(0xB0 | ch, 0, 5);
+        is_int(g_channels[ch].bank_msb, 5, "S4.3 CC0 Bank Select MSB stores when GS-mode is 1");
+        g_gs_mode = 0;
+        g_channels[ch].bank_lsb = 9;
+        synth_midi(0xB0 | ch, 32, 3);
+        is_int(g_channels[ch].bank_lsb, 9, "S4.3 CC32 Bank Select LSB gated off when GS-mode is 0 (unmoved)");
+        g_gs_mode = 1;
+        synth_midi(0xB0 | ch, 32, 3);
+        is_int(g_channels[ch].bank_lsb, 3, "S4.3 CC32 Bank Select LSB stores when GS-mode is 1");
+
+        synth_reset();
+        synth_midi(0xB0 | ch, 1, 64);
+        is_int(g_channels[ch].modulation, 64, "S4.3 CC1 Modulation Wheel");
+        synth_midi(0xB0 | ch, 7, 40);
+        is_int(g_channels[ch].volume, 40, "S4.3 CC7 Channel Volume");
+        synth_midi(0xB0 | ch, 10, 20);
+        is_int(g_channels[ch].pan, 20, "S4.3 CC10 Pan");
+        synth_midi(0xB0 | ch, 11, 10);
+        is_int(g_channels[ch].expression, 10, "S4.3 CC11 Expression");
+        synth_midi(0xB0 | ch, 64, 77);
+        is_int(g_channels[ch].sustain, 77, "S4.3 CC64 Sustain stores the raw value");
+
+        sy_select_rpn(ch, 1);
+        synth_midi(0xB0 | ch, 98, 33);
+        is_int(g_channels[ch].rpn_select, 0x3FFF, "S4.3/S4.4 CC98 NRPN LSB forces RPN-select to Null regardless of value");
+        sy_select_rpn(ch, 2);
+        synth_midi(0xB0 | ch, 99, 77);
+        is_int(g_channels[ch].rpn_select, 0x3FFF, "S4.3/S4.4 CC99 NRPN MSB forces RPN-select to Null regardless of value");
+
+        g_channels[ch].rpn_select = 0;
+        synth_midi(0xB0 | ch, 101, 0x7F); /* MSB -> bits 7-13 = 0x7F */
+        synth_midi(0xB0 | ch, 100, 0x2A); /* LSB -> bits 0-6, must not disturb bits 7-13 */
+        is_int(g_channels[ch].rpn_select, 0x3FAA, "S4.4/S4.3 CC100 RPN LSB sets bits 0-6, preserves bits 7-13");
+
+        g_channels[ch].rpn_select = 0;
+        synth_midi(0xB0 | ch, 100, 0x2A); /* LSB first -> bits 0-6 = 0x2A */
+        synth_midi(0xB0 | ch, 101, 0x15); /* MSB -> bits 7-13, must not disturb bits 0-6 */
+        is_int(g_channels[ch].rpn_select, 0x0AAA, "S4.4/S4.3 CC101 RPN MSB sets bits 7-13, preserves bits 0-6");
+
+        synth_reset();
+        synth_midi(0xB0 | ch, 7, 40);
+        synth_midi(0xB0 | ch, 10, 20);
+        synth_midi(0xB0 | ch, 11, 10);
+        synth_midi(0xE0 | ch, 0, 5);
+        synth_midi(0xB0 | ch, 1, 64);
+        synth_midi(0xB0 | ch, 121, 0); /* CC121 Reset All Controllers */
+        is_int(g_channels[ch].volume, 100,
+               "S4.3 CC121 re-schedules Channel Volume=100 (src's CC121_RESETS_VOLUME=0 deliberately skips this, S-37)");
+        ok(g_channels[ch].pan == 64 && g_channels[ch].expression == 127 &&
+               g_channels[ch].pitch_bend == 8192 && g_channels[ch].modulation == 0,
+           "S4.3 CC121 re-schedules Pan=64, Expression=127, Pitch Bend=8192, Modulation=0");
+
+        synth_reset();
+        synth_midi(0xB0 | ch, 126, 0);
+        is_int(g_channels[ch].mono_mode, 1, "S4.3 CC126 Mono Mode On sets the Mono flag");
+        synth_midi(0xB0 | ch, 127, 0);
+        is_int(g_channels[ch].mono_mode, 0, "S4.3 CC127 Poly Mode On clears the Mono flag");
+    }
+    tap_diag("CC120/CC121/CC123/CC126/CC127's channel-wide *voice release* half (as opposed to");
+    tap_diag("the Channel-struct field writes just tested) needs an actually-active Voice, which");
+    tap_diag("requires a DLS-resolved region -- have_dls is 1 in this assembled binary (dist/gm.dls");
+    tap_diag("loads), so CC120/CC123 are driven here for real: a genuine note-on (channel 0, program 0,");
+    tap_diag("note 60 -- verified to resolve a region) through synth_midi's own dispatch, distinct from");
+    tap_diag("t_voice's S5.9 coverage of the same SPEC claim via a hand-built bare-voice fixture.");
+    if (have_dls) {
+        int ch = 0, note = 60;
+
+        synth_reset();
+        voice_pool_reset();
+        synth_midi(0x90u | (uint32_t)ch, (uint32_t)note, 100u); /* real DLS-backed note-on */
+        int vidx = -1;
+        for (int i = 0; i < NUM_VOICES; i++)
+            if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+        if (vidx < 0) {
+            tap_skip("gm.dls loaded but channel 0/program 0/note 60 note-on did not allocate a voice",
+                     "S4.3/S5.9 CC120 All Sound Off releases a held voice, bypassing the sustain hold (via synth_midi CC dispatch, real note-on)");
+        } else {
+            synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* CC64 sustain down */
+            synth_midi(0xB0u | (uint32_t)ch, 120, 0);  /* CC120 All Sound Off */
+            ok(g_voices[vidx].active == 1 && g_voices[vidx].env_stage == ENV_RELEASE && g_voices[vidx].sustain_deferred == 0,
+               "S4.3/S5.9 CC120 All Sound Off releases a held voice, bypassing the sustain hold (via synth_midi CC dispatch, real note-on)");
+            synth_midi(0xB0u | (uint32_t)ch, 64, 0);   /* pedal back up, tidy state */
+        }
+        voice_pool_reset();
+
+        synth_reset();
+        voice_pool_reset();
+        synth_midi(0x90u | (uint32_t)ch, (uint32_t)note, 100u); /* second, independent real note-on */
+        vidx = -1;
+        for (int i = 0; i < NUM_VOICES; i++)
+            if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+        if (vidx < 0) {
+            tap_skip("gm.dls loaded but channel 0/program 0/note 60 note-on did not allocate a voice",
+                     "S4.3/S5.9 CC123 All Notes Off defers a held voice when sustain is down, honouring it (via synth_midi CC dispatch, real note-on)");
+        } else {
+            synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* CC64 sustain down */
+            synth_midi(0xB0u | (uint32_t)ch, 123, 0);  /* CC123 All Notes Off */
+            ok(g_voices[vidx].active == 1 && g_voices[vidx].sustain_deferred == 1 && g_voices[vidx].env_stage != ENV_RELEASE,
+               "S4.3/S5.9 CC123 All Notes Off defers a held voice when sustain is down, honouring it (via synth_midi CC dispatch, real note-on)");
+            synth_midi(0xB0u | (uint32_t)ch, 64, 0);   /* pedal lift, tidy state */
+        }
+        voice_pool_reset();
+    } else {
+        tap_skip("dist/gm.dls not loadable",
+                 "S4.3/S5.9 CC120 All Sound Off releases a held voice, bypassing the sustain hold (via synth_midi CC dispatch, real note-on)");
+        tap_skip("dist/gm.dls not loadable",
+                 "S4.3/S5.9 CC123 All Notes Off defers a held voice when sustain is down, honouring it (via synth_midi CC dispatch, real note-on)");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.3 Control Change table -- discarded controllers.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.3 CC table: discarded controllers (send-and-assert-nothing-moved) ---");
+    {
+        static const int discarded_ccs[] = {2, 5, 8, 66, 91, 96, 122};
+        int ch = 0;
+        for (size_t i = 0; i < sizeof(discarded_ccs) / sizeof(discarded_ccs[0]); i++) {
+            synth_reset();
+            Channel before = g_channels[ch];
+            synth_midi(0xB0 | ch, (uint32_t)discarded_ccs[i], 99);
+            ok(memcmp(&before, &g_channels[ch], sizeof(Channel)) == 0,
+               "S4.3 CC%d is discarded: no Channel field moves", discarded_ccs[i]);
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.4 RPN and NRPN.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.4 RPN and NRPN ---");
+    {
+        int ch = 0;
+        synth_reset();
+        sy_select_rpn(ch, 0);
+        synth_midi(0xB0 | ch, 6, 5);
+        is_int(g_channels[ch].pb_range_cents, 500, "S4.4 RPN0: CC6 MSB writes data2*100 cents");
+        synth_midi(0xB0 | ch, 38, 99);
+        is_int(g_channels[ch].pb_range_cents, 500, "S4.4 RPN0: CC38 LSB has no effect");
+
+        synth_reset();
+        sy_select_rpn(ch, 1);
+        synth_midi(0xB0 | ch, 6, 63);
+        is_int(g_channels[ch].rpn1_fine_cents, -1,
+               "S4.4 RPN1: CC6-only combined value, C-style truncation toward zero");
+        synth_midi(0xB0 | ch, 38, 100);
+        is_int(g_channels[ch].rpn1_fine_cents, 0,
+               "S4.4 RPN1: CC38 recomputes using the just-updated combined word, truncation toward zero");
+
+        synth_reset();
+        sy_select_rpn(ch, 2);
+        synth_midi(0xB0 | ch, 6, 70);
+        is_int(g_channels[ch].rpn2_coarse_cents, 600, "S4.4 RPN2: CC6 MSB writes (data2-64)*100 cents");
+        synth_midi(0xB0 | ch, 38, 99);
+        is_int(g_channels[ch].rpn2_coarse_cents, 600, "S4.4 RPN2: CC38 LSB has no effect");
+
+        synth_reset();
+        synth_midi(0xB0 | ch, 98, 0); /* NRPN LSB: forces RPN-select to Null */
+        is_int(g_channels[ch].rpn_select, 0x3FFF, "setup: RPN-select is Null before the discard test");
+        synth_midi(0xB0 | ch, 6, 99);
+        synth_midi(0xB0 | ch, 38, 88);
+        ok(g_channels[ch].pb_range_cents == 200 && g_channels[ch].rpn1_fine_cents == 0 &&
+               g_channels[ch].rpn2_coarse_cents == 0,
+           "S4.4 Null/unselected RPN: CC6/CC38 leave RPN0/RPN1/RPN2 untouched");
+        is_int(g_channels[ch].data_entry_combined, (99 << 7) | 88,
+               "S4.4 Null/unselected RPN: the raw combined data-entry word still updates");
+    }
+
+    /* ---------------------------------------------------------------
+     * S3.3.2(c) live pitch-bend-cents formula.
+     *
+     * NOTE on a citation nit in synth.c's own comment (see report): the
+     * comment above synth_pitch_bend_cents attributes this floor behaviour
+     * to "SPEC.adoc S4.4", and the assignment brief that generated this
+     * fragment characterized that as a live disagreement with S4.4's
+     * "C-style truncation toward zero" text. Having read SPEC.adoc directly:
+     * S4.4's truncation-toward-zero statement is about the *RPN1* formula
+     * (a different formula, tested above and confirmed agreeing), not this
+     * one. This formula's own SPEC citation is S3.3.2(c), whose text reads,
+     * verbatim: "with an arithmetic right shift -- truncation toward
+     * negative infinity, not toward zero." That IS floor, and it is exactly
+     * what synth.c's `>>13` computes. So the assertions below assert floor
+     * (matching both SPEC S3.3.2(c) and src) and are expected to PASS, not
+     * fail -- there is no live S3.3.2(c) disagreement here.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S3.3.2(c) pitch bend -> cents (see NOTE above re: a citation nit, not a functional bug) ---");
+    {
+        int ch = 0;
+        synth_reset();
+        static const struct { int raw; int32_t want; } spread[] = {
+            {0, -200}, {4096, -100}, {8192, 0}, {12288, 100}, {16383, 199},
+        };
+        for (size_t i = 0; i < sizeof(spread) / sizeof(spread[0]); i++) {
+            synth_midi(0xE0 | ch, spread[i].raw & 0x7F, (spread[i].raw >> 7) & 0x7F);
+            is_int(synth_pitch_bend_cents(ch), spread[i].want,
+                   "S3.3.2c pitch bend cents at raw=%d, range=200", spread[i].raw);
+        }
+
+        /* Discriminating case: floor and C-style truncation-toward-zero differ
+         * by one cent here (-103 vs -102). SPEC S3.3.2(c) states floor. */
+        synth_midi(0xE0 | ch, 4000 & 0x7F, (4000 >> 7) & 0x7F);
+        is_int(synth_pitch_bend_cents(ch), -103,
+               "S3.3.2c pitch bend cents floors (raw=4000, range=200): -103, not truncating-toward-zero's -102");
+
+        sy_select_rpn(ch, 0);
+        synth_midi(0xB0 | ch, 6, 7); /* pb_range_cents = 700 */
+        synth_midi(0xE0 | ch, 4096 & 0x7F, (4096 >> 7) & 0x7F);
+        is_int(synth_pitch_bend_cents(ch), -350, "S3.3.2c pitch bend cents at raw=4096, re-ranged to 700 cents");
+        synth_midi(0xE0 | ch, 12288 & 0x7F, (12288 >> 7) & 0x7F);
+        is_int(synth_pitch_bend_cents(ch), 350, "S3.3.2c pitch bend cents at raw=12288, re-ranged to 700 cents");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch ---");
+    {
+        synth_reset();
+        ok((synth_channel_locale(9) & 0x80000000u) != 0,
+           "S4.8 channel 9 (MIDI ch 10) has the drum bit set by default, GS-mode off");
+        ok((synth_channel_locale(0) & 0x80000000u) == 0, "S4.8 channel 0 has no drum bit by default");
+
+        sy_gs_reset();
+        sy_use_rhythm(0, 0); /* block 0 -> default channel 9 */
+        ok((synth_channel_locale(9) & 0x80000000u) == 0,
+           "S4.8 drum bit is read live: USE RHYTHM PART clearing it is visible with no following Program Change");
+
+        synth_reset();
+        sy_gs_reset();
+        synth_midi(0xB0, 0, 5); /* CC0 bank_msb=5, channel 0. NOTE: the scheduled
+                                  * locale is 21 bits (program bits 0-6, bank_lsb
+                                  * bits 7-13, bank_msb bits 14-20) -- mask with
+                                  * 0x1FFFFF, not 0x3FFF, or bank_msb's own bits
+                                  * are invisible to the check. */
+        ok((synth_channel_locale(0) & 0x1FFFFF) == 0, "S4.2.1/S4.3 Bank Select alone does not retarget the scheduled locale");
+        synth_midi(0xC0, 0, 0); /* Program Change: relatches from the now-current bank */
+        is_int(synth_channel_locale(0) & 0x1FFFFF, 5u << 14,
+               "S4.2.1 a following Program Change latches the new bank into the scheduled locale");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.5/T.8 RCV CHANNEL: SPEC's Part-indirection model vs src's no-op.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.5 RCV CHANNEL: SPEC's Part-indirection model vs src's documented no-op (S-59) ---");
+    {
+        synth_reset();
+        sy_gs_reset();
+        sy_rcv_channel(1, 5); /* attempt: remap block 1's Part -> channel 5 */
+        sy_use_rhythm(1, 1);  /* USE RHYTHM PART for block 1 should now target channel 5 */
+        is_int(g_channels[5].is_rhythm, 1,
+               "S4.5/T.8 RCV CHANNEL remaps block 1's Part to channel 5, so USE RHYTHM PART for block 1 lands there");
+        is_int(g_channels[0].is_rhythm, 0,
+               "S4.5/T.8 ...and channel 0 (block 1's un-remapped default target) is left untouched");
+    }
+
+    /* ---------------------------------------------------------------
+     * S4.5 unrecognized SysEx addresses; Master Volume MSB-only.
+     * --------------------------------------------------------------- */
+    tap_diag("--- S4.5 unrecognized GS DT1 addresses; Master Volume MSB-only ---");
+    {
+        synth_reset();
+        sy_gs_reset();
+        Channel before[16];
+        memcpy(before, g_channels, sizeof before);
+        uint8_t gs_dt1[9] = {0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x99, 0x00, 0x00}; /* a2=0x99: unrecognized */
+        synth_sysex(gs_dt1, sizeof gs_dt1);
+        ok(memcmp(before, g_channels, sizeof before) == 0,
+           "S4.5 unrecognized GS DT1 address is silently dropped, no Channel field moves");
+
+        synth_reset();
+        sy_master_vol(0x55, 64);
+        int32_t hdb1 = g_master_vol_hdb;
+        synth_reset();
+        sy_master_vol(0x00, 64);
+        int32_t hdb2 = g_master_vol_hdb;
+        ok(hdb1 == hdb2, "S4.5 Master Volume SysEx: the LSB is never read, only the MSB matters");
+    }
+
+    tap_diag("=== end synth.c coverage ===");
+    synth_reset(); /* leave global state clean for the next fragment */
+}
+
+/* frag_voice.c -- unit coverage for voice.c (SPEC Parts 3 & 5) and render.c
+ * (SPEC Part 6), concatenated verbatim into src/unit.c. No main(); PRELUDE
+ * (stdio/stdlib/string/math, unit_tap.h, engine/{tables,rt,synth,voice,dls,
+ * render}.h, `have_dls`) is supplied by the assembly stage above this file.
+ *
+ * Where src and SPEC.adoc disagree, these tests assert what SPEC.adoc says
+ * (per the assignment's governing rule), so some are EXPECTED to fail --
+ * each such case is called out in a tap_diag() right next to the assertion.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Shared fixtures and helpers.                                        */
+/* ------------------------------------------------------------------ */
+
+/* A minimal, always-valid Artic for hand-built voices that only exercise
+ * pool/steal/choke/release ROUTING (not real DLS-authored envelope shape).
+ * eg1_release_tc==0 (not the INT32_MIN "never" sentinel) gives a finite,
+ * exactly-known 1.0s authored release (2^(0/1200)==1), which is what makes
+ * the fast-release clamp (S5.6) deterministically bind in the tests below. */
+static Artic vo_bare_artic;
+
+static void vo_setup_bare_active(Voice *v, int channel, int note) {
+    memset(v, 0, sizeof(*v));
+    v->active = 1;
+    v->channel = channel;
+    v->note = note;
+    v->artic = &vo_bare_artic;
+    v->held = 1;
+    v->env_stage = ENV_SUSTAIN;
+    v->env_level = 1.0;
+    v->env_sustain_level = 1.0;
+    v->eg2_stage = ENV_IDLE;
+    v->age = ++g_voice_age_counter;
+}
+
+static int vo_all_eq_i16(const int16_t *buf, uint32_t n, int16_t val) {
+    for (uint32_t i = 0; i < n; i++) if (buf[i] != val) return 0;
+    return 1;
+}
+
+/* SPEC S3.4.1: tc = lScale/65536.0; duration = 2^(tc/1200); DLS "never"
+ * sentinel INT32_MIN -> 0. Independent reimplementation (voice.c's own
+ * timecents_to_seconds is `static`, unreachable without #include-ing a .c
+ * file) sharing rt_pow -- the same primitive src's build calls -- so results
+ * are directly, exactly comparable rather than merely "close". */
+static double vo_timecents_to_seconds(int32_t tc) {
+    if (tc == (int32_t)0x80000000) return 0.0;
+    double t = (double)tc / 65536.0;
+    return rt_pow(2.0, t / 1200.0);
+}
+
+/* SPEC S5.1.2 "Then, every render block..." key/velocity-follow scaling
+ * term applied to a raw timecent value before conversion. */
+static int32_t vo_scale_tc_by_source(int32_t tc, int16_t depth, int src) {
+    if (tc == (int32_t)0x80000000 || depth == 0) return tc;
+    int32_t cents = (int32_t)depth * (int32_t)src / 127;
+    if (cents > 4800) cents = 4800;
+    if (cents < -4800) cents = -4800;
+    return tc + cents * 65536;
+}
+
+/* SPEC S3.3.3 CentsToRatio: clamp +-4800, direct T2 lookup for |cents|<=100,
+ * else T2/T3 decomposition. Independent reimplementation reading the same
+ * PUBLIC g_table_cents/g_table_semi tables src's static cents_to_ratio_q12
+ * also reads -- not a call into voice.c's own function. */
+static int32_t vo_cents_to_ratio_q12(int32_t cents) {
+    if (cents > 4800) cents = 4800;
+    if (cents < -4800) cents = -4800;
+    if (cents >= -100 && cents <= 100) return g_table_cents[cents + 100];
+    int32_t whole = cents / 100;
+    int32_t rem = cents % 100;
+    int32_t oct = whole / 12;
+    int32_t semi = whole % 12;
+    int64_t t2 = g_table_cents[rem + 100];
+    int64_t t3 = g_table_semi[semi + 48];
+    int64_t scaled = (oct >= 0) ? (t2 << oct) : (t2 >> (-oct));
+    return (int32_t)((t3 * scaled) >> 12);
+}
+
+/* ==================================================================== */
+static void t_voice(void) {
+    synth_reset();
+    voice_pool_reset();
+
+    /* ---------------- S5.2: pool size, 48 primary / 6 reserve ---------------- */
+    tap_diag("--- S5.2: pool construction ---");
+    is_int(NUM_VOICES, 54, "S5.2: pool is 54 physically distinct voice objects");
+    {
+        int nprim = 0, nres = 0;
+        for (int i = 0; i < NUM_VOICES; i++) {
+            if (!g_voices[i].active && !g_voices[i].in_reserve) nprim++;
+            if (!g_voices[i].active && g_voices[i].in_reserve) nres++;
+        }
+        is_int(nprim, 48, "S5.2/S5.5: 48 voices free-tagged primary after voice_pool_reset()");
+        is_int(nres, 6, "S5.2/S5.5: 6 voices free-tagged reserve after voice_pool_reset()");
+    }
+
+    /* ------ S5.3: allocation order (primary -> reserve -> steal) & recycle ------ */
+    tap_diag("--- S5.3: free lists and allocation order ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S5.3 allocation-order fill/steal/recycle sequence");
+    } else {
+        voice_pool_reset();
+        int ch = 0;
+        /* Same (channel, 36+(k%60)) scheme cli.c's own --selftest uses for its
+         * S5.5 saturation check (src/cli.c) -- reused here, not reinvented,
+         * for 55 GUARANTEED-distinct notes (55 <= 60) on gm.dls's default
+         * program 0, so no same-note retrigger or (absent an exclusive key
+         * group on that patch) key-group choke confounds the fill. */
+        voice_note_on(ch, 36 + 0, 100);
+        is_int(g_voices[0].note, 36, "S5.3: 1st note-on fills primary slot 0 (lowest-index-first)");
+        for (int k = 1; k < 48; k++) voice_note_on(ch, 36 + (k % 60), 100);
+        is_int(g_voices[47].note, 36 + 47, "S5.3: 48th note-on fills primary slot 47 (last primary)");
+        voice_note_on(ch, 36 + 48, 100);
+        is_int(g_voices[48].note, 36 + 48, "S5.3: 49th note-on falls through to reserve slot 48 (first reserve)");
+        for (int k = 49; k < 54; k++) voice_note_on(ch, 36 + (k % 60), 100);
+        is_int(g_voices[53].note, 36 + 53, "S5.3: 54th note-on fills reserve slot 53 (last reserve, pool now full)");
+        voice_note_on(ch, 36 + 54, 100);
+        is_int(g_voices[0].note, 36 + 54, "S5.3/S5.7: 55th note-on forces asymmetric steal; with every voice held, oldest (slot 0, age 1) is evicted");
+        ok(g_voices[0].active == 1, "S5.3: the stolen slot is reused, not freed");
+
+        /* S5.3 "recycle timing": a voice cannot supply a free slot to a
+         * note-on dispatched in the same tick it finishes in -- ordinary
+         * note-off alone must not make it eligible via find_free_primary. */
+        voice_note_off(ch, g_voices[1].note);
+        ok(g_voices[1].active == 1 && g_voices[1].held == 0,
+           "S5.3: note-off releases (held=0) but does NOT free the slot immediately (active stays 1)");
+
+        /* S5.3 "recycling... both target primary only, never reserve": drain
+         * a RESERVE-tier voice (slot 48) to fully inactive, then confirm the
+         * next note-on can reuse it via the PRIMARY path (find_free_primary
+         * scans lowest-index-first; slots 0-47 are all still active, so slot
+         * 48 being reachable at all here means it was recycled as primary). */
+        voice_note_off(ch, g_voices[48].note);
+        for (int guard = 0; guard < 5000000 && g_voices[48].active; guard++) voice_step_envelope(&g_voices[48]);
+        if (g_voices[48].active) {
+            tap_skip("slot 48's release did not finish inside the iteration guard", "S5.3 recycle-always-primary check");
+        } else {
+            voice_note_on(ch, 36 + 55, 100);
+            is_int(g_voices[48].note, 36 + 55,
+                   "S5.3: a finished RESERVE-tier voice is recycled onto the PRIMARY free list, not reserve");
+        }
+        voice_pool_reset();
+    }
+
+    /* -------------------------- S5.4: reserve top-up -------------------------- */
+    tap_diag("--- S5.4: reserve top-up, Branch A (retag) and Branch B (fast-release) ---");
+    {
+        /* Branch A: reserve short by 1, one free PRIMARY slot available --
+         * move it to reserve, touch no active voice. */
+        voice_pool_reset();
+        vo_setup_bare_active(&g_voices[48], 1, 0); /* consume the sole reserve slot we leave free elsewhere */
+        voice_topup_tick(1u << 30); /* any frame count >= the internal interval fires exactly one topup pass */
+        ok(g_voices[0].in_reserve == 1,
+           "S5.4 Branch A: a free PRIMARY node (slot 0, lowest index) is retagged reserve when the reserve tier is short");
+        ok(g_voices[48].fast_release_committed == 0 && g_voices[48].active == 1,
+           "S5.4 Branch A: the one active voice is untouched (Branch A never marks/frees an active voice)");
+        voice_pool_reset();
+    }
+    {
+        /* Branch B: saturate all 54 (need primary ALSO empty), all held ->
+         * marks exactly NUM_RESERVE(6) oldest active voices for fast release,
+         * synchronously (still active==1, not freed). Also folds in S5.6's
+         * fast-release-flag / clamp (S5.6/S3.8.2) and S3.4's "EG2 releases on
+         * both paths, unclamped" (S5.6/Part 7) checks on the same victims,
+         * since Branch B's start_release(v,1) call is the same primitive
+         * choke/retrigger use. */
+        voice_pool_reset();
+        for (int i = 0; i < NUM_VOICES; i++) {
+            vo_setup_bare_active(&g_voices[i], 1, i);
+            g_voices[i].eg2_stage = ENV_SUSTAIN; /* non-IDLE, so a release transition is observable */
+        }
+        voice_topup_tick(1u << 30);
+        int marked_ok = 1, unmarked_ok = 1;
+        for (int i = 0; i < 6; i++)
+            if (!(g_voices[i].fast_release_committed == 1 && g_voices[i].env_stage == ENV_RELEASE && g_voices[i].active == 1))
+                marked_ok = 0;
+        for (int i = 6; i < NUM_VOICES; i++)
+            if (g_voices[i].fast_release_committed != 0) unmarked_ok = 0;
+        ok(marked_ok, "S5.4 Branch B/S5.7 rule 4: the 6 OLDEST active voices (slots 0-5, all held) are marked, released segment still active");
+        ok(unmarked_ok, "S5.4 Branch B: exactly NUM_RESERVE(6) victims marked, no more");
+
+        double samples = ((1.0 / 70.0) * (double)RENDER_RATE);
+        double expected_coef = rt_pow(10.0, (-(96.0 / 20.0) * 1.0) / samples);
+        is_near(g_voices[0].env_release_coef, expected_coef, 1e-9,
+                "S5.6/S3.8.2: fast-release from full level clamps to sampleRate/70 samples (14.29ms @ 22050Hz), not the unreconciled 70ms [M] figure");
+        ok(g_voices[0].eg2_stage == ENV_RELEASE,
+           "S5.6/Part7: EG2 (pitch envelope) also transitions to release on the fast-release path, same as ordinary note-off");
+        voice_pool_reset();
+    }
+    {
+        /* S5.7 symmetric comparator, isolated with need==1 (primary fully
+         * consumed, reserve short by exactly 1) so exactly one victim is
+         * chosen per call and the winner is unambiguous. */
+        tap_diag("--- S5.7: symmetric comparator (top-up Branch B), rule by rule ---");
+
+        /* rule (2)+(3): released beats held; among released, lower env_level wins. */
+        voice_pool_reset();
+        for (int i = 0; i < 49; i++) vo_setup_bare_active(&g_voices[i], 1, i); /* 48 primary + 1 reserve: need==1 */
+        g_voices[5].held = 0;  g_voices[5].env_level = 0.7;
+        g_voices[20].held = 0; g_voices[20].env_level = 0.1; /* lower -> should win */
+        voice_topup_tick(1u << 30);
+        ok(g_voices[20].fast_release_committed == 1 && g_voices[5].fast_release_committed == 0,
+           "S5.7 rule 2/3: released beats held, and among released the LOWER env_level (slot 20) wins over slot 5");
+        voice_pool_reset();
+
+        /* rule (1): a voice already fast_release_committed==1 is never
+         * eligible, even if it would otherwise win on rules 2/3. */
+        for (int i = 0; i < 49; i++) vo_setup_bare_active(&g_voices[i], 1, i);
+        g_voices[7].held = 0; g_voices[7].env_level = 0.05; g_voices[7].fast_release_committed = 1;
+        voice_topup_tick(1u << 30);
+        ok(g_voices[0].fast_release_committed == 1 && g_voices[7].env_level == 0.05,
+           "S5.7 rule 1: a pre-marked voice (slot 7, lowest env_level) is excluded; fallback picks the oldest HELD voice (slot 0) instead");
+        voice_pool_reset();
+
+        /* rule (4), no manual pokes: all-held natural ages -> oldest (slot 0) wins. */
+        for (int i = 0; i < 49; i++) vo_setup_bare_active(&g_voices[i], 1, i);
+        voice_topup_tick(1u << 30);
+        ok(g_voices[0].fast_release_committed == 1,
+           "S5.7 rule 4: among two held candidates, older (smaller age -- slot 0, allocated first) wins");
+        voice_pool_reset();
+    }
+    {
+        /* S5.7 asymmetric comparator (note-on's own fallback): a released
+         * `best` is NOT protected from a later, older HELD candidate; the
+         * comparator never reads/writes fast_release_committed at all. */
+        tap_diag("--- S5.7: asymmetric comparator (note-on fallback steal) ---");
+        if (!have_dls) {
+            tap_skip("dist/gm.dls not loadable", "S5.7 asymmetric-comparator steal trigger needs one real note-on");
+        } else {
+            voice_pool_reset();
+            for (int i = 0; i < NUM_VOICES; i++) vo_setup_bare_active(&g_voices[i], 1, i);
+            g_voices[10].held = 0; g_voices[10].env_level = 0.3;      /* released mid-scan */
+            g_voices[50].age = 0;  g_voices[50].fast_release_committed = 1; /* older-than-everything HELD, and pre-marked */
+            int newCh = 2, newNote = 60;
+            uint32_t locale = synth_channel_locale(newCh);
+            Region *r = dls_find_region(locale, (uint8_t)newNote);
+            if (!r) {
+                tap_skip("dist/gm.dls has no region for channel 2 default program, note 60", "S5.7 asymmetric-comparator trigger");
+            } else {
+                voice_note_on(newCh, newNote, 100);
+                ok(g_voices[50].channel == newCh && g_voices[50].note == newNote,
+                   "S5.7 asymmetric: an older HELD candidate (slot 50) displaces an already-released `best` (slot 10) purely on age");
+                ok(g_voices[10].channel == 1 && g_voices[10].note == 10,
+                   "S5.7 asymmetric: the released voice (slot 10) is NOT protected -- it was not the one stolen");
+                /* slot 50 was pre-marked fast_release_committed==1 and still won: proves the
+                 * asymmetric comparator never gates on that flag (unlike the symmetric one). */
+            }
+            voice_pool_reset();
+        }
+    }
+
+    /* --------------------- S5.5: measured 80-notes/48-survive --------------------- */
+    tap_diag("--- S5.5: 80 held note-ons must leave exactly 48 sounding [M] ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S5.5 80-note saturation invariant");
+    } else {
+        /* Exact recipe src/cli.c's own --selftest uses (same channel/notes/
+         * render cadence) -- reused verbatim rather than re-derived, since a
+         * shorter or denser cadence is a KNOWN way to break this invariant
+         * (see voice.c's own extensive comment above TOPUP_INTERVAL_FRAMES). */
+        synth_reset();
+        static int16_t vo_sat_buf[4096 * 2];
+        for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
+        for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(vo_sat_buf, 4096);
+        int surviving = 0;
+        for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
+        is_int(surviving, 48, "S5.5 [M]: 80 held note-ons, no note-off, leave exactly 48 voices sounding");
+        voice_pool_reset();
+    }
+
+    /* --------------------- S5.6: note-off vs release-rate law --------------------- */
+    tap_diag("--- S5.6/S3.4.2: ordinary release, level-independent rate ---");
+    {
+        synth_reset();
+        vo_setup_bare_active(&g_voices[0], 4, 10); g_voices[0].env_level = 1.0;
+        vo_setup_bare_active(&g_voices[1], 5, 20); g_voices[1].env_level = 0.4;
+        g_channels[4].sustain = 0; g_channels[5].sustain = 0;
+        voice_note_off(4, 10);
+        voice_note_off(5, 20);
+        ok(g_voices[0].fast_release_committed == 0 && g_voices[1].fast_release_committed == 0,
+           "S5.6: ordinary note-off never sets the fast-release flag");
+        ok(g_voices[0].env_stage == ENV_RELEASE && g_voices[1].env_stage == ENV_RELEASE,
+           "S5.6: ordinary note-off moves the voice to ENV_RELEASE");
+        is_near(g_voices[0].env_release_coef, g_voices[1].env_release_coef, 1e-12,
+                "S3.4.2: release RATE (96dB/authoredRelease) is independent of the level released from -- full (1.0) vs partial (0.4) give the SAME coefficient");
+        voice_pool_reset();
+    }
+
+    /* --------------------------- S5.8/S3.8: key groups --------------------------- */
+    tap_diag("--- S5.8/S3.8.1: exclusive key groups, ungated by channel-9/drum status ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S5.8/S3.8.1 key-group choke");
+    } else {
+        synth_reset();
+        int ch = 0, noteA = 40, noteB = 41;
+        uint32_t locale = synth_channel_locale(ch);
+        Region *rA = dls_find_region(locale, (uint8_t)noteA);
+        Region *rB = dls_find_region(locale, (uint8_t)noteB);
+        if (!rA || !rB) {
+            tap_skip("dist/gm.dls missing a region for channel 0 default program, notes 40/41", "S5.8/S3.8.1 key-group choke");
+        } else {
+            uint8_t origA = rA->key_group, origB = rB->key_group;
+            /* Artificial nonzero key group on a melodic (non-rhythm, channel 0)
+             * instrument: SPEC S3.8.1 states this would choke identically to a
+             * drum kit, with no channel-9/drum test anywhere in the gate. */
+            rA->key_group = rB->key_group = 7;
+
+            voice_pool_reset();
+            voice_note_on(ch, noteA, 100);
+            int idxA = -1; for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].note == noteA) idxA = i;
+            voice_note_on(ch, noteB, 100);
+            ok(idxA >= 0 && g_voices[idxA].fast_release_committed == 1 && g_voices[idxA].env_stage == ENV_RELEASE,
+               "S5.8/S3.8.1: same channel, shared nonzero key group -> the earlier note is choked via the fast-release path, on a melodic (channel 0) instrument");
+            ok(g_voices[idxA].active == 1, "S3.8.2: choke releases via ClampedRelease, it does not cut instantly");
+
+            /* Scope requires the SAME channel too: a different channel sharing
+             * the same key group + locale must NOT choke (S3.8.1's stated
+             * scope is (channel, keygroup, locale), not keygroup+locale alone). */
+            voice_pool_reset();
+            voice_note_on(ch, noteA, 100);
+            idxA = -1; for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].note == noteA) idxA = i;
+            voice_note_on(ch + 1, noteB, 100);
+            ok(idxA >= 0 && g_voices[idxA].fast_release_committed == 0,
+               "S3.8.1: a DIFFERENT channel sharing the same key group/locale does NOT choke -- scope includes channel");
+
+            rA->key_group = origA; rB->key_group = origB;
+            voice_pool_reset();
+        }
+    }
+
+    /* -------------------- S5.9/S4.3: sustain pedal, CC120/CC123 -------------------- */
+    tap_diag("--- S5.9/S4.3: sustain pedal (CC64), CC120 (bypasses), CC123 (honours) ---");
+    {
+        synth_reset();
+        int ch = 6;
+        vo_setup_bare_active(&g_voices[0], ch, 10);
+        synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* pedal down */
+        synth_midi(0x80u | (uint32_t)ch, 10, 0);   /* ordinary note-off */
+        ok(g_voices[0].sustain_deferred == 1 && g_voices[0].held == 1,
+           "S5.9: note-off while CC64 held defers (sustain_deferred=1), does not release yet");
+        synth_midi(0xB0u | (uint32_t)ch, 64, 0);   /* pedal lift */
+        ok(g_voices[0].env_stage == ENV_RELEASE && g_voices[0].fast_release_committed == 0 && g_voices[0].sustain_deferred == 0,
+           "S5.9: CC64 lift releases deferred voices via the ORDINARY (unclamped) release path");
+
+        vo_setup_bare_active(&g_voices[1], ch, 20);
+        synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* pedal down */
+        synth_midi(0xB0u | (uint32_t)ch, 123, 0);  /* CC123 All Notes Off */
+        ok(g_voices[1].sustain_deferred == 1 && g_voices[1].env_stage != ENV_RELEASE,
+           "S4.3 CC123: honours the pedal -- defers instead of releasing while CC64 is down");
+        synth_midi(0xB0u | (uint32_t)ch, 64, 0);
+        ok(g_voices[1].env_stage == ENV_RELEASE, "S4.3 CC123: deferred voice is released once the pedal lifts");
+
+        vo_setup_bare_active(&g_voices[2], ch, 30);
+        synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* pedal down again */
+        synth_midi(0xB0u | (uint32_t)ch, 120, 0);  /* CC120 All Sound Off */
+        ok(g_voices[2].env_stage == ENV_RELEASE && g_voices[2].sustain_deferred == 0 && g_voices[2].fast_release_committed == 0,
+           "S4.3 CC120: bypasses the pedal entirely -- releases immediately via the ordinary path despite CC64 being down");
+
+        voice_pool_reset();
+        synth_midi(0xB0u | (uint32_t)ch, 64, 0); /* leave the pedal up */
+    }
+
+    /* --------------------------- S3.3.2: rhythm/RPN2 gate --------------------------- */
+    tap_diag("--- S3.3.2(a)/(d): note-on tuning accumulator, RPN2 gated for rhythm parts only ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S3.3.2 tuning-accumulator/rhythm-gate check");
+    } else {
+        synth_reset(); /* channel 9 is_rhythm==1 by construction */
+        int ch = 9, note = 42;
+        g_channels[ch].rpn2_coarse_cents = 500;
+        g_channels[ch].rpn1_fine_cents = 30;
+        uint32_t locale = synth_channel_locale(ch);
+        Region *r = dls_find_region(locale, (uint8_t)note);
+        if (!r) {
+            tap_skip("dist/gm.dls has no rhythm-channel region for note 42", "S3.3.2 rhythm-gate check");
+        } else {
+            voice_note_on(ch, note, 100);
+            int vidx = -1; for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+            if (vidx < 0) {
+                tap_skip("note-on did not allocate a voice", "S3.3.2 rhythm-gate check");
+            } else {
+                int32_t expected = (int32_t)r->fine_tune + (note - (int)r->unity_note) * 100
+                                  + 0 /* RPN2 skipped: is_rhythm */
+                                  + g_channels[ch].rpn1_fine_cents;
+                is_int(g_voices[vidx].base_cents, expected,
+                       "S3.3.2(a)/(d): base_cents excludes RPN2 (rhythm part) but includes RPN1 (never gated)");
+            }
+        }
+        voice_pool_reset();
+    }
+
+    /* --- S3.3.2(c)/S3.3.3/S6.5: live bend vs latched RPN2, cents-ratio, wave rate --- */
+    tap_diag("--- S3.3.2(c)/S3.3.3/S6.5: live pitch bend, latched RPN2, CentsToRatio, wave-rate phase step ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S3.3.2(c)/S3.3.3/S6.5 live-bend group");
+    } else {
+        synth_reset();
+        int ch = 2, note = 60, vidx = -1;
+        g_channels[ch].pb_range_cents = 200;
+        uint32_t locale = synth_channel_locale(ch);
+        Region *r = dls_find_region(locale, (uint8_t)note);
+        if (!r) {
+            tap_skip("dist/gm.dls has no region for channel 2 default program, note 60", "S3.3.2(c)/S3.3.3/S6.5 group");
+        } else {
+            voice_note_on(ch, note, 100);
+            for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+            if (vidx < 0) {
+                tap_skip("note-on did not allocate a voice", "S3.3.2(c)/S3.3.3/S6.5 group");
+            } else {
+                Voice *v = &g_voices[vidx];
+                uint32_t base_ratio = v->base_ratio_q12;
+                uint32_t wave_rate = v->wave->sample_rate;
+                uint32_t target_before = v->phase_step_target;
+
+                g_channels[ch].rpn2_coarse_cents = 700; /* mid-note RPN2 change */
+                voices_update_modulation();
+                is_int(v->phase_step_target, target_before,
+                       "S3.3.2(c): RPN2 changed on a HELD note does not retune it (latched at note-on, not live)");
+
+                static const int32_t vo_bend_raw[4]   = { 9000, 0, 16383, 16383 };
+                static const uint16_t vo_bend_range[4] = { 200, 200, 200, 6000 };
+                for (int bi = 0; bi < 4; bi++) {
+                    g_channels[ch].pb_range_cents = vo_bend_range[bi];
+                    uint32_t d1 = (uint32_t)vo_bend_raw[bi] & 0x7Fu, d2 = ((uint32_t)vo_bend_raw[bi] >> 7) & 0x7Fu;
+                    synth_midi(0xE0u | (uint32_t)ch, d1, d2);
+                    voices_update_modulation();
+                    int32_t bend_cents = synth_pitch_bend_cents(ch);
+                    int32_t ratio = vo_cents_to_ratio_q12(bend_cents);
+                    uint64_t raw64 = (uint64_t)wave_rate * (uint64_t)base_ratio;
+                    raw64 = (raw64 * (uint64_t)(uint32_t)ratio) >> 12;
+                    uint32_t expected = (uint32_t)(raw64 / (uint32_t)RENDER_RATE);
+                    is_int(v->phase_step_target, expected,
+                           "S3.3.3/S6.5: phase_step_target after bend raw=%d range=%u matches wave_rate*base_ratio_q12*CentsToRatio(bend)/RENDER_RATE (bend_cents=%d)",
+                           vo_bend_raw[bi], (unsigned)vo_bend_range[bi], bend_cents);
+                }
+                ok(v->phase_step_target != target_before, "S3.3.2(c): pitch bend DOES move phase_step_target -- live, unlike RPN2 above");
+            }
+        }
+        voice_pool_reset();
+    }
+
+    /* ------------------------- S3.4.1/S5.1.2: envelope setup ------------------------- */
+    tap_diag("--- S3.4.1/S5.1.2: timecent->duration, sustain-level and decay-rescale formulas ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S3.4.1/S5.1.2 envelope-setup formula check");
+    } else {
+        synth_reset();
+        int ch = 7, note = 60, velocity = 100, vidx = -1;
+        uint32_t locale = synth_channel_locale(ch);
+        Region *r = dls_find_region(locale, (uint8_t)note);
+        if (!r) {
+            tap_skip("dist/gm.dls has no region for channel 7 default program, note 60", "S3.4.1/S5.1.2 envelope-setup check");
+        } else {
+            voice_note_on(ch, note, velocity);
+            for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+            if (vidx < 0) {
+                tap_skip("note-on did not allocate a voice", "S3.4.1/S5.1.2 envelope-setup check");
+            } else {
+                Voice *v = &g_voices[vidx];
+                Artic *ar = r->artic;
+
+                double attack_s = vo_timecents_to_seconds(vo_scale_tc_by_source(ar->eg1_attack_tc, ar->eg1_attack_vel_tc, velocity));
+                if (attack_s > 0.0) {
+                    double expected_step = 1.0 / (attack_s * (double)RENDER_RATE);
+                    is_near(v->env_attack_step, expected_step, expected_step * 1e-9 + 1e-15,
+                            "S3.4.1: env_attack_step == 1/(attack_s * RENDER_RATE) via the timecent->duration formula 2^(tc/1200)");
+                } else {
+                    is_near(v->env_level, 1.0, 1e-12, "S3.4.1: attack_s<=0 (instant attack) starts env_level at 1.0");
+                }
+
+                int32_t sustain_permille = ar->eg1_sustain_permille;
+                if (sustain_permille < 0) sustain_permille = 0;
+                if (sustain_permille > 1000) sustain_permille = 1000;
+                double expected_sustain = rt_pow(10.0, ((double)sustain_permille * 9.6 - 9600.0) / 100.0 / 20.0);
+                if (expected_sustain < 0.0) expected_sustain = 0.0;
+                if (expected_sustain > 1.0) expected_sustain = 1.0;
+                is_near(v->env_sustain_level, expected_sustain, 1e-9,
+                        "S5.1.2: sustain level is the PROGRESS-domain marker sustainPermille*9.6-9600 on the 96dB scale, not a linear-amplitude reading");
+
+                double decay_s = vo_timecents_to_seconds(vo_scale_tc_by_source(ar->eg1_decay_tc, ar->eg1_decay_kf_tc, note));
+                double decay_to_sustain_s = decay_s * (double)(1000 - sustain_permille) / 1000.0;
+                int32_t decay_samples = (int32_t)(decay_to_sustain_s * (double)RENDER_RATE + 0.5);
+                int32_t expected_left = decay_samples > 0 ? decay_samples : 0;
+                is_int(v->env_decay_samples_left, expected_left,
+                       "S5.1.2: decay duration rescaled to decay_s*(1000-sustainPermille)/1000 before consumption");
+            }
+        }
+        voice_pool_reset();
+    }
+
+    /* ------------------------------ S3.5/S3.10: volume law ------------------------------ */
+    tap_diag("--- S3.5/S3.10: velocity attenuation sum ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S3.5/S3.10 attenuation-sum check");
+    } else {
+        synth_reset();
+        int ch = 3, note = 60, velocity = 90, vidx = -1;
+        uint32_t locale = synth_channel_locale(ch);
+        Region *r = dls_find_region(locale, (uint8_t)note);
+        if (!r) {
+            tap_skip("dist/gm.dls has no region for channel 3 default program, note 60", "S3.5/S3.10 attenuation-sum check");
+        } else {
+            voice_note_on(ch, note, velocity);
+            for (int i = 0; i < NUM_VOICES; i++) if (g_voices[i].active && g_voices[i].channel == ch && g_voices[i].note == note) vidx = i;
+            if (vidx < 0) {
+                tap_skip("note-on did not allocate a voice", "S3.5/S3.10 attenuation-sum check");
+            } else {
+                int32_t vel_atten = g_table_vel[velocity];
+                int32_t depth = r->artic->vel_to_atten_depth;
+                int32_t scaled = (int32_t)(((int64_t)vel_atten * depth) / -9600);
+                int32_t expected_spec = scaled + (int32_t)r->attenuation_hdb + 1200; /* SPEC S3.5/S3.10's own summed pseudocode */
+                tap_diag("known SPEC-vs-src disagreement (SPEC_LOG.adoc item 35): src's atten_const_hdb omits the disassembly-confirmed +1200 constant entirely");
+                is_int(g_voices[vidx].atten_const_hdb, expected_spec,
+                       "S3.5/S3.10: atten_const_hdb == scaled + region.attenuation_hdb + 1200 (the +1200 term)");
+                is_int(g_voices[vidx].atten_const_hdb - scaled, (int32_t)r->attenuation_hdb,
+                       "S3.5/S3.10: region's own (wsmp) attenuation is summed once, the WAVE-level term is not double-counted");
+            }
+        }
+        voice_pool_reset();
+    }
+
+    /* --------------------------------- S3.6: pan law --------------------------------- */
+    tap_diag("--- S3.6: pan law shape (center unity both channels, hard-pan direction) ---");
+    {
+        synth_reset();
+        int ch = 11;
+        g_channels[ch].volume = 100;
+        g_channels[ch].expression = 127;
+        g_master_vol_hdb = 0;
+        static const uint8_t vo_pans[3] = { 0, 64, 127 };
+        double gl[3], gr[3];
+        for (int pi = 0; pi < 3; pi++) {
+            Voice *v = &g_voices[0];
+            vo_setup_bare_active(v, ch, 0);
+            v->atten_const_hdb = -2000; /* -20dB, comfortably clear of GAIN_CEILING either side */
+            g_channels[ch].pan = vo_pans[pi];
+            voice_update_gain(v);
+            gl[pi] = v->gain_l_target;
+            gr[pi] = v->gain_r_target;
+        }
+        is_near(gl[1], gr[1], 1e-9, "S3.6: CC10=64 (center) is unity on BOTH channels simultaneously (neither constant-power nor linear)");
+        ok(gr[0] < gl[0], "S3.6: CC10=0 (hard left) attenuates the RIGHT channel, not the left");
+        ok(gl[2] < gr[2], "S3.6: CC10=127 (hard right) attenuates the LEFT channel, not the right");
+        voice_pool_reset();
+    }
+
+    /* ------------- S3.6: measured 9-anchor pan table [M: probe 25] ------------- */
+    tap_diag("--- S3.6: 9-anchor measured pan table (dB rel. CC10=64 centre); 0.5dB tolerance is this test's OWN margin, not SPEC's -- SPEC's anchors are quoted to 0.01dB and its 4 sub-windows agreed to within 0.03dB ---");
+    {
+        synth_reset();
+        int ch = 11;
+        /* CC7=40, CC11=127: measured clear of GAIN_CEILING (32767/65536) at
+         * every anchor below, so this sweep reads the pan LAW, not the
+         * per-voice clamp (voice.c voice_update_gain) -- see the centre-gain
+         * diag right after the sweep. */
+        synth_midi(0xB0 | ch, 7, 40);
+        synth_midi(0xB0 | ch, 11, 127);
+        static const struct { uint8_t cc10; double spec_l_db, spec_r_db; } anchors[9] = {
+            { 0,   0.00, -20.20 },
+            { 16,  0.00,  -4.20 },
+            { 32,  0.00,  -1.20 },
+            { 48,  0.00,   0.00 },
+            { 64,  0.00,   0.00 },
+            { 80,  0.00,   0.00 },
+            { 96,  -1.41,  0.00 },
+            { 112, -4.52,  0.00 },
+            { 127, -20.21, 0.00 },
+        };
+        double gl[9], gr[9];
+        for (int i = 0; i < 9; i++) {
+            Voice *v = &g_voices[0];
+            vo_setup_bare_active(v, ch, 0);
+            v->atten_const_hdb = 0;
+            synth_midi(0xB0 | ch, 10, anchors[i].cc10);
+            voice_update_gain(v);
+            gl[i] = v->gain_l_target;
+            gr[i] = v->gain_r_target;
+        }
+        double gain_ceiling = 32767.0 / 65536.0; /* voice.c GAIN_CEILING, not visible outside voice.c */
+        tap_diag("centre (CC10=64) gains: L=%.6f R=%.6f, GAIN_CEILING=%.6f -- both must sit strictly below the ceiling or this measures the clamp, not the pan law", gl[4], gr[4], gain_ceiling);
+        double centre_l = gl[4], centre_r = gr[4];
+        int bad_l = 0, bad_r = 0;
+        for (int i = 0; i < 9; i++) {
+            double db_l = 20.0 * log10(gl[i] / centre_l);
+            double db_r = 20.0 * log10(gr[i] / centre_r);
+            double dev_l = db_l - anchors[i].spec_l_db;
+            double dev_r = db_r - anchors[i].spec_r_db;
+            if (fabs(dev_l) > 0.5) {
+                bad_l++;
+                tap_diag("S3.6 L anchor CC10=%d: measured %.2fdB, SPEC %.2fdB, delta %+.2fdB", anchors[i].cc10, db_l, anchors[i].spec_l_db, dev_l);
+            }
+            if (fabs(dev_r) > 0.5) {
+                bad_r++;
+                tap_diag("S3.6 R anchor CC10=%d: measured %.2fdB, SPEC %.2fdB, delta %+.2fdB", anchors[i].cc10, db_r, anchors[i].spec_r_db, dev_r);
+            }
+        }
+        ok(bad_l == 0, "S3.6 [M: probe 25]: L channel matches SPEC's 9-anchor measured table at all 9 anchors, 0.5dB tolerance (test's own margin)");
+        ok(bad_r == 0, "S3.6 [M: probe 25]: R channel matches SPEC's 9-anchor measured table at all 9 anchors, 0.5dB tolerance (test's own margin)");
+
+        double floor_db = 20.0 * log10(gr[0] / centre_r);
+        is_near(floor_db, -20.20, 0.5, "S3.6 [M: probe 25]: hard pan (CC10=0) floors the far channel at ~-20.2dB -- 'a real floor, not an unmeasured tail' -- not silence");
+
+        synth_reset(); /* restores channel CC7/CC10/CC11 (this block's own changes) to GM defaults */
+    }
+
+    /* ------------------------------------- Open items ------------------------------------- */
+    tap_diag("--- S5.4/S3.4.1 open cadence items: not asserted as numeric SPEC facts ---");
+    todo_ok(0, "SPEC S5.4 [A]: cadence is 'once per event-dispatcher call'; [O]: no discrete per-buffer service tick exists here to match it against -- TOPUP_INTERVAL_FRAMES (voice.c) is src's own [F:fitted] stand-in, not asserted",
+            "S5.4 top-up cadence value (mechanism itself is covered above)");
+    todo_ok(0, "SPEC S3.4.2 marks the exact envelope update cadence [O] ('do not assume a specific sample-accurate update rate') -- not asserted",
+            "S3.4.1/S3.4.2 envelope update cadence");
+
+    voice_pool_reset();
+    synth_reset();
+}
+
+/* ==================================================================== */
+/* t_render: SPEC Part 6.                                                */
+/* ==================================================================== */
+
+/* A flat-amplitude, one-shot voice fixture for phase/interpolation/
+ * saturation tests. render_frames() ALWAYS calls voices_update_modulation()
+ * -- which calls voice_update_gain() -- for every active voice on every
+ * sub-chunk, so any gain_l/gain_r/amp_l/amp_r priming is overwritten before
+ * render_voice ever runs; there is no way to make a real render_frames()
+ * call bypass that. VO_GAIN_CEILING (S6.4.5-1's own stated 32767/65536
+ * bound) is what voice_update_gain deterministically clamps to once
+ * atten_const_hdb is pushed far enough positive -- so instead of fighting
+ * the pipeline, the fixture forces that clamp (any channel/pan state still
+ * lands on the same ceiling) and pre-primes amp_l/amp_r to the SAME value,
+ * so render_voice's own amp_step still computes to exactly 0.0 and the
+ * applied amplitude is this known constant for every sample in the test. */
+#define VO_GAIN_CEILING (32767.0 / 65536.0)
+static Wave vo_r_wave;
+static Artic vo_r_artic; /* zero-initialized: unused by render_voice itself */
+
+static void vo_render_fixture(Voice *v, Wave *w, int32_t sample_end_s, int channel) {
+    memset(v, 0, sizeof(*v));
+    v->active = 1;
+    v->wave = w;
+    v->artic = &vo_r_artic;
+    v->channel = channel;
+    v->loop_start_s = 0;
+    v->loop_len_s = 0;
+    v->sample_end_s = sample_end_s;
+    v->env_stage = ENV_SUSTAIN;
+    v->env_level = 1.0;
+    v->env_sustain_level = 1.0;
+    v->eg2_stage = ENV_IDLE;
+    v->atten_const_hdb = 100000; /* forces voice_update_gain's ceiling clamp regardless of channel/pan state */
+    v->gain_l_target = v->gain_r_target = VO_GAIN_CEILING;
+    v->gain_l = v->gain_r = VO_GAIN_CEILING;
+    v->amp_l = v->amp_r = VO_GAIN_CEILING; /* matches what voice_update_gain will ALSO compute on the next sub-chunk */
+    v->amp_left = 0;
+}
+
+/* Applies the SAME truncating gain multiply render_voice's per-sample loop
+ * does (`(int32_t)((double)interp * v->amp_l)`), at the known VO_GAIN_CEILING
+ * amplitude the fixture above forces. */
+static int32_t vo_apply_gain(int32_t interp) {
+    return (int32_t)((double)interp * VO_GAIN_CEILING);
+}
+
+/* SPEC S6.4.6's own stated saturating-add formula, reimplemented
+ * independently (not calling render.c's static sat_add_i16) to compute
+ * expected mix sequences in the tests below. */
+static int32_t vo_sat_add(int32_t a, int32_t b) {
+    int32_t s = a + b;
+    if (s > 32767) return 32767;
+    if (s < -32768) return -32768;
+    return s;
+}
+
+static void t_render(void) {
+    voice_pool_reset();
+
+    /* ----------------------- S6.1/S6.2: output format contract ----------------------- */
+    tap_diag("--- S6.1/S6.2: output format contract ---");
+    is_int(BASE_RATE, 22050, "S6.1: fixed 22050 Hz output rate");
+    is_int(RENDER_RATE, BASE_RATE, "S6.1: synthesis rate is BASE_RATE at RESAMPLE_FACTOR==1 (this build's default)");
+    {
+        enum { FR = 8 };
+        static int16_t buf[(FR + 4) * 2];
+        for (uint32_t i = 0; i < (FR + 4) * 2; i++) buf[i] = (int16_t)0x5A5A;
+        voice_pool_reset(); /* no active voices */
+        render_frames(buf, FR);
+        ok(vo_all_eq_i16(buf, FR * 2, 0), "S6.2: render starts from silence -- no active voices renders all-zero");
+        ok(vo_all_eq_i16(buf + FR * 2, 4, (int16_t)0x5A5A), "S6.2/S6.4.1: render_frames writes EXACTLY frames*2 int16s -- sentinel just past the end is untouched");
+    }
+
+    /* --------------------------- S6.4.2: phase accumulator format --------------------------- */
+    tap_diag("--- S6.4.2: Q12 phase accumulator (bits 31:12 index, bits 11:0 fraction) ---");
+    {
+        static int16_t vo_ramp[24];
+        for (int i = 0; i < 24; i++) vo_ramp[i] = (int16_t)(i * 256);
+        vo_r_wave.sample_rate = (uint32_t)RENDER_RATE;
+        vo_r_wave.samples = vo_ramp;
+        vo_r_wave.sample_count = 24;
+
+        enum { N = 8 };
+        static int16_t buf[N * 2];
+        voice_pool_reset();
+        vo_render_fixture(&g_voices[0], &vo_r_wave, 20, 0);
+        g_voices[0].phase_pos = 0;
+        g_voices[0].phase_step = 1u << 12; /* unity: one sample index per output frame */
+        render_frames(buf, N);
+        int unity_ok = 1;
+        for (int i = 0; i < N; i++) if (buf[i * 2] != (int16_t)vo_apply_gain(i * 256)) unity_ok = 0;
+        ok(unity_ok, "S6.4.2: phase_step==1<<12 advances the integer sample index by exactly 1 per output frame");
+
+        voice_pool_reset();
+        vo_render_fixture(&g_voices[0], &vo_r_wave, 20, 0);
+        g_voices[0].phase_pos = 0;
+        g_voices[0].phase_step = 1u << 11; /* half rate */
+        render_frames(buf, N);
+        int half_ok = 1;
+        for (int i = 0; i < N; i++) if (buf[i * 2] != (int16_t)vo_apply_gain(i * 128)) half_ok = 0;
+        ok(half_ok, "S6.4.2/S6.4.4: phase_step==1<<11 advances at half rate (index every other frame, exact Q12 interpolation between)");
+        voice_pool_reset();
+    }
+
+    /* ------------------------- S6.4.4: Q12 linear interpolation ------------------------- */
+    tap_diag("--- S6.4.4: (tap0*(4096-frac) + tap1*frac) >> 12 ---");
+    {
+        static int16_t vo_two[2];
+        vo_two[0] = 1000; vo_two[1] = -500;
+        vo_r_wave.sample_rate = (uint32_t)RENDER_RATE;
+        vo_r_wave.samples = vo_two;
+        vo_r_wave.sample_count = 2;
+
+        static const int32_t vo_fracs[3] = { 0, 2048, 1024 };
+        for (int fi = 0; fi < 3; fi++) {
+            static int16_t buf1[2];
+            voice_pool_reset();
+            vo_render_fixture(&g_voices[0], &vo_r_wave, 50, 0);
+            g_voices[0].phase_pos = (uint32_t)vo_fracs[fi];
+            g_voices[0].phase_step = 0;
+            render_frames(buf1, 1);
+            int32_t interp = (1000 * (4096 - vo_fracs[fi]) + (-500) * vo_fracs[fi]) >> 12;
+            int32_t expected = vo_apply_gain(interp);
+            is_int(buf1[0], expected, "S6.4.4: frac=%d gives SPEC's (tap0*(4096-frac)+tap1*frac)>>12 == %d (post-gain %d)", vo_fracs[fi], interp, expected);
+        }
+        voice_pool_reset();
+    }
+
+    /* --------------------- S6.4.6: saturating mix, no wide accumulator --------------------- */
+    tap_diag("--- S6.4.6: saturating accumulate directly into the 16-bit buffer, no wider intermediate ---");
+    {
+        /* Each voice's own contribution is capped at VO_GAIN_CEILING (~0.5),
+         * so a max-amplitude int16 sample alone cannot saturate the mix --
+         * 3 max-amplitude voices are used per round so the SUM can. */
+        static int16_t sV[4];
+        static Wave wV[4];
+        for (int i = 0; i < 4; i++) { wV[i].sample_rate = (uint32_t)RENDER_RATE; wV[i].samples = &sV[i]; wV[i].sample_count = 1; }
+        int32_t c_pos = vo_apply_gain(32767);   /* == 16383 */
+        int32_t c_neg = vo_apply_gain(-32768);  /* == -16383 (truncates -16383.5 toward zero) */
+
+        /* round 1: three +32767 voices -> clamps to exactly +32767. */
+        sV[0] = sV[1] = sV[2] = 32767;
+        voice_pool_reset();
+        for (int i = 0; i < 3; i++) vo_render_fixture(&g_voices[i], &wV[i], 50, 0);
+        { static int16_t buf1[2]; render_frames(buf1, 1);
+          is_int(buf1[0], 32767, "S6.4.6: 3 x %d (=%d each, sums past +32767) saturates to exactly +32767", 32767, c_pos); }
+        voice_pool_reset();
+
+        /* round 2: three -32768 voices -> clamps to exactly -32768. */
+        sV[0] = sV[1] = sV[2] = -32768;
+        for (int i = 0; i < 3; i++) vo_render_fixture(&g_voices[i], &wV[i], 50, 0);
+        { static int16_t buf1[2]; render_frames(buf1, 1);
+          is_int(buf1[0], -32768, "S6.4.6: 3 x %d (=%d each, sums past -32768) saturates to exactly -32768", -32768, c_neg); }
+        voice_pool_reset();
+
+        /* round 3: per-voice saturation differs from a wide-then-clip sum.
+         * Three +32767 voices push the buffer to the +32767 clamp (as round
+         * 1) BEFORE a 4th, -32768 voice's contribution is added; a wide
+         * accumulator would instead sum all four unclamped (3*c_pos+c_neg)
+         * first and clip once -- that raw sum is <= 32767, so it would not
+         * even clip, giving a visibly different, higher result. */
+        sV[0] = sV[1] = sV[2] = 32767; sV[3] = -32768;
+        voice_pool_reset();
+        for (int i = 0; i < 4; i++) vo_render_fixture(&g_voices[i], &wV[i], 50, 0);
+        { static int16_t buf1[2]; render_frames(buf1, 1);
+          int32_t per_voice = vo_sat_add(vo_sat_add(vo_sat_add(vo_sat_add(0, c_pos), c_pos), c_pos), c_neg);
+          int32_t wide_equiv = c_pos * 3 + c_neg; /* what a single-clip-at-the-end design would give */
+          is_int(buf1[0], per_voice, "S6.4.6: per-voice saturating add clamps at voice 3, then voice 4 subtracts from the CLAMPED value (%d), not the true sum", per_voice);
+          ok(per_voice != wide_equiv, "S6.4.6: per-voice result (%d) differs from what a wide accumulator clipped once would give (%d)", per_voice, wide_equiv);
+        }
+        voice_pool_reset();
+    }
+
+    /* ----------------------- S6.4.8: loop wraparound and one-shot end ----------------------- */
+    tap_diag("--- S6.4.8: single-subtraction loop wraparound; one-shot end deactivates ---");
+    {
+        static int16_t vo_z[10];
+        vo_r_wave.sample_rate = (uint32_t)RENDER_RATE;
+        vo_r_wave.samples = vo_z;
+        vo_r_wave.sample_count = 10;
+
+        /* looping: sample_end=8, loop_start=2 -> loop_len=6 (Q12: 32768/24576). */
+        voice_pool_reset();
+        vo_render_fixture(&g_voices[0], &vo_r_wave, 8, 0);
+        g_voices[0].loop_len_s = 6;
+        g_voices[0].phase_pos = (8u << 12) - 50u; /* 50 Q12 LSBs before sample_end */
+        g_voices[0].phase_step = 100;             /* crosses sample_end this frame */
+        { static int16_t buf1[2]; render_frames(buf1, 1); }
+        uint32_t expected_pos = ((8u << 12) - 50u + 100u) - (6u << 12);
+        is_int(g_voices[0].phase_pos, expected_pos, "S6.4.8: crossing sample_end wraps by a SINGLE subtraction of loop_len (Q12), not modulo");
+        ok(g_voices[0].active == 1, "S6.4.8: a looping voice stays active after wrapping");
+        voice_pool_reset();
+
+        /* one-shot: loop_len==0 -> deactivate at sample_end, do not wrap. */
+        vo_render_fixture(&g_voices[0], &vo_r_wave, 5, 0);
+        g_voices[0].loop_len_s = 0;
+        g_voices[0].phase_pos = (5u << 12) - 40u;
+        g_voices[0].phase_step = 100;
+        { static int16_t buf1[2]; render_frames(buf1, 1); }
+        ok(g_voices[0].active == 0, "S6.4.8: one-shot (loop_len_s==0) voice goes inactive once phase_pos reaches sample_end");
+        voice_pool_reset();
+    }
+
+    /* --------------------------- S6.5: per-wave sample rate --------------------------- */
+    tap_diag("--- S6.5: per-wave sample rate enters the phase-step composition ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not loadable", "S6.5 per-wave (24000Hz) phase-step composition");
+    } else {
+        Wave *w24 = 0;
+        for (uint32_t i = 0; i < g_dls.wave_count && !w24; i++)
+            if (g_dls.wave_array[i]->sample_rate == 24000) w24 = g_dls.wave_array[i];
+        if (!w24) {
+            tap_skip("dist/gm.dls has no 24000Hz wave (SPEC S6.5 expects wave-pool indices 26/62/404)", "S6.5 per-wave phase-step composition");
+        } else {
+            int ch = 8;
+            synth_reset();
+            g_channels[ch].pitch_bend = 8192;
+            g_channels[ch].pb_range_cents = 200;
+            Voice *v = &g_voices[0];
+            voice_pool_reset();
+            memset(v, 0, sizeof(*v));
+            v->active = 1;
+            v->wave = w24;
+            v->channel = ch;
+            v->base_ratio_q12 = 4096; /* unity */
+            v->bend_cents_applied = 0;
+            voice_update_pitch(v);
+            uint64_t raw = (uint64_t)w24->sample_rate * 4096u; /* base_ratio_q12 */
+            raw = (raw * 4096u) >> 12; /* CentsToRatio(0) == 4096 exactly (unity) */
+            uint32_t expected = (uint32_t)(raw / (uint32_t)RENDER_RATE);
+            is_int(v->phase_step_target, expected,
+                   "S6.5: a 24000Hz wave's phase_step_target is waveRate*ratio/renderRate using the WAVE's own rate, not a fixed 22050 constant");
+            voice_pool_reset();
+        }
+    }
+
+    /* ------------------------------- Open/not-applicable items ------------------------------- */
+    tap_diag("--- S6.6/S6.7/S6.2/S6.4.1 open or not-applicable items: not asserted ---");
+    todo_ok(0, "SPEC S6.6 [O]: exact envelope-generator update cadence per render call; explicitly warns not to infer it from ramp_period. GAIN_SEGMENT_FRAMES (render.c) is src's own [F:fitted] value, not asserted",
+            "S6.6 ramp/envelope update cadence value");
+    tap_diag("S6.2/S6.2.1/S6.2.2 (MMX/scalar dispatch, CPU-capability gate) and S6.4.1/S6.4.7 (stack-arg frame-count doubling): no analog exists in this engine (plain C, one render_frames(int16_t*,uint32_t) entry point) -- nothing to assert, not a gap");
+    tap_diag("S6.7 (x87 control word 0x027F): moot by SPEC's own text -- this engine already uses plain IEEE-754 double throughout, no manual FPU control-word manipulation is expected");
+
+    voice_pool_reset();
+    synth_reset();
+}
+
+/* frag_dls.c -- t_dls() unit tests for src/engine/dls.c against SPEC.adoc
+ * Part 2 (RIFF/DLS parser). Concatenated into src/unit.c verbatim; see
+ * SCRATCH/claims_dls.md for the full claim inventory (D-1..D-33) this test
+ * traces to. PRELUDE (stdio/stdlib/string/math, unit_tap.h, the engine
+ * headers, `static int have_dls`) is provided by the assembly stage above
+ * this file.
+ *
+ * Block A: S2.10/S2.11 gm.dls inventory, walked off the real g_dls that
+ *          main() populates from dist/gm.dls. Gated on have_dls.
+ * Block B: S2.4/S2.5 articulation -- default velocity->attenuation depth and
+ *          one real lScale conversion, both off the real g_dls. Gated on
+ *          have_dls.
+ * Block C: S2.9/S2.10 locale packing + S3.1 three-tier fallback, off the
+ *          real g_dls (probe-36's key-25 silence). Gated on have_dls.
+ * Block B3/C-synth: S2.4.4 ignored usSource==4, and S3.1.4 region-selection
+ *          file-order -- both need a crafted connection/region gm.dls itself
+ *          never authors, so these two run unconditionally on their own tiny
+ *          synthetic buffers.
+ * Block D: S2.2.2 malformed-buffer error table (D-21/D-22/D-23/D-26/D-27).
+ *          Runs unconditionally, does not need gm.dls.
+ *
+ * IMPORTANT: dls_load() overwrites the global g_dls on every call. Blocks
+ * A/B(real)/C(real) above must run first, while g_dls is still the real
+ * dist/gm.dls parse. From the "synthetic" sub-block of B3/C onward, every
+ * test below calls dls_load() on a hand-built buffer and g_dls is clobbered
+ * for good -- nothing after that point may assume g_dls is dist/gm.dls.
+ */
+
+/* -------------------------------------------------------------------- */
+/* Tiny RIFF/DLS buffer builder for the synthetic (Block B3/C-synth/D)
+ * tests. Chunk-loop shape matches dls.c/SPEC.adoc S2.2.1: no padding. */
+
+#define DL_MAXBUF 1024
+typedef struct { uint8_t d[DL_MAXBUF]; uint32_t n; } dl_buf;
+
+static void dl_init(dl_buf *b) { b->n = 0; }
+static void dl_raw(dl_buf *b, const void *p, uint32_t len) { memcpy(b->d + b->n, p, len); b->n += len; }
+static void dl_fourcc(dl_buf *b, const char *s) { dl_raw(b, s, 4); }
+static void dl_u32(dl_buf *b, uint32_t v) { dl_raw(b, &v, 4); }
+static void dl_u16(dl_buf *b, uint16_t v) { dl_raw(b, &v, 2); }
+
+/* Writes an 8-byte chunk header (fourcc + declared size) then exactly `len`
+ * payload bytes from p. `len` may be smaller than the "real" content the
+ * caller built at p -- that is how the bad-size test cases below truncate a
+ * chunk's declared size without leaving orphaned trailing bytes for the next
+ * chunk's header to misparse. */
+static void dl_chunk_raw(dl_buf *out, const char *fourcc, const void *p, uint32_t len) {
+    dl_fourcc(out, fourcc);
+    dl_u32(out, len);
+    dl_raw(out, p, len);
+}
+/* Wraps `inner` as a LIST chunk of the given 4-byte subtype. */
+static void dl_wrap_list(dl_buf *out, const char *subtype, const dl_buf *inner) {
+    dl_buf tmp; dl_init(&tmp);
+    dl_fourcc(&tmp, subtype);
+    dl_raw(&tmp, inner->d, inner->n);
+    dl_chunk_raw(out, "LIST", tmp.d, tmp.n);
+}
+
+enum {
+    dl_ok = 0,
+    dl_bad_riff_magic,
+    dl_bad_dls_magic,
+    dl_bad_colh_size,      /* S2.2.2: colh size < 4 */
+    dl_bad_insh_size,      /* S2.2.2: insh size < 0xc */
+    dl_bad_rgnh_size,      /* S2.2.2: rgnh size < 0xc */
+    dl_bad_wlnk_channel,   /* S2.2.2: wlnk.ulChannel != 1 */
+    dl_bad_art1_cbsize,    /* S2.2.2: art1 cbSize < 8 */
+    dl_bad_wsmp_loops,     /* S2.2.2/S2.6/D-21: wave-level wsmp.cSampleLoops > 1 */
+    dl_bad_fmt_tag,        /* S2.2.2/S2.7.1: fmt.wFormatTag != 1 */
+    dl_bad_fmt_nchan,      /* S2.2.2/S2.7.1: fmt.nChannels != 1 */
+    dl_dup_fmt,            /* S2.2.2/S2.7.1: duplicate fmt chunk */
+    dl_data_before_fmt,    /* S2.2.2/S2.7.2: data chunk before fmt */
+    dl_ignored_src4        /* S2.4/S2.4.4/D-15: usSource==4, not a size defect --
+                               dls_load must still succeed, only the connection
+                               is supposed to have no effect */
+};
+
+/* Builds a minimal-but-structurally-valid one-instrument/one-region/one-wave
+ * DLS RIFF buffer, injecting exactly one condition from the enum above.
+ * SPEC.adoc S2.2.2's error table (Block D) plus the S2.4.4 ignored-source
+ * case (Block B3). */
+static void dl_build(dl_buf *out, int defect) {
+    dl_buf colh; dl_init(&colh); dl_u32(&colh, 235);
+
+    dl_buf insh; dl_init(&insh);
+    dl_u32(&insh, 1);  /* cRegions, ignored either way */
+    dl_u32(&insh, 0);  /* ulBank = 0 */
+    dl_u32(&insh, 0);  /* ulInstrument = program 0 -> locale 0 */
+
+    dl_buf rgnh; dl_init(&rgnh);
+    dl_u16(&rgnh, 0); dl_u16(&rgnh, 127);  /* usLowKey, usHighKey */
+    dl_u16(&rgnh, 0); dl_u16(&rgnh, 127);  /* usLowVel, usHighVel (never read) */
+    dl_u16(&rgnh, 0); dl_u16(&rgnh, 0);    /* fusOptions, usKeyGroup */
+
+    dl_buf wlnk; dl_init(&wlnk);
+    dl_u16(&wlnk, 0); dl_u16(&wlnk, 0);    /* fusOptions, usPhaseGroup */
+    dl_u32(&wlnk, defect == dl_bad_wlnk_channel ? 2u : 1u); /* ulChannel */
+    dl_u32(&wlnk, 0);                      /* ulTableIndex -> wave 0 */
+
+    dl_buf rgnbody; dl_init(&rgnbody);
+    dl_chunk_raw(&rgnbody, "rgnh", rgnh.d, defect == dl_bad_rgnh_size ? 4u : rgnh.n);
+    dl_chunk_raw(&rgnbody, "wlnk", wlnk.d, wlnk.n);
+    dl_buf rgnlist; dl_init(&rgnlist); dl_wrap_list(&rgnlist, "rgn ", &rgnbody);
+
+    dl_buf lrgnbody; dl_init(&lrgnbody); dl_raw(&lrgnbody, rgnlist.d, rgnlist.n);
+    dl_buf lrgnlist; dl_init(&lrgnlist); dl_wrap_list(&lrgnlist, "lrgn", &lrgnbody);
+
+    dl_buf instbody; dl_init(&instbody);
+    dl_chunk_raw(&instbody, "insh", insh.d, defect == dl_bad_insh_size ? 4u : insh.n);
+    dl_raw(&instbody, lrgnlist.d, lrgnlist.n);
+
+    if (defect == dl_bad_art1_cbsize) {
+        /* Outer chunk size is a legitimate 8 (passes dls.c's own `csize<8`
+         * gate on the *chunk's* declared size); the defect is the payload's
+         * own internal cbSize sub-field (S2.3.6), which dls.c reads into a
+         * local and discards -- `(void)cb_size;` -- rather than checking it
+         * against the required >=8 (S2.2.2's `art1 cbSize<8` row). */
+        dl_buf art1; dl_init(&art1);
+        dl_u32(&art1, 4); /* payload's own cbSize field: invalid, spec wants >=8 */
+        dl_u32(&art1, 0); /* cConnectionBlocks = 0 */
+        dl_buf art1chunk; dl_init(&art1chunk);
+        dl_chunk_raw(&art1chunk, "art1", art1.d, art1.n);
+        dl_buf lartbody; dl_init(&lartbody); dl_raw(&lartbody, art1chunk.d, art1chunk.n);
+        dl_buf lartlist; dl_init(&lartlist); dl_wrap_list(&lartlist, "lart", &lartbody);
+        dl_raw(&instbody, lartlist.d, lartlist.n);
+    } else if (defect == dl_ignored_src4) {
+        /* One connection block: usSource=4 (EG1-as-modulator), destination
+         * 0x0206 (EG1 attack), a large nonzero lScale. S2.4/S2.4.4 say the
+         * dispatch chain drops usSource==4 entirely -- this connection must
+         * have zero observable effect on eg1_attack_tc (Block B3). */
+        dl_buf art1; dl_init(&art1);
+        dl_u32(&art1, 8);  /* cbSize */
+        dl_u32(&art1, 1);  /* cConnectionBlocks = 1 */
+        dl_u16(&art1, 4); dl_u16(&art1, 0); dl_u16(&art1, ART_DST_EG1_ATTACKTIME); dl_u16(&art1, 0);
+        dl_u32(&art1, 0x7fff0000u); /* lScale: would be a huge attack-time shift if applied */
+        dl_buf art1chunk; dl_init(&art1chunk);
+        dl_chunk_raw(&art1chunk, "art1", art1.d, art1.n);
+        dl_buf lartbody; dl_init(&lartbody); dl_raw(&lartbody, art1chunk.d, art1chunk.n);
+        dl_buf lartlist; dl_init(&lartlist); dl_wrap_list(&lartlist, "lart", &lartbody);
+        dl_raw(&instbody, lartlist.d, lartlist.n);
+    }
+
+    dl_buf inslist; dl_init(&inslist); dl_wrap_list(&inslist, "ins ", &instbody);
+    dl_buf linsbody; dl_init(&linsbody); dl_raw(&linsbody, inslist.d, inslist.n);
+    dl_buf linslist; dl_init(&linslist); dl_wrap_list(&linslist, "lins", &linsbody);
+
+    dl_buf ptblbody; dl_init(&ptblbody);
+    dl_u32(&ptblbody, 8); dl_u32(&ptblbody, 1); dl_u32(&ptblbody, 0); /* cbSize, cCues, ulOffset[0] */
+    dl_buf ptblchunk; dl_init(&ptblchunk);
+    dl_chunk_raw(&ptblchunk, "ptbl", ptblbody.d, ptblbody.n);
+
+    dl_buf fmt; dl_init(&fmt);
+    dl_u16(&fmt, defect == dl_bad_fmt_tag ? 2u : 1u);    /* wFormatTag */
+    dl_u16(&fmt, defect == dl_bad_fmt_nchan ? 2u : 1u);  /* nChannels */
+    dl_u32(&fmt, 22050); dl_u32(&fmt, 44100);            /* nSamplesPerSec, nAvgBytesPerSec */
+    dl_u16(&fmt, 2); dl_u16(&fmt, 16);                   /* nBlockAlign, wBitsPerSample */
+
+    dl_buf data; dl_init(&data);
+    { uint16_t samp = 0x1234; dl_raw(&data, &samp, 2); }
+
+    dl_buf wsmp; dl_init(&wsmp);
+    if (defect == dl_bad_wsmp_loops) {
+        dl_u32(&wsmp, 0x14); dl_u16(&wsmp, 60); dl_u16(&wsmp, 0); dl_u32(&wsmp, 0); dl_u32(&wsmp, 0);
+        dl_u32(&wsmp, 2);      /* cSampleLoops = 2: S2.2.2/S2.6/D-21 says this must be a hard error */
+        dl_u32(&wsmp, 0x10); dl_u32(&wsmp, 0); dl_u32(&wsmp, 0); dl_u32(&wsmp, 100); /* one loop record */
+    }
+
+    dl_buf wavebody; dl_init(&wavebody);
+    if (defect == dl_data_before_fmt) {
+        dl_chunk_raw(&wavebody, "data", data.d, data.n);
+        dl_chunk_raw(&wavebody, "fmt ", fmt.d, fmt.n);
+    } else {
+        dl_chunk_raw(&wavebody, "fmt ", fmt.d, fmt.n);
+        if (defect == dl_dup_fmt) dl_chunk_raw(&wavebody, "fmt ", fmt.d, fmt.n);
+        dl_chunk_raw(&wavebody, "data", data.d, data.n);
+    }
+    if (defect == dl_bad_wsmp_loops) dl_chunk_raw(&wavebody, "wsmp", wsmp.d, wsmp.n);
+
+    dl_buf wavelist; dl_init(&wavelist); dl_wrap_list(&wavelist, "wave", &wavebody);
+    dl_buf wvplbody; dl_init(&wvplbody); dl_raw(&wvplbody, wavelist.d, wavelist.n);
+    dl_buf wvplchunk; dl_init(&wvplchunk); dl_wrap_list(&wvplchunk, "wvpl", &wvplbody);
+
+    dl_buf body; dl_init(&body);
+    dl_chunk_raw(&body, "colh", colh.d, defect == dl_bad_colh_size ? 0u : colh.n);
+    dl_raw(&body, linslist.d, linslist.n);
+    dl_raw(&body, ptblchunk.d, ptblchunk.n);
+    dl_raw(&body, wvplchunk.d, wvplchunk.n);
+
+    dl_init(out);
+    dl_fourcc(out, defect == dl_bad_riff_magic ? "XIFF" : "RIFF");
+    dl_u32(out, body.n + 4);
+    dl_fourcc(out, defect == dl_bad_dls_magic ? "WAVE" : "DLS ");
+    dl_raw(out, body.d, body.n);
+}
+
+/* Builds a one-instrument/one-wave buffer with TWO regions whose key ranges
+ * overlap ([0,100] then [50,127], file order as written), for the S3.1.4
+ * "first covering region in file order wins" test (Block C-synth). Both
+ * regions share the instrument's own (empty) lart for a valid, non-NULL
+ * Artic; both wlnk to the one wave (index 0). */
+static void dl_build_overlap(dl_buf *out) {
+    dl_buf rgnh_a; dl_init(&rgnh_a);
+    dl_u16(&rgnh_a, 0); dl_u16(&rgnh_a, 100);
+    dl_u16(&rgnh_a, 0); dl_u16(&rgnh_a, 127);
+    dl_u16(&rgnh_a, 0); dl_u16(&rgnh_a, 0);
+
+    dl_buf rgnh_b; dl_init(&rgnh_b);
+    dl_u16(&rgnh_b, 50); dl_u16(&rgnh_b, 127);
+    dl_u16(&rgnh_b, 0); dl_u16(&rgnh_b, 127);
+    dl_u16(&rgnh_b, 0); dl_u16(&rgnh_b, 0);
+
+    dl_buf wlnk; dl_init(&wlnk);
+    dl_u16(&wlnk, 0); dl_u16(&wlnk, 0); dl_u32(&wlnk, 1); dl_u32(&wlnk, 0);
+
+    dl_buf rgnbody_a; dl_init(&rgnbody_a);
+    dl_chunk_raw(&rgnbody_a, "rgnh", rgnh_a.d, rgnh_a.n);
+    dl_chunk_raw(&rgnbody_a, "wlnk", wlnk.d, wlnk.n);
+    dl_buf rgnlist_a; dl_init(&rgnlist_a); dl_wrap_list(&rgnlist_a, "rgn ", &rgnbody_a);
+
+    dl_buf rgnbody_b; dl_init(&rgnbody_b);
+    dl_chunk_raw(&rgnbody_b, "rgnh", rgnh_b.d, rgnh_b.n);
+    dl_chunk_raw(&rgnbody_b, "wlnk", wlnk.d, wlnk.n);
+    dl_buf rgnlist_b; dl_init(&rgnlist_b); dl_wrap_list(&rgnlist_b, "rgn ", &rgnbody_b);
+
+    dl_buf insh; dl_init(&insh); dl_u32(&insh, 2); dl_u32(&insh, 0); dl_u32(&insh, 0);
+
+    dl_buf lartbody; dl_init(&lartbody); /* empty: no art1 needed, just a valid shared Artic */
+    dl_buf lartlist; dl_init(&lartlist); dl_wrap_list(&lartlist, "lart", &lartbody);
+
+    dl_buf lrgnbody; dl_init(&lrgnbody);
+    dl_raw(&lrgnbody, rgnlist_a.d, rgnlist_a.n);
+    dl_raw(&lrgnbody, rgnlist_b.d, rgnlist_b.n);
+    dl_buf lrgnlist; dl_init(&lrgnlist); dl_wrap_list(&lrgnlist, "lrgn", &lrgnbody);
+
+    dl_buf instbody; dl_init(&instbody);
+    dl_chunk_raw(&instbody, "insh", insh.d, insh.n);
+    dl_raw(&instbody, lrgnlist.d, lrgnlist.n);
+    dl_raw(&instbody, lartlist.d, lartlist.n);
+    dl_buf inslist; dl_init(&inslist); dl_wrap_list(&inslist, "ins ", &instbody);
+    dl_buf linsbody; dl_init(&linsbody); dl_raw(&linsbody, inslist.d, inslist.n);
+    dl_buf linslist; dl_init(&linslist); dl_wrap_list(&linslist, "lins", &linsbody);
+
+    dl_buf ptblbody; dl_init(&ptblbody);
+    dl_u32(&ptblbody, 8); dl_u32(&ptblbody, 1); dl_u32(&ptblbody, 0);
+    dl_buf ptblchunk; dl_init(&ptblchunk); dl_chunk_raw(&ptblchunk, "ptbl", ptblbody.d, ptblbody.n);
+
+    dl_buf fmt; dl_init(&fmt);
+    dl_u16(&fmt, 1); dl_u16(&fmt, 1); dl_u32(&fmt, 22050); dl_u32(&fmt, 44100);
+    dl_u16(&fmt, 2); dl_u16(&fmt, 16);
+    dl_buf data; dl_init(&data);
+    { uint16_t s = 0x1234; dl_raw(&data, &s, 2); }
+    dl_buf wavebody; dl_init(&wavebody);
+    dl_chunk_raw(&wavebody, "fmt ", fmt.d, fmt.n);
+    dl_chunk_raw(&wavebody, "data", data.d, data.n);
+    dl_buf wavelist; dl_init(&wavelist); dl_wrap_list(&wavelist, "wave", &wavebody);
+    dl_buf wvplbody; dl_init(&wvplbody); dl_raw(&wvplbody, wavelist.d, wavelist.n);
+    dl_buf wvplchunk; dl_init(&wvplchunk); dl_wrap_list(&wvplchunk, "wvpl", &wvplbody);
+
+    dl_buf body; dl_init(&body);
+    dl_raw(&body, linslist.d, linslist.n);
+    dl_raw(&body, ptblchunk.d, ptblchunk.n);
+    dl_raw(&body, wvplchunk.d, wvplchunk.n);
+
+    dl_init(out);
+    dl_fourcc(out, "RIFF"); dl_u32(out, body.n + 4); dl_fourcc(out, "DLS ");
+    dl_raw(out, body.d, body.n);
+}
+
+/* -------------------------------------------------------------------- */
+/* Small read-side helpers over the parsed g_dls (Blocks A/B/C). */
+
+static Instrument *dl_find_inst(uint32_t locale) {
+    for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next)
+        if (inst->locale == locale) return inst;
+    return 0;
+}
+static int dl_key_covered(Instrument *inst, int key) {
+    for (Region *r = inst->first_region; r; r = r->next)
+        if (key >= r->low_key && key <= r->high_key) return 1;
+    return 0;
+}
+static int dl_range_covered(Instrument *inst, int lo, int hi) {
+    for (int k = lo; k <= hi; k++)
+        if (!dl_key_covered(inst, k)) return 0;
+    return 1;
+}
+
+/* -------------------------------------------------------------------- */
+
+static void t_dls(void) {
+    tap_diag("--- Block A: S2.10/S2.11 gm.dls inventory ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not present or not loadable", "S2.10/S2.11 gm.dls inventory (20 test points)");
+    } else {
+        int inst_count = 0, melodic = 0, drum = 0;
+        long region_sum = 0, region_walk = 0;
+        for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+            inst_count++;
+            if ((inst->locale >> 31) & 1) drum++; else melodic++;
+            region_sum += inst->region_count;
+            for (Region *r = inst->first_region; r; r = r->next) region_walk++;
+        }
+        is_int(inst_count, 235, "S2.11: 235 instruments (ins LIST chunks) in gm.dls");
+        is_int(melodic, 226, "S2.11: 226 melodic instruments (drum bit clear)");
+        is_int(drum, 9, "S2.11: 9 drum kits (drum bit set)");
+        is_int(region_sum, 1498, "S2.11: 1498 regions, summed via Instrument.region_count");
+        is_int(region_walk, 1498, "S2.11: 1498 regions, cross-checked by walking every first_region list directly");
+        is_int(g_dls.wave_count, 495, "S2.11/S2.8.1: g_dls.wave_count == 495 (ptbl.cCues, load-bearing precondition)");
+
+        int bad_bankLSB = 0;
+        for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next)
+            if ((inst->locale >> 7) & 0x7f) bad_bankLSB++;
+        is_int(bad_bankLSB, 0, "S2.10/S2.11: bankLSB == 0 for all 235 instruments");
+
+        {
+            static const struct { int drumflag, bankmsb, want; } rows[14] = {
+                {1, 0, 9}, {0, 0, 128}, {0, 1, 16}, {0, 2, 8}, {0, 3, 6}, {0, 4, 4}, {0, 5, 4},
+                {0, 6, 1}, {0, 7, 1}, {0, 8, 37}, {0, 9, 3}, {0, 16, 12}, {0, 24, 2}, {0, 32, 4},
+            };
+            int counts[2][128]; memset(counts, 0, sizeof counts);
+            for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+                int d = (inst->locale >> 31) & 1;
+                int msb = (inst->locale >> 14) & 0x7f;
+                counts[d][msb]++;
+            }
+            int mismatches = 0, accounted = 0;
+            for (int i = 0; i < 14; i++) {
+                int got = counts[rows[i].drumflag][rows[i].bankmsb];
+                accounted += got;
+                if (got != rows[i].want) {
+                    tap_diag("A8: drum=%d bankMSB=%d got=%d want=%d", rows[i].drumflag, rows[i].bankmsb, got, rows[i].want);
+                    mismatches++;
+                }
+            }
+            int total = 0;
+            for (int d = 0; d < 2; d++) for (int m = 0; m < 128; m++) total += counts[d][m];
+            if (total != accounted) {
+                tap_diag("A8: %d instruments fall outside the 14 expected (drum,bankMSB) buckets", total - accounted);
+                mismatches++;
+            }
+            ok(mismatches == 0, "S2.11: 14-row bank map (type x bankMSB -> instrument count) matches exactly");
+        }
+
+        {
+            static const int progs[9] = {0, 8, 16, 24, 25, 32, 40, 48, 56};
+            int found[9] = {0}; int extra = 0;
+            for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+                int d = (inst->locale >> 31) & 1;
+                int msb = (inst->locale >> 14) & 0x7f;
+                int prog = inst->locale & 0x7f;
+                if (d && msb == 0) {
+                    int i, matched = 0;
+                    for (i = 0; i < 9; i++) if (progs[i] == prog) { found[i] = 1; matched = 1; break; }
+                    if (!matched) extra++;
+                }
+            }
+            int all_found = 1;
+            for (int i = 0; i < 9; i++) if (!found[i]) all_found = 0;
+            if (!all_found || extra) tap_diag("A9: drum-kit program-set mismatch, extra programs seen: %d", extra);
+            ok(all_found && extra == 0, "S2.11: drum kits present at exactly programs {0,8,16,24,25,32,40,48,56}, bank MSB 0");
+        }
+
+        Instrument *stdkit = dl_find_inst(0x80000000u);
+        if (ok(stdkit != 0, "S2.10/S2.11: Standard kit instrument (locale 0x80000000, program 0/bank 0/drum) present")) {
+            is_int(stdkit->region_count, 61, "S2.11: Standard kit has 61 regions");
+            ok(dl_range_covered(stdkit, 27, 87), "S2.11: Standard kit covers every key 27..87");
+            ok(!dl_key_covered(stdkit, 25), "S2.11/S3.1.2: Standard kit covers NO region for key 25");
+            ok(!dl_key_covered(stdkit, 26), "S2.11/S3.1.2: Standard kit covers NO region for key 26");
+        } else {
+            tap_skip("Standard kit instrument not found", "S2.11: Standard kit region count/coverage");
+            tap_skip("Standard kit instrument not found", "S2.11: Standard kit key 25 gap");
+            tap_skip("Standard kit instrument not found", "S2.11: Standard kit key 26 gap");
+        }
+
+        Instrument *prog48 = dl_find_inst(0x80000000u | 48);
+        ok(prog48 && prog48->region_count == 62 && dl_range_covered(prog48, 27, 88),
+           "S2.11: drum program 48's kit has 62 regions covering 27..88");
+
+        Instrument *prog56 = dl_find_inst(0x80000000u | 56);
+        ok(prog56 && prog56->region_count == 46 && dl_range_covered(prog56, 39, 84),
+           "S2.11: drum program 56 (SFX kit) has 46 regions covering 39..84");
+
+        {
+            int c22050 = 0, c24000 = 0, other = 0;
+            for (uint32_t i = 0; i < g_dls.wave_count; i++) {
+                uint32_t sr = g_dls.wave_array[i]->sample_rate;
+                if (sr == 22050) c22050++; else if (sr == 24000) c24000++; else other++;
+            }
+            is_int(c22050, 492, "S2.7.3/S2.11: 492 of 495 waves at 22050 Hz (reachable half of the format claim, see report)");
+            is_int(c24000, 3, "S2.7.3/S2.11: 3 of 495 waves at 24000 Hz");
+            if (other) tap_diag("A: %d waves at neither 22050 nor 24000 Hz", other);
+
+            int idx_ok = g_dls.wave_count > 404
+                && g_dls.wave_array[26]->sample_rate == 24000
+                && g_dls.wave_array[62]->sample_rate == 24000
+                && g_dls.wave_array[404]->sample_rate == 24000;
+            ok(idx_ok && c24000 == 3, "S2.7.3: the three 24000 Hz waves are exactly wave-pool indices 26, 62, 404");
+        }
+
+        {
+            int seen[8] = {0};
+            for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+                for (Region *r = inst->first_region; r; r = r->next) {
+                    if (r->key_group >= 1 && r->key_group <= 7) {
+                        seen[r->key_group] = 1;
+                    } else if (r->key_group != 0) {
+                        tap_diag("A: region key_group %u outside the expected 0..7 range", (unsigned)r->key_group);
+                    }
+                }
+            }
+            int count = 0;
+            for (int i = 1; i <= 7; i++) if (seen[i]) count++;
+            is_int(count, 7, "S2.11: 7 distinct non-zero usKeyGroup values (1..7) appear across all regions");
+        }
+
+        tap_skip("Region.artic pointer identity misclassifies 51 of 1498 regions when an instrument's shared "
+                 "default and a region's own lart happen to alias to a single-occurrence pointer within that "
+                 "instrument (independently verified: see report) -- not a reliable proxy for the exact count",
+                 "S2.11: 535 of 1498 regions carry their own lart");
+    }
+
+    tap_diag("--- Block B: S2.4/S2.5 articulation (real gm.dls data) ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not present or not loadable", "S2.5 default vel_to_atten_depth across the whole bank");
+        tap_skip("dist/gm.dls not present or not loadable", "S2.4.2/S2.4.3 real-data lScale pan_cb conversion");
+    } else {
+        int bad = 0; uint32_t first_bad_locale = 0;
+        for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next) {
+            for (Region *r = inst->first_region; r; r = r->next) {
+                if (!r->artic || r->artic->vel_to_atten_depth != (int16_t)0xda80) {
+                    if (!bad) first_bad_locale = inst->locale;
+                    bad++;
+                }
+            }
+        }
+        if (bad) tap_diag("B1: %d regions with vel_to_atten_depth != -9600 (first: locale 0x%08x)", bad, first_bad_locale);
+        ok(bad == 0, "S2.5: every region's artic->vel_to_atten_depth == -9600 default "
+                      "(gm.dls has zero KEYONVELOCITY->ATTENUATION art1 connections, S2.11)");
+
+        /* Instrument locale 0x1007a (bank MSB 4, program 122): its shared
+         * instrument-level lart carries exactly one (0,0,0x0002) connection,
+         * lScale=-8, and one (0,0,0x0004) connection, lScale=-524288 (raw
+         * values read independently via SCRATCH/riff_walk.py). Per S2.4.2/
+         * S2.4.3, dest 0x0002 -> (lScale<<4)/125 = (-8<<4)/125 = -128/125 =
+         * -1 (truncated toward zero); dest 0x0004 -> (lScale>>12)/125 =
+         * (-524288>>12)/125 = -128/125 = -1. Both write the same pan_cb
+         * field, and both formulas happen to agree at -1 for this
+         * instrument's real data, so file order between the two connections
+         * doesn't matter for this assertion. */
+        Instrument *inst = dl_find_inst(0x1007au);
+        ok(inst != 0, "S2.9/S2.10: instrument locale 0x1007a (bank MSB 4, program 122) present in gm.dls");
+        ok(inst && inst->first_region && inst->first_region->artic && inst->first_region->artic->pan_cb == -1,
+           "S2.4.2/S2.4.3 Source=0: pan_cb == -1 for instrument 0x1007a (dest 0x0002 lScale=-8 and "
+           "dest 0x0004 lScale=-524288 both convert to -1)");
+    }
+
+    tap_diag("--- Block C: S2.9/S2.10 locale packing + S3.1 three-tier fallback (real gm.dls data) ---");
+    if (!have_dls) {
+        tap_skip("dist/gm.dls not present or not loadable", "S3.1.2 probe-36 key-25 fallback silence, Standard kit");
+        tap_skip("dist/gm.dls not present or not loadable", "S3.1.2 probe-36 key-25 fallback silence, SFX kit");
+        tap_skip("dist/gm.dls not present or not loadable", "S3.1: control -- Standard kit key 60 resolves");
+    } else {
+        Region *r25_std = dls_find_region(0x80000000u, 25);
+        ok(r25_std == 0, "S3.1.2: dls_find_region(Standard-kit locale, key 25) == NULL "
+                          "(key 25 uncovered by any Standard-kit region)");
+        Region *r25_sfx = dls_find_region(0x80000000u | 56, 25);
+        ok(r25_sfx == 0, "S3.1.2 probe 36: dls_find_region(SFX-kit locale, key 25) == NULL "
+                          "(tier 1 fails -- SFX covers 39-84; tier 2 collapses to the Standard kit, which also "
+                          "fails; tier 3 is skipped for a drum locale per S3.1.2's own goto)");
+        Region *r60_std = dls_find_region(0x80000000u, 60);
+        ok(r60_std != 0, "S3.1: control -- dls_find_region(Standard-kit locale, key 60) succeeds (60 is inside 27-87)");
+    }
+
+    tap_diag("--- Block B3/C-synth: S2.4.4 ignored usSource==4, S3.1.4 region file-order (synthetic buffers) ---");
+    tap_diag("g_dls is clobbered by dls_load() from this point on -- nothing below may assume gm.dls is loaded");
+    {
+        dl_buf buf; dl_build(&buf, dl_ignored_src4);
+        int rc = dls_load(buf.d, buf.n);
+        ok(rc == 0, "sanity: the ignored-usSource==4 synthetic buffer loads cleanly (dls_load == 0)");
+        Instrument *inst = dl_find_inst(0);
+        ok(inst && inst->first_region && inst->first_region->artic
+           && inst->first_region->artic->eg1_attack_tc == (int32_t)0x80000000,
+           "S2.4/S2.4.4: usSource==4 (EG1-as-modulator) is dropped entirely -- eg1_attack_tc stays at its "
+           "0x80000000 sentinel default, not the crafted lScale=0x7fff0000");
+    }
+    {
+        dl_buf buf; dl_build_overlap(&buf);
+        int rc = dls_load(buf.d, buf.n);
+        ok(rc == 0, "sanity: the overlapping-region synthetic buffer loads cleanly (dls_load == 0)");
+        Region *r60 = dls_find_region(0, 60);
+        ok(r60 && r60->low_key == 0 && r60->high_key == 100,
+           "S3.1.4: note 60, covered by both regions, resolves to the FIRST region in file order [0,100]");
+        Region *r127 = dls_find_region(0, 127);
+        ok(r127 && r127->low_key == 50 && r127->high_key == 127,
+           "S3.1.4: note 127, covered only by the second region, resolves to [50,127] "
+           "(linear scan continues past the first region once it fails to match)");
+    }
+
+    tap_diag("--- Block D: S2.2.2 malformed-buffer error table (D-21/D-22/D-23/D-26/D-27) ---");
+    {
+        dl_buf buf; dl_build(&buf, dl_ok);
+        ok(dls_load(buf.d, buf.n) == 0, "control: the malformed-buffer builder's defect-free output loads cleanly");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_riff_magic);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2: bad top-level RIFF signature -> dls_load fails");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_dls_magic);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2: bad top-level 'DLS ' signature (error 0x80004005) -> dls_load fails");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_colh_size);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.3.2: colh size < 4 (error 0x80041392) should abort the whole load (D-23)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_insh_size);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.3.1: insh size < 0xc (error 0x8004138f) should abort the whole load (D-23)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_rgnh_size);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.3.3: rgnh size < 0xc (error 0x8004138d) should abort the whole load (D-23)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_wlnk_channel);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.3.5: wlnk.ulChannel != 1 (error 0x8004138b) should abort the whole load (D-23)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_art1_cbsize);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.3.6: art1 payload cbSize < 8 (error 0x8004138c) should abort the whole load (D-23)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_wsmp_loops);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.6: wave-level wsmp.cSampleLoops > 1 (error 0x80041389) should abort the whole load (D-21)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_fmt_tag);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.7.1: fmt.wFormatTag != 1 (error 0x8004138a) should abort the whole load (D-26)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_bad_fmt_nchan);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.7.1: fmt.nChannels != 1 (error 0x8004138b) should abort the whole load (D-26)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_dup_fmt);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.7.1: duplicate fmt chunk (error 0x80041389) should abort the whole load (D-27)");
+    }
+    {
+        dl_buf buf; dl_build(&buf, dl_data_before_fmt);
+        ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.7.2: data chunk before fmt (error 0x80041389) should abort the whole load (D-27)");
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
+int main(void) {
+    tap_begin();
+    tables_build();
+    /* Engine-cannot-initialise check: if the table builder did not run, nothing
+     * downstream is meaningful. S1.4.4 Q12 unity is the cheapest proof it ran. */
+    if (g_table_cents[100] != 4096)
+        tap_bail("engine init failed: tables_build() did not populate g_table_cents");
+
+    /* dist/gm.dls is an ENGINE INPUT, not an audio reference. */
+    {
+        FILE *f = fopen("dist/gm.dls", "rb");
+        uint8_t *buf = NULL;
+        uint32_t len = 0;
+        if (f) {
+            if (fseek(f, 0, SEEK_END) == 0) {
+                long n = ftell(f);
+                if (n > 0) {
+                    rewind(f);
+                    buf = (uint8_t *)malloc((size_t)n);
+                    if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) {
+                        len = (uint32_t)n;
+                    } else {
+                        free(buf);
+                        buf = NULL;
+                    }
+                }
+            }
+            fclose(f);
+        }
+        have_dls = (buf != NULL && dls_load(buf, len) == 0);
+    }
+    if (!have_dls) tap_diag("dist/gm.dls not loaded -- DLS-backed tests will SKIP");
+
+    synth_reset();
+
+    t_tables();
+    t_rt();
+    t_synth();
+    t_voice();
+    t_render();
+    t_dls();     /* LAST: its malformed-buffer cases overwrite the global g_dls */
+    return tap_done();
+}

@@ -8,4 +8,5 @@ artifacts/swmidi.sys
 dist/gm.dls
 dist/msgs.wasm
 dist/msgs-render
+dist/msgs-unit
 .venv
