@@ -18,7 +18,7 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item38`) are discrepancies and gaps between
+throughout: **items** (`item1`…`item49`) are discrepancies and gaps between
 `SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
@@ -190,8 +190,200 @@ are history, not current measurements.
 
 '''
 
+[#item49]
+== 2026-08-02 — S3.6's pan law is ONE table read forward and reversed, not two; the measured "unity at centre" is the attenuation-sum clamp, not the pan law; and the engine is a confirmed 2.94 dB quiet — item49, SPEC corrected, ENGINE CHANGE BLOCKED
+
+**Status: `SPEC.adoc` §3.6 corrected. No engine, test or `CHART.adoc` change** —
+the corrected law is measured below and does not yet satisfy S3.6's own
+`[M: probe 25]` anchors, so it cannot land under the SPEC-prevails rule.
+What blocks it is stated precisely at the end.
+
+=== Correction to xref:#item48[item 48]: the corpus residual cannot see level
+
+`artifacts/score.py`'s `residual_db` RMS-normalizes both signals before
+taking spectra (`b = avg_spectrum(slop · tgt/sr)` with `sr = RMS(slop)`) and
+returns `‖a−b‖/‖a‖`, which cancels any scale common to both. Envelope `r` is
+scale-free by construction. **A uniform gain on the render cannot move
+either number.** item 48's trim sweep therefore did not locate a level; it
+located the point at which the `GAIN_CEILING` clamp begins to engage. Its
+conclusion — that the engine runs ~3 dB quiet — is correct, but the evidence
+cited for it does not support it. The evidence that does is in §4 below.
+
+The rest of item 48 stands: the pairing really is a pure level shift, and
+cancelling its net really does reproduce the default build, which is exactly
+what gain-invariance predicts.
+
+=== The pan law reads ONE table, forward and reversed
+
+SPEC §3.6 previously read `0x19c12`–`0x19c2a` as a *two-table asymmetric*
+law, `gainA` from the linear/√ table and `gainB` from `table_1c9d0` (the
+squared-law table). That is wrong. The two base addresses differ by exactly
+`0x1c1cc − 0x1bfd0 = 0x1FC = 127·4`, i.e. they are the two ends of a single
+128-entry table:
+
+[source,c]
+----
+sum  += 1200;                        // 0x19bcd  lea 0x4b0(%ecx,%eax,1)
+pan   = clamp(pan, 0, 127);          // 0x19c04-0x19c0f
+sumA  = sum + PAN[127 - pan];        // 0x19c15-0x19c1e  base 0x1c1cc, descending
+sumB  = sum + PAN[pan];              // 0x19c24-0x19c2a  base 0x1bfd0, ascending
+----
+
+Both results are hundredths of a dB and both go through the same conversion
+at `0x18dea`. The squared-law table is not involved. The builder at
+`0x16a3e`:
+
+[source,c]
+----
+for (j = 1; j <= 127; j++)               // 0x16a55/57/63, dst 0x1bfd4 = &PAN[1]
+    PAN[j] = (int)(log10f(j / 127.0f)    // 0x16a67 fmuls 1/127; 0x16a6d-71 fldlg2/fyl2x
+                   * 1000.0f);           // 0x16a73 fmuls 1000.0; 0x16a79 ftol
+PAN[0] = -2500;                          // 0x16a8a  movl $0xfffff63c,0x1bfd0
+----
+
+so `amp = 10^(PAN/2000) = sqrt(j/127)` — a **constant-power** law. This
+retires the old reading's two absurdities: centre is `PAN[63]`/`PAN[64]` =
+−3.04/−2.97 dB, not −3.0/−11.9 dB, and the extremes are a finite −25 dB
+floor, not silence.
+
+=== "Unity at centre" is the attenuation-sum clamp, not the pan law
+
+`0x18dea` indexes its table as `TABLE[clamp(atten_hdb/10, −1000, 0)]`. The
+upper clamp at 0 means any accumulated sum at or above the table's ceiling
+pins to `TABLE[0]`. Under probe 25's conditions both channels sit at that
+pin near centre, so the *measured* curve shows unity on both sides and a
+wide flat plateau from CC10≈48 to ≈80 — while the underlying law is
+constant-power throughout. The plateau is the clamp.
+
+This is checkable and was checked: building the full driver law (constant-power
+pan table, `+1200`, `4095/8192` ceiling, sum clamp) turns `unit.c`'s test
+175, "CC10=64 is unity on BOTH channels simultaneously", from RED to GREEN,
+along with 176 and 177. No fitted term is involved.
+
+=== The engine runs 2.94 dB quiet — measured on absolute levels
+
+Three constants compose to a net level: `+1200` (S3.5) less the conversion
+table's own ceiling `4095/8192` (−6.02 dB) less the pan table's centre value
+`PAN[63]` (−3.04 dB) = **+2.94 dB**. Measured directly on
+`41_sustain_decay_curve`, whole-file, against `artifacts/probe-results/41.flac`:
+
+[options="header"]
+|===
+| build | peak | RMS | vs reference (peak / RMS)
+| reference | −6.83 dBFS | −25.38 dBFS | —
+| shipped default | −9.87 dBFS | −28.32 dBFS | **−3.04 / −2.94 dB**
+| default +2.94 dB | −7.59 dBFS | −25.71 dBFS | −0.76 / −0.33 dB
+|===
+
+The shipped engine is 2.94 dB (RMS) below the reference against a
+prediction of 2.94 dB, arrived at from the disassembly with nothing fitted.
+This is an absolute-level measurement and is independent of the
+gain-invariant corpus metric.
+
+=== The full driver law, measured
+
+Scratch build, `voice_update_gain` replaced by the law above, full 68-item
+corpus:
+
+[options="header"]
+|===
+| item | default | driver law | Δ
+| MEAN | 0.928 / −31.53 dB | **0.932 / −32.48 dB** | −0.95 dB (better)
+| `45_release_from_level` | −25.71 dB | −49.92 dB | −24.21 dB (better)
+| `27_gain_curves` | −27.51 dB | −49.59 dB | −22.08 dB (better)
+| `50_gain_ceiling` | −27.13 dB | −32.79 dB | −5.66 dB (better)
+| `07_pan_volume` | −42.15 dB | −45.68 dB | −3.53 dB (better)
+| `25_pan_law` | −51.71 dB | −51.72 dB | ±0.01 dB
+| `41_sustain_decay_curve` | −51.01 dB | −37.11 dB | +13.90 dB (worse)
+|===
+
+`25_pan_law` is unchanged, i.e. the constant-power table reproduces probe
+25 exactly as well as the shipped nine-anchor interpolation does, without
+being fitted to it.
+
+=== Why it does not ship
+
+Two failures, both real:
+
+. **The hard-pan floor is 1.8 dB too deep.** `PAN[0] = −2500` against
+  `PAN[64] = −297` gives −22.03 dB where S3.6 measures **−20.20 dB** and
+  calls it "a real floor, not an unmeasured tail". `unit.c` tests 178, 179
+  and 180 fail on this; 180 reports −21.98 against −20.20. The store was
+  re-read byte-for-byte during this pass (`movl $0xfffff63c,0x1bfd0`,
+  `0xfffff63c` = −2500) and is not in doubt, so the discrepancy is between
+  a confirmed instruction and a confirmed measurement. **Unresolved.**
+  Note that −22.03 dB is precisely what the pre-xref:#item45[item 45]
+  `g_table_lin` law produced, which suggests `g_table_lin` was this same
+  table all along and item 45 replaced a correct shape with a measured one.
+. **`41_sustain_decay_curve` regresses 13.90 dB**, for the reason in §
+  below.
+
+Under the SPEC-prevails rule an engine change may not land while it fails
+`unit.c` assertions that SPEC still endorses. The SPEC correction above is
+`[A]` and lands now; the law itself waits on the floor.
+
+=== The clamp splits the corpus into two populations that no single setting fits
+
+Established by isolating `41_sustain_decay_curve`. Its damage is entirely
+`GAIN_CEILING` engaging: removing the clamp restores the default residual
+exactly (−51.06 vs −51.01), clamping begins at the predicted +2.279 dB
+threshold, and the residual is flat to 0.04 dB below it. Exactly 3 of its 8
+notes clamp, and those three are the only ones with region attenuation of
+exactly 0. Sweeping the ceiling at fixed level:
+
+[options="header"]
+|===
+| clamp ceiling | `27_gain_curves` | `41_sustain_decay` | `45_release_from_level`
+| +0.00 dB (0.4999) | −49.61 dB | −37.67 dB | −48.45 dB
+| +0.75 dB (0.5451) | −40.69 dB | −51.06 dB | −32.62 dB
+| +2.00 dB (0.6294) | −31.58 dB | −51.06 dB | −25.73 dB
+|===
+
+`41` is fully recovered by +0.75 dB of ceiling; `27` and `45` degrade
+monotonically from the same point. The two populations are structurally
+distinct: the ones wanting the ceiling at 0.4999 are program 80 (Sine,
+region attenuation −314 hdB) driven at 127, and the ones wanting no clamp
+are the zero-region-attenuation voices at velocity 100. They disagree by
+**0.7–1.1 dB**, so no uniform attenuation anywhere in the chain closes both.
+The discriminating terms are region/wsmp attenuation and the `g_table_vel`
+lookup at 100 versus 127 — which is where xref:#item47[item 47]'s
+term-by-term comparison against the driver's `atten_sum` should start.
+
+=== Also corrected
+
+* The raw gain register's denominator is **8192**. The mixer does
+  `acc = raw << 8` (`0x19e95`), `gain_Q = acc >> 5` (`0x19e9f`), then
+  `pmulhw` (`0x19f56`), a net `>>13`; the same instruction triple appears in
+  all four mixer functions (`0x1a05d`, `0x1a22f`, `0x1a3eb`). So
+  `gain_linear = raw/8192` and `TABLE[0] = 4095` → 0.49988, which lands on
+  `GAIN_CEILING`'s `32767/65536` to within 0.002 dB. An earlier suspicion
+  that the ceiling might be a ÷8 (`4095/32767`, −18.06 dB) is **wrong** — it
+  compares the raw register against sample full scale, skipping the `<<3`.
+* The conversion table at `0x1bfc0` is **built at init by `0x16680`**, not
+  static; its on-disk bytes are zero. Its index is signed, with index 0 at
+  `0x1bfc0` and the body running down to `0x1b020`.
+* `0x19fae` (`psrld $3`) discards the 8 fractional bits of the 24.8 ramp
+  accumulator at each render-call boundary, so §6.4.5's "net `<<3>>3` =
+  identity" holds only for calls in which no ramp step occurred. Sub-LSB
+  gain state does not survive a buffer boundary. Too small to matter for
+  any measurement here.
+
+'''
+
 [#item48]
 == 2026-08-02 — The rejected `+1200`/`GAIN_CEILING` pairing is a pure uniform level shift, and it overshoots by ~3 dB rather than being wrong in kind — item48, NOT SHIPPED (diagnostic only)
+
+[NOTE]
+--
+**Superseded in part by xref:#item49[item 49].** The trim sweep below is
+reproducible, but `artifacts/score.py`'s residual is analytically invariant
+to a uniform gain, so the sweep measures `GAIN_CEILING` clamp onset, not
+level. The "+3 dB corpus optimum" reading is withdrawn; the conclusion that
+the engine runs ~3 dB quiet survives on the absolute-level measurement in
+item 49 §4. The framing of the remainder as "a single missing ~300 hdB
+term" is also withdrawn — item 49 shows two voice populations disagreeing
+by 0.7–1.1 dB, which no single term closes.
+--
 
 **Status: no SPEC, test or engine change.** This is a measurement that
 narrows xref:#item47[item 47]'s open question; the trim it identifies is
