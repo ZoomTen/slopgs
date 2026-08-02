@@ -124,11 +124,6 @@ static uint32_t walk_track(const uint8_t *data, uint32_t len, EmitFn emit, void 
     return count;
 }
 
-static void count_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1, uint8_t d2,
-                      const uint8_t *sd, uint32_t sl, uint32_t tempo, uint8_t kind, void *ctx) {
-    (void)abs_tick; (void)seq; (void)status; (void)d1; (void)d2; (void)sd; (void)sl; (void)tempo; (void)kind; (void)ctx;
-}
-
 typedef struct { Event *arr; uint32_t idx; } FillCtx;
 
 static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1, uint8_t d2,

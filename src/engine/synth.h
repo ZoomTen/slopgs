@@ -33,6 +33,13 @@ extern uint8_t g_gs_mode;          /* gates CC0/CC32 storage, SPEC.adoc S3.1.1/S
 extern int32_t g_master_vol_hdb;   /* master volume attenuation, hundredths of a dB */
 
 void synth_reset(void);
+/* Device construction/open: SPEC.adoc S4.2.1's power-on defaults, then the
+ * synth_reset() body. Use this (not synth_reset()) anywhere a caller wants a
+ * freshly-defaulted device rather than to model an actual MIDI-level reset
+ * (System Reset/GS Reset/GM System On-Off) arriving mid-session -- those
+ * three deliberately do NOT reset RPN0, the RPN/NRPN-select register or the
+ * sustain byte (SPEC.adoc S4.6.4, SPEC_LOG.adoc item41). */
+void synth_construct(void);
 uint32_t synth_channel_locale(int ch); /* program|bankLSB<<7|bankMSB<<14|drum<<31 */
 int32_t synth_pitch_bend_cents(int ch);
 

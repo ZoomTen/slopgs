@@ -583,18 +583,20 @@ static void t_synth(void) {
     /* ---------------------------------------------------------------
      * S4.6.4 reset-state summary table -- System Reset (0xFF) net effect.
      * ---------------------------------------------------------------
-     * synth_reset() stands in for BOTH device construction (where SPEC's
-     * ctor defaults of 200/0x3FFF/sustain=0 per S4.2.1 ARE correct) AND the
-     * System-Reset/GM-On/GS-Reset paths (where S4.6.4 says those same three
-     * fields are "unchanged"/"not touched"). We distinguish the two by
-     * driving each field away from its ctor default with real MIDI first,
-     * *then* invoking the reset path under test, then checking S4.6.4's
-     * stated post-reset value -- not the ctor value.
+     * synth_construct() (SPEC's S4.2.1 power-on ctor: pb_range_cents=200,
+     * rpn_select=0x3FFF, sustain=0, plus the ordinary reset body) is the
+     * fixture below -- it establishes the ctor defaults so the setup step
+     * can drive each of the three fields away from them with real MIDI.
+     * *Then* the reset path under test (synth_midi(0xFF,..)/sy_gs_reset()/
+     * sy_gm()) runs, and S4.6.4's stated post-reset value is checked --
+     * "unchanged"/"not touched", i.e. still the driven-away value, not the
+     * ctor value. synth_reset() itself (what those reset paths actually
+     * call) deliberately no longer sets these three (SPEC_LOG.adoc item41).
      */
     tap_diag("--- S4.6.4 reset-state summary table: System Reset (0xFF) net effect ---");
     {
         int ch = 0;
-        synth_reset();
+        synth_construct();
         sy_gs_reset();          /* GS mode on, so CC0/CC32 bank writes aren't gated off below */
         sy_use_rhythm(4, 1);    /* flip is_rhythm on channel 3 (block4's default channel) --
                                   * MUST happen before the other mutations below, since this
@@ -655,7 +657,7 @@ static void t_synth(void) {
     tap_diag("--- S4.6.4 reset-state summary table: GS Reset SysEx net effect ---");
     {
         int ch = 1;
-        synth_reset();
+        synth_construct();
         synth_midi(0xE0 | ch, 0, 10);   /* pitch bend raw = 10<<7 = 1280 */
         sy_select_rpn(ch, 0);
         synth_midi(0xB0 | ch, 6, 9);    /* pb_range_cents = 900 */
@@ -680,7 +682,7 @@ static void t_synth(void) {
     tap_diag("--- S4.6.4 reset-state summary table: GM System On/Off net effect ---");
     {
         int ch = 2;
-        synth_reset();
+        synth_construct();
         sy_gs_reset();
         ok(g_gs_mode != 0, "S4.5 setup: GS mode is on before GM System On");
         sy_gm(1); /* GM System On */
@@ -708,7 +710,7 @@ static void t_synth(void) {
     tap_diag("--- S4.1.2/S4.1.3 entry-point semantics ---");
     {
         int ch = 0;
-        synth_reset();
+        synth_construct();
         synth_midi(0xB0 | ch, 7, 55);
         is_int(g_channels[ch].volume, 55, "setup: volume mutated before entry-point tests");
 
@@ -722,17 +724,17 @@ static void t_synth(void) {
 
         uint8_t gs_a[9] = {0x41, 0x00, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x00};
         uint8_t gs_b[9] = {0x41, 0x7F, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x00};
-        synth_reset();
+        synth_construct();
         synth_sysex(gs_a, sizeof gs_a);
         int mode_a = g_gs_mode;
-        synth_reset();
+        synth_construct();
         synth_sysex(gs_b, sizeof gs_b);
         int mode_b = g_gs_mode;
         ok(mode_a == 1 && mode_b == 1,
            "S4.1.3 device-ID byte (buf[1]) is never read/compared -- identical effect regardless of its value");
 
         uint8_t gs_nochk[8] = {0x41, 0x00, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00}; /* no checksum byte at all */
-        synth_reset();
+        synth_construct();
         synth_sysex(gs_nochk, sizeof gs_nochk);
         is_int(g_gs_mode, 1, "S4.1.3 no checksum is ever computed/checked -- GS Reset with the checksum byte absent still processed");
     }
@@ -743,7 +745,7 @@ static void t_synth(void) {
     tap_diag("--- S4.3 CC table: implemented controllers ---");
     {
         int ch = 0;
-        synth_reset();
+        synth_construct();
         g_gs_mode = 0;
         g_channels[ch].bank_msb = 9;
         synth_midi(0xB0 | ch, 0, 5);
@@ -759,7 +761,7 @@ static void t_synth(void) {
         synth_midi(0xB0 | ch, 32, 3);
         is_int(g_channels[ch].bank_lsb, 3, "S4.3 CC32 Bank Select LSB stores when GS-mode is 1");
 
-        synth_reset();
+        synth_construct();
         synth_midi(0xB0 | ch, 1, 64);
         is_int(g_channels[ch].modulation, 64, "S4.3 CC1 Modulation Wheel");
         synth_midi(0xB0 | ch, 7, 40);
@@ -788,20 +790,36 @@ static void t_synth(void) {
         synth_midi(0xB0 | ch, 101, 0x15); /* MSB -> bits 7-13, must not disturb bits 0-6 */
         is_int(g_channels[ch].rpn_select, 0x0AAA, "S4.4/S4.3 CC101 RPN MSB sets bits 7-13, preserves bits 0-6");
 
-        synth_reset();
+        /* SPEC.adoc S4.3 [A:0x1351f]-[0x13523] (SPEC_LOG.adoc item42): Channel
+         * Volume and Pan re-schedule only when CC121's own value byte is
+         * non-zero; Expression/Pitch Bend/Modulation are unconditional. Both
+         * sides of the gate are exercised below. */
+        synth_construct();
         synth_midi(0xB0 | ch, 7, 40);
         synth_midi(0xB0 | ch, 10, 20);
         synth_midi(0xB0 | ch, 11, 10);
         synth_midi(0xE0 | ch, 0, 5);
         synth_midi(0xB0 | ch, 1, 64);
-        synth_midi(0xB0 | ch, 121, 0); /* CC121 Reset All Controllers */
-        is_int(g_channels[ch].volume, 100,
-               "S4.3 CC121 re-schedules Channel Volume=100 (src's CC121_RESETS_VOLUME=0 deliberately skips this, S-37)");
+        synth_midi(0xB0 | ch, 121, 0); /* CC121, value=0 -- the MIDI-conventional case, gate closed */
+        is_int(g_channels[ch].volume, 40,
+               "S4.3 CC121 value=0 leaves Channel Volume unchanged (gate closed, item42)");
         ok(g_channels[ch].pan == 64 && g_channels[ch].expression == 127 &&
                g_channels[ch].pitch_bend == 8192 && g_channels[ch].modulation == 0,
            "S4.3 CC121 re-schedules Pan=64, Expression=127, Pitch Bend=8192, Modulation=0");
 
-        synth_reset();
+        synth_construct();
+        synth_midi(0xB0 | ch, 7, 40);
+        synth_midi(0xB0 | ch, 11, 10);
+        synth_midi(0xE0 | ch, 0, 5);
+        synth_midi(0xB0 | ch, 1, 64);
+        synth_midi(0xB0 | ch, 121, 5); /* CC121, value!=0 -- gate open */
+        is_int(g_channels[ch].volume, 100,
+               "S4.3 CC121 value!=0 re-schedules Channel Volume=100 (gate open, item42)");
+        ok(g_channels[ch].expression == 127 && g_channels[ch].pitch_bend == 8192 &&
+               g_channels[ch].modulation == 0,
+           "S4.3 CC121 value!=0 still re-schedules Expression=127, Pitch Bend=8192, Modulation=0");
+
+        synth_construct();
         synth_midi(0xB0 | ch, 126, 0);
         is_int(g_channels[ch].mono_mode, 1, "S4.3 CC126 Mono Mode On sets the Mono flag");
         synth_midi(0xB0 | ch, 127, 0);
@@ -816,7 +834,7 @@ static void t_synth(void) {
     if (have_dls) {
         int ch = 0, note = 60;
 
-        synth_reset();
+        synth_construct();
         voice_pool_reset();
         synth_midi(0x90u | (uint32_t)ch, (uint32_t)note, 100u); /* real DLS-backed note-on */
         int vidx = -1;
@@ -834,7 +852,7 @@ static void t_synth(void) {
         }
         voice_pool_reset();
 
-        synth_reset();
+        synth_construct();
         voice_pool_reset();
         synth_midi(0x90u | (uint32_t)ch, (uint32_t)note, 100u); /* second, independent real note-on */
         vidx = -1;
@@ -866,7 +884,7 @@ static void t_synth(void) {
         static const int discarded_ccs[] = {2, 5, 8, 66, 91, 96, 122};
         int ch = 0;
         for (size_t i = 0; i < sizeof(discarded_ccs) / sizeof(discarded_ccs[0]); i++) {
-            synth_reset();
+            synth_construct();
             Channel before = g_channels[ch];
             synth_midi(0xB0 | ch, (uint32_t)discarded_ccs[i], 99);
             ok(memcmp(&before, &g_channels[ch], sizeof(Channel)) == 0,
@@ -880,14 +898,14 @@ static void t_synth(void) {
     tap_diag("--- S4.4 RPN and NRPN ---");
     {
         int ch = 0;
-        synth_reset();
+        synth_construct();
         sy_select_rpn(ch, 0);
         synth_midi(0xB0 | ch, 6, 5);
         is_int(g_channels[ch].pb_range_cents, 500, "S4.4 RPN0: CC6 MSB writes data2*100 cents");
         synth_midi(0xB0 | ch, 38, 99);
         is_int(g_channels[ch].pb_range_cents, 500, "S4.4 RPN0: CC38 LSB has no effect");
 
-        synth_reset();
+        synth_construct();
         sy_select_rpn(ch, 1);
         synth_midi(0xB0 | ch, 6, 63);
         is_int(g_channels[ch].rpn1_fine_cents, -1,
@@ -896,14 +914,14 @@ static void t_synth(void) {
         is_int(g_channels[ch].rpn1_fine_cents, 0,
                "S4.4 RPN1: CC38 recomputes using the just-updated combined word, truncation toward zero");
 
-        synth_reset();
+        synth_construct();
         sy_select_rpn(ch, 2);
         synth_midi(0xB0 | ch, 6, 70);
         is_int(g_channels[ch].rpn2_coarse_cents, 600, "S4.4 RPN2: CC6 MSB writes (data2-64)*100 cents");
         synth_midi(0xB0 | ch, 38, 99);
         is_int(g_channels[ch].rpn2_coarse_cents, 600, "S4.4 RPN2: CC38 LSB has no effect");
 
-        synth_reset();
+        synth_construct();
         synth_midi(0xB0 | ch, 98, 0); /* NRPN LSB: forces RPN-select to Null */
         is_int(g_channels[ch].rpn_select, 0x3FFF, "setup: RPN-select is Null before the discard test");
         synth_midi(0xB0 | ch, 6, 99);
@@ -935,7 +953,7 @@ static void t_synth(void) {
     tap_diag("--- S3.3.2(c) pitch bend -> cents (see NOTE above re: a citation nit, not a functional bug) ---");
     {
         int ch = 0;
-        synth_reset();
+        synth_construct();
         static const struct { int raw; int32_t want; } spread[] = {
             {0, -200}, {4096, -100}, {8192, 0}, {12288, 100}, {16383, 199},
         };
@@ -964,7 +982,7 @@ static void t_synth(void) {
      * --------------------------------------------------------------- */
     tap_diag("--- S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch ---");
     {
-        synth_reset();
+        synth_construct();
         ok((synth_channel_locale(9) & 0x80000000u) != 0,
            "S4.8 channel 9 (MIDI ch 10) has the drum bit set by default, GS-mode off");
         ok((synth_channel_locale(0) & 0x80000000u) == 0, "S4.8 channel 0 has no drum bit by default");
@@ -974,7 +992,7 @@ static void t_synth(void) {
         ok((synth_channel_locale(9) & 0x80000000u) == 0,
            "S4.8 drum bit is read live: USE RHYTHM PART clearing it is visible with no following Program Change");
 
-        synth_reset();
+        synth_construct();
         sy_gs_reset();
         synth_midi(0xB0, 0, 5); /* CC0 bank_msb=5, channel 0. NOTE: the scheduled
                                   * locale is 21 bits (program bits 0-6, bank_lsb
@@ -992,7 +1010,7 @@ static void t_synth(void) {
      * --------------------------------------------------------------- */
     tap_diag("--- S4.5 RCV CHANNEL: SPEC's Part-indirection model vs src's documented no-op (S-59) ---");
     {
-        synth_reset();
+        synth_construct();
         sy_gs_reset();
         sy_rcv_channel(1, 5); /* attempt: remap block 1's Part -> channel 5 */
         sy_use_rhythm(1, 1);  /* USE RHYTHM PART for block 1 should now target channel 5 */
@@ -1007,7 +1025,7 @@ static void t_synth(void) {
      * --------------------------------------------------------------- */
     tap_diag("--- S4.5 unrecognized GS DT1 addresses; Master Volume MSB-only ---");
     {
-        synth_reset();
+        synth_construct();
         sy_gs_reset();
         Channel before[16];
         memcpy(before, g_channels, sizeof before);
@@ -1016,17 +1034,17 @@ static void t_synth(void) {
         ok(memcmp(before, g_channels, sizeof before) == 0,
            "S4.5 unrecognized GS DT1 address is silently dropped, no Channel field moves");
 
-        synth_reset();
+        synth_construct();
         sy_master_vol(0x55, 64);
         int32_t hdb1 = g_master_vol_hdb;
-        synth_reset();
+        synth_construct();
         sy_master_vol(0x00, 64);
         int32_t hdb2 = g_master_vol_hdb;
         ok(hdb1 == hdb2, "S4.5 Master Volume SysEx: the LSB is never read, only the MSB matters");
     }
 
     tap_diag("=== end synth.c coverage ===");
-    synth_reset(); /* leave global state clean for the next fragment */
+    synth_construct(); /* leave global state clean for the next fragment */
 }
 
 /* frag_voice.c -- unit coverage for voice.c (SPEC Parts 3 & 5) and render.c
@@ -1110,7 +1128,7 @@ static int32_t vo_cents_to_ratio_q12(int32_t cents) {
 
 /* ==================================================================== */
 static void t_voice(void) {
-    synth_reset();
+    synth_construct();
     voice_pool_reset();
 
     /* ---------------- S5.2: pool size, 48 primary / 6 reserve ---------------- */
@@ -1290,7 +1308,7 @@ static void t_voice(void) {
          * render cadence) -- reused verbatim rather than re-derived, since a
          * shorter or denser cadence is a KNOWN way to break this invariant
          * (see voice.c's own extensive comment above TOPUP_INTERVAL_FRAMES). */
-        synth_reset();
+        synth_construct();
         static int16_t vo_sat_buf[4096 * 2];
         for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
         for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(vo_sat_buf, 4096);
@@ -1303,7 +1321,7 @@ static void t_voice(void) {
     /* --------------------- S5.6: note-off vs release-rate law --------------------- */
     tap_diag("--- S5.6/S3.4.2: ordinary release, level-independent rate ---");
     {
-        synth_reset();
+        synth_construct();
         vo_setup_bare_active(&g_voices[0], 4, 10); g_voices[0].env_level = 1.0;
         vo_setup_bare_active(&g_voices[1], 5, 20); g_voices[1].env_level = 0.4;
         g_channels[4].sustain = 0; g_channels[5].sustain = 0;
@@ -1323,7 +1341,7 @@ static void t_voice(void) {
     if (!have_dls) {
         tap_skip("dist/gm.dls not loadable", "S5.8/S3.8.1 key-group choke");
     } else {
-        synth_reset();
+        synth_construct();
         int ch = 0, noteA = 40, noteB = 41;
         uint32_t locale = synth_channel_locale(ch);
         Region *rA = dls_find_region(locale, (uint8_t)noteA);
@@ -1363,7 +1381,7 @@ static void t_voice(void) {
     /* -------------------- S5.9/S4.3: sustain pedal, CC120/CC123 -------------------- */
     tap_diag("--- S5.9/S4.3: sustain pedal (CC64), CC120 (bypasses), CC123 (honours) ---");
     {
-        synth_reset();
+        synth_construct();
         int ch = 6;
         vo_setup_bare_active(&g_voices[0], ch, 10);
         synth_midi(0xB0u | (uint32_t)ch, 64, 127); /* pedal down */
@@ -1397,7 +1415,7 @@ static void t_voice(void) {
     if (!have_dls) {
         tap_skip("dist/gm.dls not loadable", "S3.3.2 tuning-accumulator/rhythm-gate check");
     } else {
-        synth_reset(); /* channel 9 is_rhythm==1 by construction */
+        synth_construct(); /* channel 9 is_rhythm==1 by construction */
         int ch = 9, note = 42;
         g_channels[ch].rpn2_coarse_cents = 500;
         g_channels[ch].rpn1_fine_cents = 30;
@@ -1426,7 +1444,7 @@ static void t_voice(void) {
     if (!have_dls) {
         tap_skip("dist/gm.dls not loadable", "S3.3.2(c)/S3.3.3/S6.5 live-bend group");
     } else {
-        synth_reset();
+        synth_construct();
         int ch = 2, note = 60, vidx = -1;
         g_channels[ch].pb_range_cents = 200;
         uint32_t locale = synth_channel_locale(ch);
@@ -1476,7 +1494,7 @@ static void t_voice(void) {
     if (!have_dls) {
         tap_skip("dist/gm.dls not loadable", "S3.4.1/S5.1.2 envelope-setup formula check");
     } else {
-        synth_reset();
+        synth_construct();
         int ch = 7, note = 60, velocity = 100, vidx = -1;
         uint32_t locale = synth_channel_locale(ch);
         Region *r = dls_find_region(locale, (uint8_t)note);
@@ -1525,7 +1543,7 @@ static void t_voice(void) {
     if (!have_dls) {
         tap_skip("dist/gm.dls not loadable", "S3.5/S3.10 attenuation-sum check");
     } else {
-        synth_reset();
+        synth_construct();
         int ch = 3, note = 60, velocity = 90, vidx = -1;
         uint32_t locale = synth_channel_locale(ch);
         Region *r = dls_find_region(locale, (uint8_t)note);
@@ -1541,7 +1559,7 @@ static void t_voice(void) {
                 int32_t depth = r->artic->vel_to_atten_depth;
                 int32_t scaled = (int32_t)(((int64_t)vel_atten * depth) / -9600);
                 int32_t expected_spec = scaled + (int32_t)r->attenuation_hdb + 1200; /* SPEC S3.5/S3.10's own summed pseudocode */
-                tap_diag("known SPEC-vs-src disagreement (SPEC_LOG.adoc item 35): src's atten_const_hdb omits the disassembly-confirmed +1200 constant entirely");
+                tap_diag("known SPEC-vs-src disagreement (SPEC_LOG.adoc item35, item47): src's atten_const_hdb omits the disassembly-confirmed +1200 constant entirely -- item47 measured landing it (paired with a GAIN_CEILING re-anchor) against the corpus and it was REJECTED, +2.90dB mean residual regression");
                 is_int(g_voices[vidx].atten_const_hdb, expected_spec,
                        "S3.5/S3.10: atten_const_hdb == scaled + region.attenuation_hdb + 1200 (the +1200 term)");
                 is_int(g_voices[vidx].atten_const_hdb - scaled, (int32_t)r->attenuation_hdb,
@@ -1554,7 +1572,7 @@ static void t_voice(void) {
     /* --------------------------------- S3.6: pan law --------------------------------- */
     tap_diag("--- S3.6: pan law shape (center unity both channels, hard-pan direction) ---");
     {
-        synth_reset();
+        synth_construct();
         int ch = 11;
         g_channels[ch].volume = 100;
         g_channels[ch].expression = 127;
@@ -1579,7 +1597,7 @@ static void t_voice(void) {
     /* ------------- S3.6: measured 9-anchor pan table [M: probe 25] ------------- */
     tap_diag("--- S3.6: 9-anchor measured pan table (dB rel. CC10=64 centre); 0.5dB tolerance is this test's OWN margin, not SPEC's -- SPEC's anchors are quoted to 0.01dB and its 4 sub-windows agreed to within 0.03dB ---");
     {
-        synth_reset();
+        synth_construct();
         int ch = 11;
         /* CC7=40, CC11=127: measured clear of GAIN_CEILING (32767/65536) at
          * every anchor below, so this sweep reads the pan LAW, not the
@@ -1632,7 +1650,7 @@ static void t_voice(void) {
         double floor_db = 20.0 * log10(gr[0] / centre_r);
         is_near(floor_db, -20.20, 0.5, "S3.6 [M: probe 25]: hard pan (CC10=0) floors the far channel at ~-20.2dB -- 'a real floor, not an unmeasured tail' -- not silence");
 
-        synth_reset(); /* restores channel CC7/CC10/CC11 (this block's own changes) to GM defaults */
+        synth_construct(); /* restores channel CC7/CC10/CC11 (this block's own changes) to GM defaults */
     }
 
     /* ------------------------------------- Open items ------------------------------------- */
@@ -1643,7 +1661,7 @@ static void t_voice(void) {
             "S3.4.1/S3.4.2 envelope update cadence");
 
     voice_pool_reset();
-    synth_reset();
+    synth_construct();
 }
 
 /* ==================================================================== */
@@ -1862,7 +1880,7 @@ static void t_render(void) {
             tap_skip("dist/gm.dls has no 24000Hz wave (SPEC S6.5 expects wave-pool indices 26/62/404)", "S6.5 per-wave phase-step composition");
         } else {
             int ch = 8;
-            synth_reset();
+            synth_construct();
             g_channels[ch].pitch_bend = 8192;
             g_channels[ch].pb_range_cents = 200;
             Voice *v = &g_voices[0];
@@ -1891,7 +1909,7 @@ static void t_render(void) {
     tap_diag("S6.7 (x87 control word 0x027F): moot by SPEC's own text -- this engine already uses plain IEEE-754 double throughout, no manual FPU control-word manipulation is expected");
 
     voice_pool_reset();
-    synth_reset();
+    synth_construct();
 }
 
 /* frag_dls.c -- t_dls() unit tests for src/engine/dls.c against SPEC.adoc
@@ -2483,7 +2501,7 @@ int main(void) {
     }
     if (!have_dls) tap_diag("dist/gm.dls not loaded -- DLS-backed tests will SKIP");
 
-    synth_reset();
+    synth_construct();
 
     t_tables();
     t_rt();

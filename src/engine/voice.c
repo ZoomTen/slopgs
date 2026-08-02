@@ -322,6 +322,21 @@ static double lfo_freq_from_tc(int32_t tc) {
  * and it governs the release as well as the decay. */
 #define ENV_SPAN_DB 96.0
 
+/* SPEC.adoc T.4/S3.4.2: the original reads the ATTACK segment's level from
+ * Table C (`g_table_envshape`, 0x1a9d8), a 201-entry int16 LUT indexed by
+ * trunc(elapsed*1000/attackDuration)/5 -- i.e. quantized to at most 201
+ * distinct steps. That is algebraically the SAME curve the continuous ramp
+ * below produces (both are ratio <-> 1000*(1+20*log10(ratio)/96), one
+ * direction and its inverse) -- not a shape difference, only quantization.
+ * Default OFF: SPEC_LOG.adoc item46 measured this against the corpus
+ * (04_envelope, 32_ramp_shape, 41_sustain_decay_curve, 44_release_shape,
+ * and the 68-item MEAN) -- none of the targeted items improved and the
+ * mean moved marginally worse, so the continuous ramp ships as the
+ * default. Overridable -D for A/B (artifacts/score.py MSGS_RENDER=...). */
+#ifndef ENV_ATTACK_TABLE_C
+#define ENV_ATTACK_TABLE_C 0
+#endif
+
 /* mult is a rate multiplier, 1.0 = the calibration documented above.
  * FITTED.md Entry 1 fit 2.85 for the decay segment against probe 04 and did
  * not ship it; re-tested 2026-07-25 under the corrected harness aligner
@@ -763,25 +778,44 @@ void voices_advance_lfo(uint32_t frames) {
     }
 }
 
-/* Pan law, SPEC.adoc S3.6 -- SHAPE `[M: probe 07]`, corroborating the
- * disassembly-derived linear/sqrt table `g_table_lin` (SPEC.adoc S3.6's
- * `gainA`, reverse-indexed by 127-pan). Both channels use this SAME table
- * (`gainB` is NOT the squared table `g_table_vel` as S3.6 also described --
- * that predicts -11.90 dB at center pan where probe 07 measures -3.72 dB;
- * REFUTED, see SPEC_LOG.adoc S9). The two-anchor-table/lerp scheme this
- * project previously shipped (FITTED.md Entry 5, `artifacts/probes/25_pan_law.mid`)
- * is SUPERSEDED: probe 25's flat center plateau was gain-clamp saturation
- * (Sine patch driven ~4.78 dB above GAIN_CEILING, not the pan law itself --
- * see FITTED.md Entry 5's superseding note and Entry 7).
+/* Pan law, SPEC.adoc S3.6. SHAPE and FLOOR are both `[M: probe 25]`'s own
+ * 9-anchor measured table, consumed here directly (PAN_L_HDB/PAN_R_HDB
+ * below); between anchors the curve is `[F]` per SPEC.adoc S3.6's own text
+ * ("linear interpolation in the hundredths-of-a-dB domain reproduces the
+ * anchors exactly"). SPEC_LOG.adoc item45 has the measured error this
+ * replaced: up to 3.04 dB on shape (the near channel rising above unity
+ * instead of holding at 0 dB) and ~1.8 dB on the hard-pan floor.
  *
- * The re-centering below (subtracting the table's index-63 midpoint entry)
- * keeps today's centre-pan level unchanged (so the corpus-wide gain-staging
- * tuned around it does not shift) while letting the table's own reverse/
- * direct indexing supply the pan SHAPE; it is a fitted correction for
- * headroom this project has not recovered elsewhere (SPEC.adoc S6.4.5 "Open
- * items" #16, `[O]`), tagged `[F:fitted, SHIPPED]` -- see FITTED.md Entry 7
- * for the fit, the rejected un-recentred alternative, and the residual
- * shape error still open. */
+ * This is NOT the disassembly-derived linear/sqrt table `g_table_lin`
+ * (SPEC.adoc S3.6's `gainA`, reverse-indexed by 127-pan) this function used
+ * until item45 -- that table corroborated the pan law's overall SHAPE
+ * against probe 07 well enough to ship (SPEC_LOG.adoc Entry 7), but its own
+ * `- g_table_lin[63]` re-centering term let the near channel rise up to
+ * +3.04 dB above unity instead of holding exactly 0 dB at every anchor, as
+ * SPEC.adoc S3.6 requires ("true unity on both sides simultaneously").
+ * g_table_lin is no longer consumed by src/engine -- its disassembly
+ * reading stays in SPEC.adoc and its byte-exact contents are still
+ * asserted by unit.c's S T.3 test, so it is kept, just unused here.
+ * `gainB` is NOT the squared table `g_table_vel` either, per SPEC.adoc
+ * S3.6's disassembly reading: that predicts -11.90 dB at center pan where
+ * probe 07 measures -3.72 dB; REFUTED, see SPEC_LOG.adoc S9. (Neither
+ * branch of the law below touches g_table_vel, so this refutation no
+ * longer has a "which table" question to resolve -- it is kept only
+ * because it is still why SPEC.adoc's own `[O]` two-table asymmetric-law
+ * reading, `0x19c12`-`0x19c2a`, is not implemented as written; see the
+ * standing `[O]` at SPEC.adoc S3.6.)
+ *
+ * The anchor-table/lerp scheme below resembles one this project shipped
+ * once before and then superseded (SPEC_LOG.adoc Entry 5,
+ * `artifacts/probes/25_pan_law.mid`) -- it is NOT that same mistake
+ * recurring. Entry 5 was rejected because, at the level it was fit
+ * against (Sine patch, CC7=127), probe 25's flat centre plateau was
+ * GAIN_CEILING saturation (~4.78 dB above the 32767/65536 ceiling), not
+ * the pan law itself (SPEC_LOG.adoc Entry 7). item45's 9-anchor sweep uses
+ * CC7=40/CC11=127 instead (src/unit.c's own S3.6 tests) and reaches a
+ * centre gain of only 0.099312 -- well clear of GAIN_CEILING (0.499985),
+ * confirmed by the test's own diagnostic before it asserts anything
+ * (src/unit.c ~1602-1630). This time the plateau IS the pan law. */
 
 /* Per-voice output ceiling, SPEC.adoc S6.4.5 -- `[A]`, derived from the two
  * confirmed MMX opcodes in the mixer's gain stage, not fit to any single
@@ -797,10 +831,11 @@ void voices_advance_lfo(uint32_t frames) {
  * one bit wider than the signed 16-bit lane `packssdw` narrows it into.
  * True unity is therefore structurally unreachable: **no voice's gain can
  * ever exceed 32767/65536 (~0.499985) of computed unity**, regardless of
- * how the intermediate `<<8>>5` scaling (SPEC.adoc S6.4.5 "Open items" #16,
- * still `[O]`) maps hundredths-of-a-dB attenuation to the raw register --
- * that mapping is irrelevant to *this* bound, which falls straight out of
- * "signed 16-bit register, Q16 multiply" alone.
+ * how the intermediate `<<8>>5` scaling maps hundredths-of-a-dB attenuation
+ * to the raw register (SPEC.adoc S6.4.5's hdB->raw-gain conversion table,
+ * `[A:0x18dea]`, now resolved -- its own ceiling independently lands on this
+ * same bound to ~0.002dB) -- that mapping is irrelevant to *this* bound,
+ * which falls straight out of "signed 16-bit register, Q16 multiply" alone.
  *
  * Cross-checked against probe 27 (artifacts/probe-results/27.flac), Sine patch (bank
  * MSB 8 / program 80): back-computing the driver's own uncapped squared-law
@@ -824,21 +859,74 @@ void voices_advance_lfo(uint32_t frames) {
  * life) is the only part NOT recomputed here. This is the single place
  * gain_l/gain_r are computed -- voice_note_on calls it too instead of
  * duplicating the math. */
+
+/* Pan law breakpoints, SPEC.adoc S3.6 [M: probe 25]: dB (hundredths of a
+ * dB) relative to centre, at the nine measured CC10 anchors, taken
+ * verbatim from SPEC's own table. The near channel is 0 (true unity) at
+ * every anchor; only the far channel's column is non-zero. See the pan-law
+ * comment above for why this replaces g_table_lin here. */
+static const uint8_t PAN_CC10[9]  = { 0, 16, 32, 48, 64, 80, 96, 112, 127 };
+static const int16_t PAN_L_HDB[9] = { 0, 0, 0, 0, 0, 0, -141, -452, -2021 };
+static const int16_t PAN_R_HDB[9] = { -2020, -420, -120, 0, 0, 0, 0, 0, 0 };
+
+/* Linear interpolation between the anchors above, in the hundredths-of-a-dB
+ * domain, per SPEC.adoc S3.6's own stated treatment of the unmeasured span
+ * between them ("linear interpolation ... reproduces the anchors
+ * exactly"). */
+static int32_t pan_lerp_hdb(int pan, const int16_t *hdb) {
+    for (int i = 0; i < 8; i++) {
+        if (pan <= PAN_CC10[i + 1]) {
+            int32_t x0 = PAN_CC10[i], x1 = PAN_CC10[i + 1];
+            int32_t y0 = hdb[i], y1 = hdb[i + 1];
+            return y0 + (int32_t)(((int64_t)(y1 - y0) * (pan - x0)) / (x1 - x0));
+        }
+    }
+    return hdb[8];
+}
+
+/* SPEC.adoc S3.5 [A:0x19bcd]/S6.4.5 [A:0x18dea]: the driver folds a literal
+ * +1200 (12.00dB) into atten_const_hdb (voice_note_on, below) and its
+ * hdB->raw-gain conversion table's zero point (atten_hdb==0) is its own
+ * ceiling, TABLE[0] == 4095 == GAIN_CEILING's numerator to within ~0.002dB
+ * -- not a literal 1.0. Anchoring gain_linear on GAIN_CEILING instead of
+ * 1.0, paired with the +1200, was meant to reproduce that. Measured against
+ * the corpus and REJECTED (SPEC_LOG.adoc item47: mean residual moved
+ * +2.90dB worse, 33 items regressed >1dB, and the pair's own falsifiable
+ * v=96 knee prediction overshot to v=80). This engine's atten_hdb
+ * composition is not yet on the same footing as the driver's, so the pair
+ * does not currently reproduce it; kept behind ATTEN_PLUS_1200 as a single
+ * -D away for a future pass rather than lost. The pair is a pure uniform
+ * level shift of +5.98dB (+1200 less GAIN_CEILING's -6.02dB) and nothing
+ * else -- cancelling that net reproduces the default build exactly, and
+ * the corpus optimum sits near +3dB, not +6dB (SPEC_LOG.adoc item48). Default build uses the
+ * pre-item47 form with the GAIN_TRIM_DB hook (always 0.0, SPEC_LOG.adoc
+ * items 39/40). */
+#ifndef ATTEN_PLUS_1200
+#define ATTEN_PLUS_1200 0   /* SPEC S3.5's [A:0x19bcd] +1200 paired with the GAIN_CEILING
+                               re-anchor; measured and rejected by the corpus gate, see
+                               SPEC_LOG item47. Kept so the pair is one -D away for the
+                               follow-up pass, not an edit. */
+#endif
+
 void voice_update_gain(Voice *v) {
     if (!v->active) return;
     int32_t chan_vol = g_table_vel[g_channels[v->channel].volume];
     int32_t expr = g_table_vel[g_channels[v->channel].expression];
     int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr + v->atten_const_hdb;
+#if ATTEN_PLUS_1200
+    double gain_linear = GAIN_CEILING * rt_pow(10.0, (double)atten_hdb / 2000.0);
+#else
 #ifndef GAIN_TRIM_DB
 #define GAIN_TRIM_DB 0.0
 #endif
     double gain_linear = rt_pow(10.0, ((double)atten_hdb / 100.0 + GAIN_TRIM_DB) / 20.0);
+#endif
 
     int pan = (int)g_channels[v->channel].pan + v->artic->pan_cb;
     if (pan < 0) pan = 0;
     if (pan > 127) pan = 127;
-    int32_t gainA_hdb = g_table_lin[127 - pan] - g_table_lin[63];
-    int32_t gainB_hdb = g_table_lin[pan] - g_table_lin[63];
+    int32_t gainA_hdb = pan_lerp_hdb(pan, PAN_L_HDB);
+    int32_t gainB_hdb = pan_lerp_hdb(pan, PAN_R_HDB);
     v->gain_l_target = gain_linear * rt_pow(10.0, (double)gainA_hdb / 2000.0);
     v->gain_r_target = gain_linear * rt_pow(10.0, (double)gainB_hdb / 2000.0);
     if (v->gain_l_target > GAIN_CEILING) v->gain_l_target = GAIN_CEILING;
@@ -1208,7 +1296,16 @@ void voice_note_on(int channel, int note, int velocity) {
      * step; dls.c's `(lScale*10)>>16` conversion scales that to
      * hundredths, so it is summed in directly here with no further
      * conversion, per S1.4.4/S3.10. */
+    /* SPEC.adoc S3.5 [A:0x19bcd]: the driver folds a literal +1200 (12.00 dB)
+     * into this same sum, paired with voice_update_gain's GAIN_CEILING
+     * re-anchor above -- see the ATTEN_PLUS_1200 comment there. Measured
+     * and rejected by the corpus gate (SPEC_LOG.adoc item47); default
+     * build omits it. */
+#if ATTEN_PLUS_1200
+    v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb + 1200;
+#else
     v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb;
+#endif
 
     /* Pan, SPEC.adoc S3.6 (L/R assignment is an inference; see SPEC_LOG.adoc).
      * The region's own pan offset (artic->pan_cb) is fixed; the channel's
@@ -1291,6 +1388,9 @@ void voice_note_on(int channel, int note, int velocity) {
         v->env_level = 0.0;
         v->env_stage = ENV_ATTACK;
         v->env_attack_step = 1.0 / (attack_s * (double)RENDER_RATE);
+        v->env_attack_elapsed = 0;
+        v->env_attack_samples = (int32_t)(attack_s * (double)RENDER_RATE + 0.5);
+        if (v->env_attack_samples < 1) v->env_attack_samples = 1;
     }
 
     /* EG2 (pitch envelope), SPEC.adoc S2.4.3 `[A:0x15838]` / SPEC_LOG.adoc #20.
@@ -1398,11 +1498,28 @@ uint32_t voice_env_frames_to_change(const Voice *v) {
 double voice_step_envelope(Voice *v) {
     switch (v->env_stage) {
         case ENV_ATTACK:
+#if ENV_ATTACK_TABLE_C
+            v->env_attack_elapsed++;
+            if (v->env_attack_elapsed >= v->env_attack_samples) {
+                /* SPEC.adoc S3.4.2 `[A:0x18ac0-0x18ad1]`: elapsed>=attackDuration
+                 * leaves the attack branch (and Table C) entirely, it never asks
+                 * the table for ratio==1.0 -- so land on exactly 1.0 here rather
+                 * than at whatever g_table_envshape[200]==999 converts back to. */
+                v->env_level = 1.0;
+                v->env_stage = (v->env_decay_samples_left > 0) ? ENV_DECAY : ENV_SUSTAIN;
+            } else {
+                int32_t permille = (int32_t)((int64_t)v->env_attack_elapsed * 1000 / v->env_attack_samples);
+                int32_t idx = permille / 5; /* trunc, 0x18b0a-0x18b10 */
+                if (idx > 200) idx = 200;
+                v->env_level = rt_pow(10.0, (((double)g_table_envshape[idx] / 1000.0) - 1.0) * ENV_SPAN_DB / 20.0);
+            }
+#else
             v->env_level += v->env_attack_step;
             if (v->env_level >= 1.0) {
                 v->env_level = 1.0;
                 v->env_stage = (v->env_decay_samples_left > 0) ? ENV_DECAY : ENV_SUSTAIN;
             }
+#endif
             break;
         case ENV_DECAY:
             /* SPEC.adoc S5.1.2.1: geometric ramp, same mechanism as ENV_RELEASE

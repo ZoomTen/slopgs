@@ -2491,9 +2491,12 @@ atten_sum += (int16)region[0x24] + 1200; // 0x19bc9, 0x19bcd: region wsmp attenu
 `table_1c9d0` index — behaviorally this is the note-on velocity; the exact
 identity of the stack slot as "MIDI velocity" specifically (as opposed to
 some other 0-127 value) is `[I]`, the arithmetic itself is `[A]`. The
-`+1200` instruction is `[A]` and not in doubt; what the constant is *for*
-is `[O]`, and it interacts with the still-open hundredths-of-a-dB-to-raw-
-gain-register mapping (xref:s6-4-5[§6.4.5]).
+`+1200` is a domain shift ahead of the hdB→raw-gain conversion table
+(xref:s6-4-5[§6.4.5]): that table's own zero point is `atten_sum = 0`, so
+`+1200` moves the conversion's clamp knee 12 dB earlier than an unshifted
+sum would reach it, rather than adding a flat 12 dB everywhere — a note
+whose unshifted sum already sits within 12 dB of the table's ceiling is
+pushed into the clamp; one well below that range is not.
 
 A **second, linear/√-law table** exists at `0x1bfd4` (`trunc(1000 ·
 log10(v/127))`, v=1..127, v=0 → −2500 at `0x1bfd0`, builder `0x16a3e`).
@@ -3130,7 +3133,7 @@ to rule it out, but nothing is stored and nothing downstream reacts.
 | 118 | (undefined) | Discarded | bound `0x134e7` `[A]` | n/a
 | 119 | (undefined) | Discarded | bound `0x134e7` `[A]` | n/a
 | 120 | All Sound Off | Implemented — releases (does not cut) every sounding voice on the matching channel; **bypasses** the sustain-hold check entirely (xref:s4-7[§4.7] sentinel `0xFD`) | `0x134ed` (jumps to shared tail `0x1362b`) `[A]` | n/a
-| 121 | Reset All Controllers | Implemented — re-schedules Volume=100, Pan=64, Expression=127, Pitch Bend=8192, Modulation=0 (same values as xref:s4-6[§4.6]'s `ResetAllChannelControllers`) plus a per-channel sustain-release event; does **not** touch Bank/Program or the RPN/NRPN-select register | `0x1351f` `[A]` | n/a
+| 121 | Reset All Controllers | Implemented — unconditionally re-schedules Expression=127, Pitch Bend=8192 and Modulation=0, plus a per-channel sustain-release event; re-schedules Channel Volume=100 and Pan=64 only when the incoming CC121 message's own value byte is non-zero (xref:s4-3-cc121-gate[below]) — the same target values as xref:s4-6[§4.6]'s `ResetAllChannelControllers`, but conditional here; does **not** touch Bank/Program or the RPN/NRPN-select register | `0x1351f` `[A]` | n/a
 | 122 | Local Control | Discarded (no dedicated handler; meaningless for a software-only synth with no local keyboard) | bound `0x13611` `[A]` | n/a
 | 123 | All Notes Off | Implemented — releases (does not cut) every sounding voice on the matching channel; **honours** the sustain-hold check (xref:s4-7[§4.7] sentinel `0xFF`) | `0x13607`→`0x13631` `[A]` | n/a
 | 124 | Omni Mode Off | Discarded | bound `0x13611` `[A]` | n/a
@@ -3145,6 +3148,28 @@ CC120, CC126 and CC127 share one release routine (all three jump to the
 (`0xFF`-sentinel at `0x13631`). These are three distinct release
 mechanisms distinguished at the point of consumption inside
 `TriggerVoiceEvent` (xref:s4-7[§4.7]), not four aliases of one function.
+
+[#s4-3-cc121-gate]
+**CC121's Channel Volume and Pan re-schedules are gated on the incoming
+message's own value byte; Expression, Pitch Bend and Modulation are not:**
+
+[source,c]
+----
+if (data2 != 0) {                  // cmpb $0x0,0x18(%ebp) / je 0x1355e -- 0x1351f-0x13523
+    schedule(channelVolume, 100);  // 0x1352b-0x1353c
+    schedule(pan, 64);             // 0x13545-0x13551
+}
+schedule(expression, 127);         // 0x13567-0x13575 -- unconditional
+schedule(pitchBend, 8192);         // 0x13581-0x13592 -- unconditional
+schedule(modulation, 0);           // 0x1359b-0x135a9 -- unconditional
+----
+
+`data2` (`0x18(%ebp)`) is CC121's own incoming value byte — the same stack
+slot every other CC handler in this dispatch chain reads as the value to
+schedule. A CC121 message sent with a value byte of `0` — the value MIDI
+convention uses for this controller — leaves Channel Volume and Pan exactly
+as they were; a message sent with any other value byte resets both alongside
+Expression, Pitch Bend and Modulation.
 
 **CC7/CC11 gain law.** Master Volume (SysEx, xref:s4-5[§4.5]) is confirmed by direct
 instruction read to use the same 128-entry attenuation table as note-on
@@ -4819,18 +4844,38 @@ raw_gain_out = gain_Q >> 3 ; net <<3>>3 = identity: the
                                             ;   same units it was read in
 ----
 `[A:0x19e9c-0x19e9f pslld 8 / psrld 5][A:0x19fae psrld 3 before store]`.
-The absolute fixed-point meaning of `raw_gain` as it arrives from the
-control-plane caller (e.g. whether it is Q16.16 relative to full scale) is
-**`[O]`** — not independently pinned down; what is confirmed is the
-internal `<<3` scaling relationship between the field's rest representation
-and its in-loop active representation.
+
+`raw_gain`, as it arrives from the control-plane caller, is the direct
+output of the hdB→raw-gain conversion table xref:s3-3-1[§3.3.1] already
+gives in full (`0x1bfc0`, `n = −1000..0`, `trunc(4095·sqrt(10^(n/100)))`):
+
+[source,c]
+----
+i = attenSumHdb / 10;             // 0x18df6: idiv 10
+if (i < -1000) i = -1000;         // 0x18dfd/0x18dff
+if (i >= 0)     i = 0;            // 0x18e05/0x18e07
+raw_gain = TABLE_0x1bfc0[i];      // 0x18e0b
+----
+`[A:0x18dea]`–`[A:0x18e0b]`. `attenSumHdb` is xref:s3-5[§3.5]'s own summed
+attenuation (including its `+1200` term), read from `voice+0x20`/`+0x24`
+where the note-trigger function stores it `[A:0x18f01][A:0x18f0d]` and
+re-read here at note-on and on every subsequent ramp target `[A:0x18ff1-
+0x18ffc][A:0x18fff-0x1900b]`. The table's own ceiling, `TABLE[0] = 4095`,
+is therefore `raw_gain`'s absolute maximum, reached whenever `attenSumHdb`
+is zero or positive: **`4095` is the field's unit, not an independent
+Q-format** — it is `floor(32767/8)`, the largest integer whose `<<3` (this
+section's own confirmed scaling) never exceeds the `packssdw` signed-16
+saturation point the mixer enforces downstream (xref:s6-4-5-1[§6.4.5.1]),
+so `4095<<3/65536 = 32760/65536 ≈ 0.499969` of computed unity — the same
+ceiling xref:s6-4-5-1[§6.4.5.1] derives independently from the mixer
+hardware alone, to within 7 parts in 65536 (~0.002 dB).
 
 [#s6-4-5-1]
 ==== Per-voice gain ceiling (output clamp / gain-saturation)
 
 Two facts from xref:s6-4-5[§6.4.5] combine into a hard, structural bound on
-achievable gain, independent of the still-`[O]` absolute Q-format of
-`raw_gain`:
+achievable gain, independently of xref:s6-4-5[§6.4.5]'s own table-derived
+ceiling (the two agree to ~0.002 dB):
 
 * `packssdw` narrows the gain accumulator into a **signed 16-bit lane**
   (max representable value `+32767`) immediately before the multiply
@@ -4842,9 +4887,9 @@ For that multiply to ever pass a sample through **unattenuated** (true
 unity gain, 0 dB, `gain_linear == 1.0`), `gain_Q` would need to equal
 `65536` — one bit past what a signed 16-bit lane can hold. **True unity is
 therefore structurally unreachable through this pipeline: no voice's gain
-can ever exceed `32767/65536 ≈ 0.499985` of computed unity**, regardless of
-how hundredths-of-a-dB attenuation maps onto the raw register (the `[O]`
-item above). Below that ceiling the squared volume law (xref:s3-5[§3.5]/xref:s6-5[§6.5]) applies
+can ever exceed `32767/65536 ≈ 0.499985` of computed unity**, matching
+xref:s6-4-5[§6.4.5]'s conversion-table ceiling from the opposite direction.
+Below that ceiling the squared volume law (xref:s3-5[§3.5]/xref:s6-5[§6.5]) applies
 untouched; at or above it, output flattens.
 
 Corroborated acoustically `[M: probe 27]` (Sine patch, bank MSB 8 /
@@ -5167,11 +5212,6 @@ stage is **`[O]`**, not measured.
 * Whether the MMX and scalar mixer families produce bit-identical output
   for identical inputs — not tested (scalar is unreached on any real CPU
   regardless).
-* The absolute fixed-point unit of the raw gain field as it arrives from
-  the caller (voice `+0x2c`/`+0x30` before the driver's own `<<3` internal
-  scaling) — the internal scaling relationship is confirmed, its ultimate
-  physical unit (e.g. dB-linear vs. a specific Q-format full-scale
-  reference) is not.
 * The precise struct/pointer chain supplying the render-rate denominator at
   VMA `0x18f7b` — the arithmetic role is unambiguous; independent
   confirmation that the dereferenced value is literally 22050 in every case
@@ -5420,7 +5460,7 @@ conditional on facts that could change, not on the binary.
 [#s7-2]
 === The open-questions register
 
-Twenty-one distinct `[O]` items. Five are **behaviourally significant** —
+Twenty distinct `[O]` items. Five are **behaviourally significant** —
 a wrong guess produces audibly different output. The rest are cosmetic: no
 output consequence for `gm.dls`, or already narrowed to a near-certain value
 even though the exact instruction is unlocated.
@@ -5440,7 +5480,6 @@ even though the exact instruction is unlocated.
 | xref:o13[13] | The semantic identity of `region+0x28`, the third region-selection gate | Behaviourally significant
 | xref:o14[14] | The runtime value of `flagByte`, which governs 16-bit-source storage policy | Behaviourally significant
 | xref:o15[15] | The code that dereferences a resolved region's wave pointer and walks ``fmt ``/`data`/`wsmp` | Cosmetic
-| xref:o16[16] | The absolute fixed-point unit of the raw gain field at `voice+0x2c`/`+0x30` | Cosmetic
 | xref:o17[17] | Whether the MMX and scalar mixer families produce bit-identical output | Cosmetic
 | xref:o18[18] | The struct/pointer chain supplying the render-rate denominator at `0x18f7b` | Cosmetic
 | xref:o19[19] | Whether a distinct ADSR-style envelope-shape state machine exists as its own code, and what feeds the per-call ramp-step arguments | Behaviourally significant
@@ -5582,17 +5621,6 @@ even though the exact instruction is unlocated.
 *How it would be settled.* Instrument a live driver at first note-on for a program never previously triggered.
 
 *Significance.* Cosmetic — the handler logic is fully specified; an implementer needs "parse fmt/data/wsmp for a wave chunk", not the trigger site.
-
-[#o16]
-==== The absolute fixed-point unit of the raw gain field at `voice+0x2c`/`+0x30`
-
-*Known.* The internal `<<8>>5` (= `<<3`) scaling between the field's rest and in-loop representations is confirmed (xref:s6-4-5[§6.4.5])
-
-*Not known.* Whether the physical unit is Q16.16 relative to full scale, or something else.
-
-*How it would be settled.* Not resolvable from the render path alone. The full gain chain — hundredths-of-a-dB sums, `10^(atten/2000)` — is already specified in xref:s3-5[§3.5] and supplies the numeric value an implementer needs.
-
-*Significance.* Cosmetic — redundant with the specified gain chain.
 
 [#o17]
 ==== Whether the MMX and scalar mixer families produce bit-identical output

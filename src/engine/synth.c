@@ -19,10 +19,13 @@
  *    (Program Change / reset), not the raw incoming byte itself. That *is*
  *    implemented as real scheduling below (`scheduled_locale`, latched only
  *    on Program Change/reset, SPEC.adoc S4.2.1/S4.6) -- SPEC_LOG.adoc #14.
- *  - No RCV CHANNEL "Part" indirection layer: channel index doubles as
- *    "Part" index directly (channel 9, 0-based, is rhythm by default,
- *    matching the *observable* default in SPEC.adoc S4.8 without the
- *    indirection table).
+ *  - RCV CHANNEL's "Part" indirection (SPEC.adoc S4.2.2/S4.5/T.8) is modeled
+ *    only at the one point src needs it: resolving a GS Part-parameter
+ *    address's "block" nibble (== Part index) to a physical channel for
+ *    USE RHYTHM PART, via `part_to_channel[16]` below. Every OTHER per-part
+ *    array in this file (g_channels[] itself, and everything hung off it)
+ *    is still indexed directly by physical channel, not by Part -- SPEC_LOG.adoc
+ *    (closing item11).
  *  - No 12-entry-per-part GS Scale Tuning grid.
  */
 #include "synth.h"
@@ -33,6 +36,18 @@
 Channel g_channels[16];
 uint8_t g_gs_mode;
 int32_t g_master_vol_hdb;
+
+/* SPEC.adoc T.8: static table0, VMA 0x1a600 -- copied byte-for-byte into the
+ * per-Part RCV CHANNEL array at device-open time and reloaded on every
+ * MIDI-level reset (S4.6.4: System Reset, GS Reset and GM System On/Off all
+ * "reload static table"). Part i's default physical channel. */
+static const uint8_t kPartChannelDefault[16] = {
+    9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15
+};
+/* SPEC.adoc S4.2.2 device+0x12fc: RCV CHANNEL, the per-Part physical-channel
+ * map. Only USE RHYTHM PART (synth_sysex, a2==0x15) reads through this --
+ * see SPEC_LOG.adoc item44 for what that deliberately leaves out. */
+static uint8_t part_to_channel[16];
 
 /* SPEC.adoc S4.9.1's `0x150bc(1)` acquire half, restricted to this engine's
  * one-shot gm.dls load: only set the loaded flag if a collection actually
@@ -54,6 +69,12 @@ static void relatch_locale(Channel *c) {
         | (((uint32_t)c->bank_msb & 0x7f) << 14);
 }
 
+/* SPEC.adoc S4.6.4's reset-state summary table: these are the fields
+ * ResetDevice/ResetAllChannelControllers/ResetAllProgramsAndRhythmGroups
+ * actually touch -- i.e. everything a MIDI System Reset (0xFF), GS Reset or
+ * GM System On/Off is supposed to reset. RPN0 (pb_range_cents), the
+ * RPN/NRPN-select register and the sustain byte are deliberately NOT here
+ * (SPEC_LOG.adoc item41) -- see channel_construct_only() below. */
 static void channel_defaults(Channel *c, int idx) {
     c->bank_msb = 0;
     c->bank_lsb = 0;
@@ -64,27 +85,50 @@ static void channel_defaults(Channel *c, int idx) {
     c->pan = 64;
     c->modulation = 0;
     c->pitch_bend = 8192;
-    c->pb_range_cents = 200;
     c->rpn1_fine_cents = 0;
     c->rpn2_coarse_cents = 0;
-    c->rpn_select = 0x3FFF;
     c->data_entry_combined = 0;
-    c->sustain = 0;
     c->is_rhythm = (idx == 9) ? 1 : 0; /* SPEC.adoc S4.8: channel 10 default rhythm part */
     c->mono_mode = 0;
+}
+
+/* SPEC.adoc S4.2.1's power-on-only defaults. S4.6.4's reset-state summary
+ * table marks all three "not touched"/"unchanged" by every one of the three
+ * reset paths (and so by every MIDI-level operation built on them: System
+ * Reset, GS Reset, GM System On/Off) -- so these are written ONLY here, by
+ * synth_construct(), never by channel_defaults()/synth_reset() (SPEC_LOG.adoc
+ * item41). */
+static void channel_construct_only(Channel *c) {
+    c->pb_range_cents = 200;
+    c->rpn_select = 0x3FFF;
+    c->sustain = 0;
 }
 
 void synth_reset(void) {
     g_gs_mode = 0;
     g_master_vol_hdb = 0;
-    for (int i = 0; i < 16; i++) channel_defaults(&g_channels[i], i);
+    for (int i = 0; i < 16; i++) {
+        channel_defaults(&g_channels[i], i);
+        part_to_channel[i] = kPartChannelDefault[i]; /* SPEC.adoc S4.6.4: RCV
+                                                        CHANNEL reload, item44 */
+    }
     voice_pool_reset();
-    /* synth_reset() stands in for this engine's device construction/open
-     * (called by src/cli.c and src/wasm.c to initialise) as well as the MIDI
-     * System Reset (0xFF) and GM System On/Off handlers below -- and per
-     * SPEC.adoc S4.9.1's call-site table, device construction, System Reset
-     * and GM System On all acquire the instrument collection. */
+    /* synth_reset() is the MIDI System Reset (0xFF) handler and is reached by
+     * GS Reset and GM System On/Off below -- and per SPEC.adoc S4.9.1's
+     * call-site table, System Reset and GM System On both acquire the
+     * instrument collection. */
     acquire_collection();
+}
+
+/* Device construction/open (called by src/cli.c and src/wasm.c to
+ * initialise a fresh device, and by src/unit.c's test fixtures) -- distinct
+ * from synth_reset() because SPEC.adoc S4.6.4 says a MIDI-level reset must
+ * NOT touch the three fields a power-on construction DOES set
+ * (SPEC_LOG.adoc item41). Sets those three, then runs the ordinary reset
+ * body for everything else. */
+void synth_construct(void) {
+    for (int i = 0; i < 16; i++) channel_construct_only(&g_channels[i]);
+    synth_reset();
 }
 
 /* A/B guard for measurement purposes only (SPEC_LOG.adoc #14): 1 (default,
@@ -123,16 +167,18 @@ uint32_t synth_channel_locale(int ch) {
 int32_t synth_pitch_bend_cents(int ch) {
     Channel *c = &g_channels[ch];
     int32_t raw = (int32_t)c->pitch_bend - 8192;
-    /* (raw * rangeCents) >> 13, FLOOR -- not C truncation toward zero.
-     * SPEC.adoc S4.4 says "C-style truncation toward zero"; the driver disagrees
-     * `[A:0x16d60]`:
-     *     16d73  sub  eax,0x2000              ; value - 8192
-     *     16d78  imul eax,DWORD PTR [esi+0x20] ; * range in cents (default 0xc8)
-     *     16d7c  sar  eax,0xd                 ; ARITHMETIC shift = floor
-     * `sar` floors; `/` rounds toward zero. They differ by one cent on every
-     * downward bend that is not an exact multiple of 8192, which is most of
-     * them. 32-bit `imul` there vs. int64 here is not a difference: |raw| <=
-     * 8192 and range <= 4800 peaks at 39.3M, well inside int32. */
+    /* (raw * rangeCents) >> 13, FLOOR. SPEC.adoc S3.3.2(c) states the bend
+     * formula uses "an arithmetic right shift -- truncation toward negative
+     * infinity, not toward zero", which is exactly what `>> 13` computes
+     * below -- SPEC and this code agree, this is not a deviation.
+     * (S4.4's "C-style truncation toward zero" is a different formula
+     * entirely: RPN1 Channel Fine Tuning's `((combined14bit - 8192) * 100)
+     * / 8192`, not this one.)
+     * `sar` (this shift) floors; `/` rounds toward zero -- they differ by one
+     * cent on every downward bend that is not an exact multiple of 8192,
+     * which is most of them. int64 here vs. the driver's 32-bit multiply is
+     * not a difference: |raw| <= 8192 and range <= 4800 peaks at 39.3M, well
+     * inside int32 either way. */
     return (int32_t)(((int64_t)raw * c->pb_range_cents) >> 13);
 }
 
@@ -160,36 +206,20 @@ static void cc_data_entry_lsb(Channel *c, uint32_t d2) {
     /* RPN0/RPN2 do not consume the LSB half (SPEC.adoc S4.4). */
 }
 
-/* SPEC.adoc S4.3's CC121 row says the handler "re-schedules Volume=100, Pan=64,
- * Expression=127, Pitch Bend=8192, Modulation=0" `[A:0x1351f]`. The Volume
- * half of that is wrong: `[M: probe 37]`, CC121 does not touch Channel Volume
- * at all. probes/37_rac_volume_order.mid plays one sine per case and the
- * reference reads (case RMS, dB, against its own CC7=40 and CC7=100 controls
- * at -29.29 and -13.39):
- *
- *   CC7=40 then CC121, same tick   -29.29   CC7=40, CC121 +50ms    -29.29
- *   CC121 then CC7=40, same tick   -29.29   CC7=40, CC121 +500ms   -29.29
- *
- * Exact to 0.00 dB on all four -- so this is not S4.2.1's queue-ordering
- * question (SPEC_LOG.adoc #14) at all: a CC121 half a second LATER leaves 40
- * standing, which no same-timestamp tie-break can produce. Expression is a
- * different story and does get reset (case G lands 18.30 dB above a surviving
- * CC11=40), so the exemption is Volume's alone.
- *
- * Audible on tests/warm-echo.mid, whose two tracks both send CC7 (76 on ch0,
- * 52 on ch1) and then CC121 at tick 0: resetting them to 100 rendered the
- * two-channel section +4.84 dB against the one-channel section where the
- * reference has -2.03 dB. r 0.833 -> 0.994, residual -25.25 -> -34.68 dB. */
-#ifndef CC121_RESETS_VOLUME
-#define CC121_RESETS_VOLUME 0
-#endif
-
-static void reset_all_channel_controllers(Channel *c) {
+/* SPEC.adoc S4.3's CC121 row `[A:0x1351f]`-`[0x13523]` (SPEC_LOG.adoc item42):
+ * Channel Volume and Pan re-schedule only when CC121's own value byte is
+ * non-zero; Expression/Pitch Bend/Modulation are unconditional. MIDI
+ * convention sends this controller with value 0, which is why the earlier
+ * `[M: probe 37]` measurement (CC121 arriving up to 500ms after a CC7 never
+ * disturbs it) looked like an unconditional Volume exemption -- it is
+ * actually this gate, closed for every value-0 message. Pan is gated
+ * identically in the driver, but the value it writes (`%ebx`) was not
+ * pinned down `[A]`, so it is deliberately left unconditional here
+ * (SPEC_LOG.adoc item42's open sub-question). */
+static void reset_all_channel_controllers(Channel *c, uint32_t val) {
     c->modulation = 0;
     c->pitch_bend = 8192;
-#if CC121_RESETS_VOLUME
-    c->volume = 100;
-#endif
+    if (val != 0) c->volume = 100;
     c->pan = 64;
     c->expression = 127;
 }
@@ -213,7 +243,12 @@ static void reset_all_channel_controllers_device(void) {
         c->volume = 100;
         c->pan = 64;
         c->expression = 127;
-        c->sustain = 0;
+        /* SPEC.adoc S4.6.4: the sustain-pedal raw byte is "not touched" here
+         * -- only a sentinel-0xFE release event is queued (SPEC_LOG.adoc
+         * item41). No voice_sustain_lift() call is needed to model that
+         * queued event: voice_pool_reset() just above already cuts every
+         * voice on every channel unconditionally, so there is nothing left
+         * active for a release event to affect by the time it would fire. */
     }
 }
 
@@ -241,7 +276,7 @@ static void dispatch_cc(int ch, uint32_t cc, uint32_t val) {
         case 101: c->rpn_select = (uint16_t)((c->rpn_select & 0x7F) | ((val & 0x7F) << 7)); break;
         case 120: voice_all_sound_off(ch); break;
         case 121:
-            reset_all_channel_controllers(c);
+            reset_all_channel_controllers(c, val);
             voice_sustain_lift(ch);
             break;
         case 123: voice_all_notes_off(ch); break;
@@ -335,19 +370,22 @@ void synth_sysex(const uint8_t *buf, uint32_t len) {
              * (not a0's low nibble) also keeps this from misfiring on GS
              * Reset (a0=0x40,a1=0x00,a2=0x7F), handled above. SPEC.adoc S4.2.2. */
             if (a0 == 0x40 && a1 >= 0x10 && a1 <= 0x1F && len >= 9) {
-                uint8_t block = a1 & 0x0F;
-                /* Default RCV-CHANNEL table (SPEC.adoc T.8, static table0 at
-                 * VMA 0x1a600: [9,0,1,2,...,8,10,11,...,15]) maps GS Part
-                 * block -> MIDI channel index. RCV CHANNEL itself remains
-                 * unmodeled (no Part indirection layer, SPEC_LOG.adoc #11),
-                 * so this default mapping is what g_channels[] is keyed by. */
-                static const uint8_t block_to_channel[16] = {
-                    9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15
-                };
-                uint8_t ch = block_to_channel[block];
-                if (a2 == 0x02) { /* RCV CHANNEL: not modeled (no Part
-                                      indirection layer, SPEC_LOG.adoc) */
+                uint8_t block = a1 & 0x0F; /* == Part index, SPEC.adoc S4.2.2 */
+                if (a2 == 0x02) { /* RCV CHANNEL: SPEC.adoc S4.5/S4.2.2, T.8 --
+                                    * writes the per-Part physical-channel map
+                                    * (device+0x12fc+part). No shared reset
+                                    * tail here (unlike USE RHYTHM PART below,
+                                    * SPEC.adoc S4.5). SPEC_LOG.adoc item44. */
+                    part_to_channel[block] = buf[7];
                 } else if (a2 == 0x15) { /* USE RHYTHM PART */
+                    /* Resolves through the RCV CHANNEL map, so an earlier
+                     * remap of this Part is honored (SPEC.adoc S4.5/T.8,
+                     * SPEC_LOG.adoc item44, closes item11). Masked to 0-15:
+                     * S4.2.2 documents this field's domain as a channel
+                     * index; the mask only guards g_channels[]'s bound
+                     * against a data byte a malformed message sent outside
+                     * that documented range (SPEC_LOG.adoc item44). */
+                    uint8_t ch = part_to_channel[block] & 0x0F;
                     g_channels[ch].is_rhythm = buf[7] ? 1 : 0;
                     /* SPEC.adoc S4.5: this message falls into the shared reset
                      * tail, so it fires a device-wide controller reset. Bank

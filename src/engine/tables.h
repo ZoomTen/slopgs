@@ -30,8 +30,14 @@ extern int32_t g_table_lin[128];
  * (gain is computed directly via rt_pow, see SPEC_LOG.adoc). */
 extern int32_t g_table_dbamp[1001];
 
-/* Table C (0x1a9d8), 201 entries, envelope/time-progress shaping curve whose
- * exact consumer SPEC.adoc itself marks [O]. Built for completeness, unused. */
+/* Table C (0x1a9d8), 201 entries, envelope/time-progress shaping curve.
+ * SPEC.adoc S3.4.2/T.4: linear-amplitude ratio -> position on the envelope's
+ * normalized 96 dB scale, read only by the attack segment of the original's
+ * envelope evaluator (`0x18b15`, SPEC_LOG.adoc item46). Not a shape gap: the
+ * port's attack ramps linearly in amplitude, algebraically the same curve
+ * this table's map inverts to (SPEC_LOG.adoc item46). Unused by default;
+ * see voice.c's ENV_ATTACK_TABLE_C for the guarded, measured-not-shipped
+ * quantized-attack variant that does read it. */
 extern int16_t g_table_envshape[201];
 
 /* Table D (0x1a7d8), 256 entries, sine LFO, amplitude +-100. Built for

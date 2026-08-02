@@ -46,7 +46,8 @@ note released late fades out sooner, not more slowly.
 Velocity is not only a volume control: on patches whose sample collection
 asks for it, a harder-struck note also *attacks* faster. In `gm.dls` 27 of
 the 235 instruments do. Note number behaves the same way for decay — see
-§<<quirks-envelopes>>.
+§<<quirks-envelopes>>. Every voice also has a hard loudness ceiling — see
+§<<quirks-ceiling>>.
 
 `An kk vv` — Polyphonic Key Pressure (aftertouch)::
 **Not recognized.** Received, no audible effect.
@@ -183,22 +184,27 @@ LSB ignored.
 Recognized. Releases (does not hard-cut) every sounding note on the
 channel, **bypassing** a held sustain pedal.
 
-`Bn 79 00` — Reset All Controllers::
-Recognized
-Bank/Program and the RPN/NRPN selection are left untouched,
-otherwise re-arms:
+`Bn 79 vv` — Reset All Controllers::
+Recognized. Bank/Program and the RPN/NRPN selection are left untouched.
+Expression, Pitch Bend, Modulation and the sustain pedal always re-arm;
+Channel Volume and Pan only re-arm if the value byte `vv` is **non-zero**:
 +
 [options="header",cols="2,4"]
 |===
 |Parameter
 |Value
-|Channel Volume|100
-|Pan|64 (center)
+|Channel Volume|100 — only if `vv` is non-zero
+|Pan|64 (center) — only if `vv` is non-zero
 |Expression|127
 |Pitch Bend|8192 (center)
 |Modulation|0
 |Sustain pedal|Released
 |===
++
+Nearly every MIDI source sends this message as `Bn 79 00` — a value byte of
+`0` is the convention for this controller. For that message, Channel Volume
+and Pan are left exactly as they already were; only Expression, Pitch Bend,
+Modulation and the sustain pedal actually reset.
 
 [WARNING]
 --
@@ -763,6 +769,16 @@ at the same slope whatever level it is released from, and a patch's authored
 decay and release times mean "the time to fall 96 dB". Both are also
 *scaled per note* by the sample collection: higher notes decay faster, and on
 some patches harder-struck notes attack faster.
+
+[#quirks-ceiling]
+=== Loudness ceiling
+
+Every voice has a hard output ceiling, reached before velocity, Channel
+Volume and Expression all read their maximum. The loudest span of the
+velocity/volume range — how wide it is depends on the patch's own authored
+sensitivity — collapses to a single level: past the ceiling, a harder hit no
+longer plays louder, even though it may still play differently (a faster
+attack, a different sample layer, and so on).
 
 [#s5]
 == Presets

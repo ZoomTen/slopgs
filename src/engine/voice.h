@@ -160,6 +160,11 @@ typedef struct Voice {
     EnvStage env_stage;
     double env_level;         /* 0..1 amplitude envelope multiplier */
     double env_attack_step;   /* linear increment per sample during attack */
+    int32_t env_attack_elapsed; /* ENV_ATTACK_TABLE_C only: samples advanced
+                                    so far into the attack segment */
+    int32_t env_attack_samples; /* ENV_ATTACK_TABLE_C only: attack segment
+                                    length in samples (>=1 whenever
+                                    env_stage==ENV_ATTACK) */
     double env_decay_coef;    /* SPEC.adoc S5.1.2.1: geometric per-sample ratio
                                   toward env_sustain_level (env_level *=
                                   env_decay_coef), same mechanism as

@@ -134,7 +134,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
     unsigned long frames[2] = {0, 0};
     long long energy[2] = {0, 0};
     for (int pass = 0; pass < 2; pass++) {
-        synth_reset();
+        synth_construct();
         if (smf_load(smf, smf_len) != 0) { fprintf(stderr, "selftest: smf_load failed\n"); return 1; }
         smf_set_loop(0);
 
@@ -195,7 +195,7 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * CHUNK-sized probe render above had consumed -- a fixed frame count, so
      * half as much real time at RESAMPLE_FACTOR=2, which shifted the window and
      * cost one voice (47/48). */
-    synth_reset();
+    synth_construct();
     for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
     for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(buf, CHUNK); /* ~7.4s */
     int surviving = 0;
@@ -229,7 +229,7 @@ int main(int argc, char **argv) {
     const char *out_path = argv[5];
 
     tables_build();
-    synth_reset();
+    synth_construct();
     smf_set_loop(0);
 
     int init_ret = 0;
@@ -251,7 +251,7 @@ int main(int argc, char **argv) {
             emit(1, init_ret, 0x7fffffff, 0, 0, "could not read smf");
             return 2;
         }
-        synth_reset();
+        synth_construct();
         load_ret = smf_load(smf, smf_len);
     }
 

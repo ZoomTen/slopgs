@@ -59,11 +59,18 @@ void tables_build(void) {
         g_table_dbamp[i + 1000] = trunc_i32(v);
     }
 
-    /* Table C: envelope/time-progress shaping curve, i = 0..200 */
+    /* Table C: envelope/time-progress shaping curve, i = 0..200. SPEC.adoc
+     * T.4: t[i] = trunc(1000 + log10((i/200)^2) * 10000 * (1/96)). The two
+     * .rdata fraction constants driving this loop are float32 in the
+     * original (0x11d04 = 1/200, 0x11cfc = 1/96); 1/200 in particular is
+     * the float32 0.004999999888241291, not the exact decimal 0.005 --
+     * using the exact decimal changes t[200] from SPEC's 999 to 1000, so
+     * the rounding is load-bearing and is reproduced here as the exact
+     * double promotion of that float32 bit pattern. */
     g_table_envshape[0] = 0;
     for (i = 1; i <= 200; i++) {
-        double x = (double)i / 200.0;
-        double v = 1000.0 + (x * x * 10000.0) * (1.0 / 96.0);
+        double x = (double)i * 0.004999999888241291; /* 1/200 float32, 0x11d04 */
+        double v = rt_log10(x * x) * 10000.0 * 0.010416666977107525 + 1000.0; /* 1/96 float32, 0x11cfc */
         g_table_envshape[i] = (int16_t)trunc_i32(v);
     }
 

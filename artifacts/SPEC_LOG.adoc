@@ -190,6 +190,1064 @@ are history, not current measurements.
 
 '''
 
+[#item48]
+== 2026-08-02 — The rejected `+1200`/`GAIN_CEILING` pairing is a pure uniform level shift, and it overshoots by ~3 dB rather than being wrong in kind — item48, NOT SHIPPED (diagnostic only)
+
+**Status: no SPEC, test or engine change.** This is a measurement that
+narrows xref:#item47[item 47]'s open question; the trim it identifies is
+deliberately not landed, because it would be a fitted `[F]` value standing
+in for a term that should be found structurally.
+
+=== The pairing changes level and nothing else
+
+`ATTEN_PLUS_1200=1` adds `+1200` (+12.00 dB) to `atten_const_hdb` and
+re-anchors `gain_linear` on `GAIN_CEILING` (`32767/65536`, −6.02 dB), for a
+net **+5.98 dB**. Sweeping a compensating trim on the `atten_const_hdb`
+term over the full 68-item corpus:
+
+[options="header"]
+|===
+| net gain | MEAN r | MEAN residual
+| +5.98 dB (as gated) | 0.927 | −28.63 dB
+| +4.98 dB | 0.930 | −30.54 dB
+| +3.98 dB | 0.932 | −31.59 dB
+| **+2.98 dB** | **0.932** | **−32.39 dB**
+| +1.98 dB | 0.931 | −32.09 dB
+| +0.98 dB | 0.930 | −31.72 dB
+| −0.02 dB | 0.928 | −31.53 dB
+|===
+
+The last row reproduces the default build's MEAN exactly (0.928 / −31.53
+dB). The pairing therefore introduces **no structural change** — no altered
+curve shape, no altered composition order — only a uniform gain. Whatever
+is wrong with it is a magnitude, not a mechanism.
+
+=== The corpus optimum is near +3 dB, and it beats the default build
+
+At net +2.98 dB the corpus is **0.86 dB better** than the default build
+(−32.39 vs −31.53) with `r` 0.928 → 0.932; 12 items improve by >1 dB and 5
+regress. The basin is smooth and single-peaked across the seven points
+above, not a needle. Largest movers against the default build:
+
+[options="header"]
+|===
+| item | default | net +2.98 dB | Δresidual
+| `45_release_from_level` | −25.71 dB | −48.41 dB | **−22.70 dB (better)**
+| `27_gain_curves` | −27.51 dB | −49.61 dB | **−22.10 dB (better)**
+| `26_other_gains` | −29.53 dB | −35.80 dB | −6.27 dB (better)
+| `50_gain_ceiling` | −27.13 dB | −32.65 dB | −5.52 dB (better)
+| `41_sustain_decay_curve` | −51.01 dB | −37.68 dB | **+13.33 dB (worse)**
+| `onestop_extract` | −24.70 dB | −20.64 dB | +4.06 dB (worse)
+| `39_high_sustain_decay` | −35.39 dB | −33.14 dB | +2.25 dB (worse)
+|===
+
+This is consistent with xref:#item40[item 40]'s knee measurement, which put
+the default build 1.4–3.0 dB *under* the reference and the `+5.98 dB`
+pairing ~3 dB *over* it.
+
+=== What this changes about the open question
+
+xref:#item47[Item 47] asked for a term-by-term comparison of this engine's
+`atten_hdb` composition against the driver's `atten_sum`. That is still the
+right search, but it is now a search for a **single missing attenuation of
+roughly 300 hundredths of a dB**, not for a diffuse composition error: any
+correct answer has to leave the shape alone, because the shape is already
+right.
+
+Two leads, both unresolved here:
+
+. The re-anchor used `GAIN_CEILING = 32767/65536` (a ÷2), but the decoded
+  table ceiling is `4095 = floor(32767/8)` (a ÷8). That choice was the
+  implementation's, not SPEC's, and ÷2-versus-÷8 is 12.04 dB, so the
+  full-scale reading of the raw gain register is worth re-deriving before
+  any trim is entertained.
+. `41_sustain_decay_curve` is the worst regressor at both +5.98 dB
+  (+26.22) and +2.98 dB (+13.33) and does not behave like a level error;
+  it dominates the mean penalty and wants isolating on its own.
+
+'''
+
+[#item47]
+== 2026-08-01 — S3.5's `+1200`/`GAIN_CEILING` re-anchor pairing: MEASURED and REJECTED by the corpus gate; the hdB→raw-gain table finding it rests on (`0x18dea`/`0x1bfc0`, ceiling `4095`, resolves `[#o16]`) stays SHIPPED as documentation — item47
+
+**Status: the driver finding SHIPPED, the engine pairing built on it did
+NOT.** `src/engine/voice.c` briefly carried the disassembly-confirmed
+`+1200` (xref:#item35[Item 35]'s deferred constant) in `atten_const_hdb`,
+paired with re-anchoring `voice_update_gain`'s exponential on `GAIN_CEILING`
+instead of an implicit `1.0`. Test 173 went RED→GREEN, but two independent
+full 68-item `artifacts/score.py` runs against the pre-item47 baseline
+(`after_i3.txt`) both show the corpus-wide MEAN moving backward, and the
+item's own falsifiable prediction (the velocity knee, below) overshot
+rather than landed. **The pairing is reverted from the default build.**
+The `+1200` itself is not in doubt — it is real, `[A:0x19bcd]`, confirmed
+at the disassembly level and unchanged by this rejection — the conclusion
+is that this engine's `atten_hdb` composition is not yet on the same
+footing as the driver's `atten_sum`, so grafting the `+1200` plus the
+`GAIN_CEILING` re-anchor onto it does not reproduce the driver. Kept behind
+`ATTEN_PLUS_1200` (default `0`; gates both the `atten_const_hdb` line in
+`voice_note_on` and the `gain_linear` line in `voice_update_gain` as one
+pair) so the A/B is one `-D` away for a future pass, not a re-implementation:
+`gcc -std=c11 -O2 -Wall -Wextra -Isrc -DATTEN_PLUS_1200=1 -o ab-on
+src/cli.c src/engine/*.c -lm`.
+
+=== Corpus measurement
+
+Full 68-item `artifacts/score.py`, before (matches `after_i3.txt`, the
+pan-law/item45 baseline; byte-identical to the reverted default build) vs.
+`-DATTEN_PLUS_1200=1`:
+
+[options="header"]
+|===
+| item | before r / residual | after r / residual | Δresidual
+
+| MEAN | 0.928 / −31.53 dB | 0.927 / −28.63 dB | **+2.90 dB (worse)**
+| 41_sustain_decay_curve | 0.995 / −51.01 dB | 0.953 / −24.79 dB | **+26.22 dB (worse)**
+| 24_gain_staging | 0.987 / −37.30 dB | 0.979 / −22.44 dB | **+14.86 dB (worse)**
+| 03_velocity | 0.965 / −47.38 dB | 0.958 / −33.24 dB | **+14.14 dB (worse)**
+| 19_prior_art | 0.977 / −46.23 dB | 0.976 / −33.70 dB | **+12.53 dB (worse)**
+| 44_release_shape | 0.976 / −43.59 dB | 0.971 / −32.66 dB | **+10.93 dB (worse)**
+| 39_high_sustain_decay | 0.984 / −35.39 dB | 0.936 / −24.83 dB | **+10.56 dB (worse)**
+| 17_master_volume | 0.993 / −42.41 dB | 0.991 / −32.07 dB | **+10.34 dB (worse)**
+| 04_envelope | 0.983 / −40.63 dB | 0.978 / −30.37 dB | **+10.26 dB (worse)**
+| 26_other_gains | 0.995 / −29.53 dB | 0.990 / −34.83 dB | −5.30 dB (better)
+| 50_gain_ceiling | 0.988 / −27.13 dB | 0.989 / −30.68 dB | −3.55 dB (better)
+| 07_pan_volume | 0.935 / −42.15 dB | 0.933 / −45.04 dB | −2.89 dB (better)
+|===
+
+33 of the 68 items regress by more than 1 dB; 8 improve by more than 1 dB.
+(The rejection was first surfaced with a hand count of 22 regressed items;
+re-counted directly off the two score.py runs above during this revert and
+corrected to 33 — the direction and the reject decision are unchanged, the
+earlier count was simply short.) Pan-law unit tests (175/178/179/180) stay
+GREEN throughout — the pan tests' own fixtures set `atten_const_hdb`
+directly and read dB-relative-to-centre ratios, which this item's uniform
+re-anchor does not disturb.
+
+=== The velocity knee — measured, not where predicted
+
+xref:#item40[Item 40] measured the reference's flat-top onset at velocity
+**96** against the (pre-item47) engine's **108**. The same probe-50-section-A
+measurement (RMS-envelope alignment, 250 ms peak window per case) with
+`ATTEN_PLUS_1200=1`:
+
+[options="header"]
+|===
+| | vel 8 | 16 | 32 | 48 | 64 | 80 | 96 | 104–127
+| reference (dBFS) | −48.58 | −36.36 | −24.35 | −17.29 | −12.30 | −8.44 | −6.29 (flat) | −6.29
+| ATTEN_PLUS_1200=1 (dBFS) | −45.50 | −33.42 | −21.37 | −14.33 | −9.33 | −6.29 (flat) | −6.29 | −6.29
+|===
+
+The knee **overshoots to velocity 80**, not 96 — 16 steps early, versus 12
+steps late before this item. The tracking region also sits a near-uniform
+**+3 dB** above the reference (was ~1.4–3.0 dB *below* it,
+xref:#item40[Item 40]'s own table). The falsifiable prediction this item
+made is measured, not confirmed: the knee moved, but past the target, not
+onto it. This is the second, independent line of evidence for rejection —
+the corpus mean regression above is the first.
+
+=== What a future pass should check
+
+The `+1200` and the `0x18dea`/`4095` table are both `[A]`, not guesses; the
+gap is in how this engine's own `atten_hdb` gets *composed* before it
+reaches that shape, not in the shape itself. A future pass should compare,
+term by term, this engine's `atten_hdb = g_master_vol_hdb + chan_vol + expr
++ v->atten_const_hdb` (`voice_update_gain`) against the driver's own
+`atten_sum` accumulation at the disassembly level — master volume, channel
+volume, expression (`g_table_vel`), and region/velocity attenuation each
+have their own conversion path, and item47's regression shape (two items
+off by >25 dB, most by 5–15 dB, a few improving) reads like a second,
+uncorrected composition error compounding with the `+1200`, not like the
+`+1200` being wrong on its own. `xref:#item40[Item 40]`'s already-noted
+"~1.6–1.7 dB hotter" flat-top residual is the most likely place to start.
+
+=== The `+1200` was never in doubt — what it feeds into was
+
+xref:#item35[Item 35] identified the constant and deferred it: *"it
+interacts with the still-`[O]` mapping from hundredths-of-a-dB to the raw
+Q16 gain register (§6.4.5)... so it is plainly compensated somewhere
+downstream"* — but no compensation was ever found in `src/`, because none
+exists there (`GAIN_TRIM_DB` is confirmed `0.0` in the shipped source, and
+no other code path touches `atten_hdb` before the exponential). The
+"downstream" that compensates for it is inside the driver's own conversion
+table, not this project's engine.
+
+=== The hdB→raw-gain conversion, decoded — resolves `[#o16]`
+
+`0x18dea` is the function every `atten_hdb` value (region attenuation,
+velocity term, channel volume/expression, master volume, pan — all summed
+in the hundredths-of-a-dB domain per xref:SPEC.adoc#s3-5[§3.5]) is run
+through before it becomes the persistent gain state at `voice+0x2c`/`+0x30`:
+
+[source,c]
+----
+i = atten_hdb / 10;              // 0x18df6: idiv 10
+if (i < -1000) i = -1000;        // 0x18dfd/0x18dff
+if (i >= 0)     i = 0;           // 0x18e05/0x18e07
+raw_gain = TABLE[i];             // 0x18e0b: mov eax,[eax*4+0x1bfc0]
+----
+
+`TABLE` is **not a new table** — it is xref:SPEC.adoc#s3-3-1[§3.3.1]'s
+already-`[A]` "dB→linear amplitude" table at `0x1bfc0` (`n = −1000..0`,
+1001 entries, `trunc(4095·sqrt(10^(n/100)))`), read here with the plain
+attenuation-sum index that section left unconnected to any consumer. The
+domain clamp above (`i` held to `[−1000, 0]`) is exactly what makes
+`atten_hdb > 0` harmless: it never indexes past the table's own built-in
+ceiling, `TABLE[0] = 4095`.
+
+Combined with xref:SPEC.adoc#s6-4-5[§6.4.5]'s already-confirmed `<<3`
+rest-to-active scaling and the Q16 multiply (`raw_gain<<3` divided by
+`65536`), `TABLE[0] = 4095` is the field's real, driver-defined ceiling:
+`4095·8 / 65536 = 32760/65536 ≈ 0.499969` of computed unity — matching
+xref:SPEC.adoc#s6-4-5-1[§6.4.5.1]'s independently-derived hardware bound
+(`32767/65536 ≈ 0.499985`, from the `packssdw` signed-16 lane alone) to
+within **7 parts in 65536, ~0.002 dB**. `4095 = floor(32767/8)`: the
+table's own scale constant (float32 `4095.0`
+at `0x11cd8`, byte-decoded `00 f0 7f 45`) is the largest integer whose
+`<<3` never trips the `packssdw` saturation the mixer already enforces
+downstream — not a coincidence, a second, independent confirmation of the
+same bound from the table-builder side rather than the mixer side.
+
+**`[#o16]` is answered: the raw gain field's absolute fixed-point unit is
+not an independent Q-format choice at all — it is this table's own output,
+whose ceiling is forced to coincide with the `packssdw` bound by
+construction.** Retired from the open-questions register; see
+xref:SPEC.adoc#s6-4-5[§6.4.5] for the resolved passage.
+
+=== Why the `+1200` does not cancel
+
+`TABLE[i=0] = 4095` with no bias term in the table's own formula — the
+table's zero point is `atten_hdb = 0`, not `atten_hdb = 1200`. So:
+
+----
+raw_gain = TABLE( clamp( (atten_sum_before_1200 + 1200) / 10, -1000, 0 ) )
+----
+
+For any note whose un-shifted sum is within 12 dB of "fully open"
+(`atten_sum_before_1200 > -1200`), the `+1200` pushes the index past the
+table's domain and the result clamps to `4095` — this is the mechanism, not
+a flat +12 dB everywhere. Only deep in the attenuation range
+(`atten_sum_before_1200 < -1200`, below the table's own domain floor) does
+it act as an uncancelled, unclamped shift.
+
+=== The paired engine edit — kept behind `ATTEN_PLUS_1200`, default off
+
+[source,c]
+----
+// default (ATTEN_PLUS_1200 == 0, voice.c ~1304, ~919)
+v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb;
+double gain_linear = rt_pow(10.0, ((double)atten_hdb/100.0 + GAIN_TRIM_DB)/20.0);  // GAIN_TRIM_DB == 0.0, inert
+
+// -DATTEN_PLUS_1200=1 (rejected pairing, this item)
+v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb + 1200;   // SPEC S3.5 [A:0x19bcd]
+double gain_linear = GAIN_CEILING * rt_pow(10.0, (double)atten_hdb / 2000.0);
+----
+
+Both lines are gated on the same `ATTEN_PLUS_1200` macro so the pair can
+only be on or off together, never mixed. `GAIN_TRIM_DB` stays as the
+default path's hook — both prior attempts to fit it nonzero
+(xref:#item39[Item 39], `-1.7`; xref:#item40[Item 40], `+1.37`) were
+already superseded before this item (neither touched the domain-clamp
+*shape* this item's `-DATTEN_PLUS_1200=1` path implements, and
+`score.py`'s residual is level-normalized enough that a flat trim barely
+moved it), so it is left at its confirmed `0.0` rather than reintroduced as
+a knob. The `GAIN_CEILING` constant used on the `ATTEN_PLUS_1200=1` side
+(`32767.0/65536.0`) is kept rather than replaced with the table's exact
+`4095.0/8192.0` — the two agree to ~0.002 dB (see the decode above) and
+`GAIN_CEILING` is also the number xref:SPEC.adoc#s6-4-5-1[§6.4.5.1] derives
+independently from the mixer's own `packssdw` bound, so keeping it does not
+trade one unverified constant for another, if a future pass gets this
+pairing working.
+
+`unit.c` test 174 ("region's own (wsmp) attenuation is summed once")
+tracks the DEFAULT build, i.e. `atten_const_hdb - scaled ==
+region.attenuation_hdb` (the `+1200` is not part of it). Test 173
+("atten_const_hdb == scaled + region.attenuation_hdb + 1200") asserts
+`SPEC.adoc`'s own summed pseudocode directly and stays RED against the
+default build — an intentional, standing failure, not weakened or removed,
+per this project's rule that `SPEC.adoc` wins over `src/` and a `unit.c`
+assertion is never loosened to match what the engine happens to do.
+
+[#item46]
+== 2026-08-01 — Table C's builder was missing `log10` (a parabola, not a dB curve); its sole reader is EvalEnvelope's attack branch, and a quantized-attack A/B did not improve the corpus — item46, SHIPPED (table fix); quantized-attack variant MEASURED, NOT SHIPPED (default OFF)
+
+**Status: SHIPPED** for the `tables.c` fix (tests 8/10 RED->GREEN). **MEASURED,
+NOT SHIPPED** for the optional `ENV_ATTACK_TABLE_C` quantized-attack variant
+-- default stays OFF, see the A/B section below.
+
+**Path:** `artifacts/INVESTIGATE.adoc` `[#i1]`; SPEC.adoc
+xref:SPEC.adoc#s3-4-2[S3.4.2], xref:SPEC.adoc#t4[T.4] (both already correct,
+no SPEC.adoc change this pass); `src/engine/tables.c` (Table C builder),
+`src/engine/voice.c` (`ENV_ATTACK_TABLE_C` guard).
+
+**Tests:** 8 (byte-exact 201-entry Table C dump vs. SPEC.adoc's golden
+array), 10 (SPEC's own `t[200] -> 999` check). Both RED before, GREEN after.
+
+=== The bug
+
+`tables.c`'s Table C loop had no `log10` call at all -- a parabola
+(`1000 + x^2*10000/96`), not SPEC's dB curve (`1000 + log10(x^2)*10000/96`).
+Transcription slip; `tables.h`'s own comment already named the correct
+formula.
+
+[source,c]
+----
+// before (tables.c:62-68) -- no log10, never goes below 1000
+double x = (double)i / 200.0;
+double v = 1000.0 + (x * x * 10000.0) * (1.0 / 96.0);
+
+// after -- SPEC.adoc T.4, using rt_log10 (this file's own convention for
+// every other log-based table here: g_table_vel, g_table_lin and
+// g_table_companding all already call rt_log10, not libm)
+double x = (double)i * 0.004999999888241291; // 1/200 as float32, 0x11d04
+double v = rt_log10(x * x) * 10000.0 * 0.010416666977107525 + 1000.0; // 1/96 float32, 0x11cfc
+----
+
+**The float32 constants are load-bearing, not cosmetic.** The `.rdata`
+pool stores `1/200` as float32 `0.004999999888241291`, not the exact
+decimal `0.005`. Confirmed by direct computation of both variants against
+`src/unit.c`'s golden 201-entry dump:
+
+[options="header"]
+|===
+| variant | mismatches vs. golden (201 entries) | t[1] | t[200]
+| double `1.0/200.0`, `1.0/96.0` | 1 (index 200 only) | 520 | **1000** (wrong)
+| float32 constants as stored | **0** | 520 | **999**
+|===
+
+`rt_log10` (this project's from-scratch log10, already used by three other
+tables in this same file) reproduces the same zero-mismatch result as
+libm's `log10` at every one of the 201 entries -- confirmed by direct
+substitution, not assumed; no accuracy gap at this table's resolution.
+
+**Correcting the worklist's own error:** `artifacts/INVESTIGATE.adoc`
+`[#i1]` states "SPEC's table is monotonic-in-dB from `t[1] = -22`" -- that
+figure appears nowhere in SPEC.adoc's own T.4 dump or in `unit.c`'s golden
+array; both agree `t[1] = 520`. Not propagated here.
+
+=== What reads Table C
+
+Exhaustive whole-image search (every hex literal in the disassembly, plus
+a raw-byte scan of the whole 56,576-byte file, independently) finds exactly
+three references to the `0x1a9d8..0x1ab6a` range: the builder's zero-init
+and store loop (already known), and one read, `movswl
+0x1a9d8(,%eax,2),%eax` at `0x18b15`, inside the attack branch of the
+shared envelope evaluator `EvalEnvelope` (`0x18a7a`):
+
+[source,c]
+----
+// EvalEnvelope(seg, now), attack branch                        // 0x18ad3-0x18b24
+ratio_permille = elapsed * 1000 / seg->attackDur;   // 64-bit mul+div  // 0x1049c, 0x10490
+idx            = ratio_permille / 5;                // 64-bit div      // 0x10490
+level          = g_table_envshape[idx];             // sign-extended int16 // 0x18b15
+return level;                                        // 0..1000 on the 96 dB scale
+----
+
+This matches SPEC.adoc S3.4.2's evaluator table row verbatim (`attack |
+TableC[(elapsed*1000/attackDuration)/5] | 0x18ad3-0x18b24`). **SPEC.adoc
+already states this correctly; no SPEC.adoc change.** The table is not
+dead in the original -- only in this project's engine, where nothing reads
+`g_table_envshape` still (unchanged by this pass; see below).
+
+=== The question behind the bug: is the port's attack shape wrong?
+
+`artifacts/INVESTIGATE.adoc`'s `[#i1]` speculates the port's attack might
+be shape-wrong somewhere `voice.c`'s `ENV_SPAN_DB` "papers over." **Checked
+and rejected.** Table C's map, `L(ratio) = 1000*(1+20*log10(ratio)/96)`,
+inverts to `ratio = 10^(((L/1000)-1)*96/20)` -- a level advancing linearly
+in amplitude and a level read out of Table C describe the *same* curve;
+Table C is a representation change (amplitude -> permille-of-96dB), not a
+shape change. `voice.c`'s attack (`env_level += env_attack_step`,
+`env_attack_step = 1/(attack_s*RENDER_RATE)`) already advances linearly in
+amplitude, in double precision -- exactly the SPEC-documented pre-image of
+Table C's map. `voice.c` also already computes Table C's own formula
+analytically elsewhere (`start_release`'s fast-release path: `1.0 +
+20*rt_log10(env_level)/ENV_SPAN_DB`), so the formula itself is not
+unfamiliar to this file.
+
+**Confirmed independently, not just algebraically:** a scratch program
+stepped `voice.c`'s continuous ramp and a Table-C-quantized readout
+(`10^(((TableC[idx]/1000)-1)*96/20)`) sample-by-sample across six attack
+durations (3 ms .. 3 s) and measured the gap between them at every sample:
+
+[options="header"]
+|===
+| attack duration | samples | max \|amplitude diff\| | rms diff
+| 3 ms | 66 | 0.0117 | 0.0051
+| 10 ms | 221 | 0.0162 | 0.0072
+| 50 ms | 1103 | 0.0144 | 0.0063
+| 200 ms | 4410 | 0.0146 | 0.0061
+| 1 s | 22050 | 0.0146 | 0.0061
+| 3 s | 66150 | 0.0147 | 0.0061
+|===
+
+The gap is bounded (~0.015 peak, ~0.006 rms) and does not grow with
+duration -- the signature of a fixed 201-step *quantization* gap, not a
+diverging shape error. **`ENV_SPAN_DB = 96.0` is correct and is not
+papering over a shape bug; the only real difference is quantization**: the
+original's attack level can take at most 201 distinct values (`int16`,
+`trunc()`-quantized, indexed by `permille/5`), `voice.c`'s is continuous.
+
+=== A/B: does the quantization matter?
+
+Implemented behind `ENV_ATTACK_TABLE_C` (default `0`, the same
+`-D`-overridable pattern this file already uses for
+`EG2_LINEAR_SEGMENTS`/`RELEASE_RATE_MULT`/etc.) in `src/engine/voice.c`:
+when `1`, `voice_step_envelope`'s `ENV_ATTACK` case tracks elapsed/total
+samples and reads `g_table_envshape` through the inverse-dB formula above
+instead of the linear increment; it lands on exactly `1.0` once
+`elapsed>=attackSamples` (matching `0x18ac0-0x18ad1`'s own transition,
+which leaves the attack branch -- and Table C -- entirely at that point,
+rather than ever reading the table at `ratio==1.0`, where `t[200]=999`
+would otherwise leave a small permanent gain deficiency going into decay).
+
+`.venv/bin/python artifacts/score.py` (default OFF) vs. a second binary
+built `-DENV_ATTACK_TABLE_C=1` via `MSGS_RENDER=...`, both against the
+`after_i3.txt` baseline (pan law, item45, landed since `base.txt`):
+
+[options="header"]
+|===
+| item | r (OFF) | r (ON) | residual (OFF) | residual (ON) | Δresidual
+| 04_envelope (targeted) | 0.983 | 0.983 | -40.63 | -40.58 | +0.05 (worse)
+| 32_ramp_shape (targeted) | 0.902 | 0.902 | -46.94 | -46.94 | 0.00
+| 41_sustain_decay_curve (targeted) | 0.995 | 0.995 | -51.01 | -50.90 | +0.11 (worse)
+| 44_release_shape (targeted) | 0.976 | 0.976 | -43.59 | -43.44 | +0.15 (worse)
+| MEAN (68 items) | 0.928 | 0.928 | -31.53 | -31.52 | +0.01 (worse)
+|===
+
+**None of the four targeted envelope items improved**; `r` is unchanged to
+three decimals on all four, and the residual moves slightly worse (less
+negative) on three of the four and is unchanged on the fourth
+(32_ramp_shape). The mean also moves marginally worse. Per this project's
+own ship rule (targeted items must improve AND the mean must not regress),
+**the quantized variant is not shipped**; `ENV_ATTACK_TABLE_C` stays `0` by
+default. This is not attributed to a shape difference (the previous
+section already establishes both curves converge to the same bounded gap
+regardless of duration) -- most likely `render.c`'s own segment-endpoint
+gain interpolation (`GAIN_SEGMENT_FRAMES`-bounded ramps, independent of
+this item) already smooths over sub-segment detail for both variants
+alike, leaving only the small extra residual the log curve's
+discretization adds over a purely linear one. Left for a future pass, not
+chased further here.
+
+=== Corpus expectation confirmed, not assumed
+
+The `tables.c` fix alone is **inert on the corpus**: nothing in
+`src/engine` reads `g_table_envshape` by default (the guarded `voice.c`
+variant above is opt-in, default OFF). Full 68-item `artifacts/score.py`
+run after the `tables.c` fix, diffed byte-for-byte against `after_i3.txt`:
+`diff` exit code 0, zero output -- every `r`/residual/dead figure
+unchanged. Confirmed by running the diff, not inferred from "nothing reads
+it".
+
+'''
+
+'''
+
+[#item45]
+== 2026-08-01 — Pan law now interpolates SPEC's own 9-anchor measured table directly; the `g_table_lin`-pivot law let the near channel rise up to +3.04 dB above unity — item45, SHIPPED per SPEC, corpus-wide mean regresses marginally (see Corpus expectation)
+
+**Status: SHIPPED.** `src/engine/voice.c`'s `voice_update_gain()` no longer
+computes either pan channel from the disassembly-derived `g_table_lin`
+table (the law SPEC_LOG.adoc xref:entry7[Entry 7] shipped); it interpolates
+SPEC.adoc xref:SPEC.adoc#s3-6[S3.6]'s own nine measured CC10 anchors
+directly. This supersedes xref:entry7[Entry 7]'s shipped code — Entry 7's
+own record is kept unmodified, as investigation history, per this file's
+own convention (see xref:entry5[Entry 5]'s superseding note for the
+precedent).
+
+**Path:** `artifacts/INVESTIGATE.adoc` `[#i3]`; SPEC.adoc
+xref:SPEC.adoc#s3-6[S3.6] (the 9-anchor `[M: probe 25]` table — already
+correct, no SPEC.adoc change this pass); `src/engine/voice.c:766-890`
+(comment block + `voice_update_gain`).
+
+**Tests:** 175, 178, 179, 180 (`src/unit.c`, S3.6 block — renumbered from
+173/176/177/178 earlier today, per item43's date; assertion text
+unchanged). All four RED before this change, GREEN after. 176/177
+(direction-only checks) were already green and stay green. 173 (S3.5/
+S3.10's unrelated `+1200` constant, item35) stays red, untouched by this
+pass.
+
+=== The two defects
+
+[options="header"]
+|===
+| | src (before) | SPEC (measured)
+| **Shape** — CC10=127 (hard right), near (L) channel | +3.04 dB | 0.00 dB (unity)
+| **Floor** — CC10=0 (hard left), far (R) channel | −22.03 dB | −20.20 dB
+|===
+
+The shape defect came from `gainA_hdb = g_table_lin[127-pan] -
+g_table_lin[63]`: subtracting a fixed pivot from a monotonic table does
+not clamp the near channel at 0 dB, so panning hard let it exceed unity by
+up to 3.04 dB (INVESTIGATE.adoc `[#i3]`: 8 of 9 anchors wrong on at least
+one channel). The floor defect is independent: `g_table_lin`'s own
+hardcoded index-0 floor is −25.00 dB, about 1.8 dB deeper than the
+−20.20 dB SPEC actually measures at CC10=0.
+
+=== Candidates tried and rejected
+
+Three cheaper repairs of `g_table_lin` (reindex, stretch, rescale) were
+tried before the shipped law and numerically fail SPEC's own 9 anchors at
+this test's own 0.5 dB tolerance:
+
+[options="header"]
+|===
+| Candidate | Change | Max \|error\| vs SPEC's 9 anchors
+| A1 | reindex only (reference `[127]` instead of `- [63]`), floor clamp −2020 hdb | 17.24 dB
+| A2 | reindex across the table's full 0..127 span instead of a half | 2.19 dB
+| B | A1's reindex + uniform dB rescale to hit the −20.2 dB floor | 9.48 dB
+|===
+
+A1 leaves the near channel flat and never reaches the floor (the
+half-table span it draws from only covers 0..−3.04 dB). A2 reaches the
+floor but loses the wide flat centre plateau SPEC requires (already
+−1.26 dB by CC10=16). B amplifies A1's same too-steep-too-early shape
+instead of fixing it. All three confirm SPEC.adoc S3.6's own claim: "No
+constant-power sin/cos law, and no single simple power or log law,
+produces this shape" — no linear transform of a single log/sqrt table
+clears the tolerance. (Do not re-try these; this is not a tuning gap in
+`g_table_lin`, it is the wrong table for this purpose.)
+
+=== The shipped law
+
+Direct piecewise-linear interpolation of SPEC.adoc S3.6's own 9 measured
+anchors, in the hundredths-of-a-dB domain — exactly the treatment
+SPEC.adoc's own text already licenses for the gaps between anchors
+("linear interpolation ... reproduces the anchors exactly", `[F]`; no
+SPEC.adoc change needed, this pass only implements what SPEC already
+says):
+
+[source,c]
+----
+static const uint8_t PAN_CC10[9]  = { 0, 16, 32, 48, 64, 80, 96, 112, 127 };
+static const int16_t PAN_L_HDB[9] = { 0, 0, 0, 0, 0, 0, -141, -452, -2021 };
+static const int16_t PAN_R_HDB[9] = { -2020, -420, -120, 0, 0, 0, 0, 0, 0 };
+// pan_lerp_hdb(pan, PAN_L_HDB) / pan_lerp_hdb(pan, PAN_R_HDB) replace
+// gainA_hdb / gainB_hdb; everything downstream (rt_pow(10, hdb/2000.0),
+// GAIN_CEILING clamp) is unchanged.
+----
+
+Hits all 9 anchors, both channels, at 0.00 dB error — not just within
+tolerance — confirmed by a full replica of both `unit.c` S3.6 test blocks
+before landing, and by the real suite after. `g_table_lin` loses its only
+`src/engine` consumer but is kept: SPEC.adoc documents it as a disassembly
+fact, and `unit.c`'s own S T.3 test still asserts its 128 entries
+byte-exact. It stays a non-static global (`tables.h`'s `extern int32_t
+g_table_lin[128]`), so the build stays warning-clean with no unused-symbol
+suppression needed — confirmed, see Corpus expectation below.
+
+=== Not the same mistake as the superseded Entry 5 anchor table
+
+This project shipped an anchor-table/lerp pan law once before
+(xref:entry5[Entry 5], `artifacts/probes/25_pan_law.mid`) and then
+superseded it (xref:entry7[Entry 7]) because probe 25's flat centre
+plateau, **at the level Entry 5 measured it (Sine patch, CC7=127)**, was
+`GAIN_CEILING` saturation (~4.78 dB above the ceiling) rather than the pan
+law itself. The shape of this fix looks the same — it is not the same
+error recurring. `src/unit.c`'s 9-anchor sweep (CC7=40, CC11=127) measures
+a centre gain of **0.099312**, well clear of `GAIN_CEILING`
+(**0.499985**) — confirmed by the test's own diagnostic before it asserts
+anything (`src/unit.c` ~1602-1630). This time the flat centre plateau IS
+the pan law, not the clamp.
+
+=== Corpus expectation
+
+Warning-clean build confirmed: `touch src/engine/*.c && make all 2>&1 |
+grep -i warning` — no output.
+
+Full corpus (`artifacts/score.py`, 68 items). Baseline captured before any
+of today's other work (item41-44 were separately measured
+corpus-neutral, so it remains the right comparison point). Table below
+lists every item whose `r` or spectral residual moved by more than a
+rounding unit; the other 48 items were bit-identical (Δ 0.000 / 0.00 dB)
+and are omitted for length — the full 68-item before/after table is in the
+accompanying report:
+
+[options="header"]
+|===
+| item | r before | r after | residual before | residual after | Δresidual
+| **25_pan_law (targeted)** | 0.982 | **0.984** | −44.38 | **−51.71** | **−7.33**
+| onestop_extract | 0.933 | 0.934 | −22.16 | −24.70 | −2.54
+| doomdrum | 0.915 | 0.917 | −14.02 | −14.91 | −0.89
+| eek_the | 0.858 | 0.858 | −23.94 | −24.24 | −0.30
+| corridor | 0.862 | 0.862 | −22.89 | −23.11 | −0.22
+| 07_pan_volume (watched) | 0.937 | 0.935 | −45.60 | −42.15 | **+3.45**
+| onestop | 0.806 | 0.802 | −23.70 | −20.77 | +2.93
+| serum_opening | 0.857 | 0.852 | −18.52 | −16.62 | +1.90
+| 48_rhythm_part_reset | 0.982 | 0.982 | −35.56 | −34.18 | +1.38
+| Kot_and_A64-GENERAL_SERUM | 0.852 | 0.853 | −19.72 | −18.58 | +1.14
+| HueArme-Weekend | 0.766 | 0.759 | −19.38 | −18.46 | +0.92
+| Strobe-faffaeefafaefae | 0.528 | 0.527 | −17.21 | −16.42 | +0.79
+| wild-sweep | 0.845 | 0.841 | −19.30 | −18.66 | +0.64
+| CrystalOscillator | 0.847 | 0.817 | −22.74 | −22.13 | +0.61
+| 18_key_groups | 0.952 | 0.950 | −16.46 | −16.16 | +0.30
+| 36_kit_key_fallback | 0.916 | 0.915 | −18.60 | −18.45 | +0.15
+| 26_other_gains | 0.993 | 0.995 | −29.66 | −29.53 | +0.13
+| 27_gain_curves | 0.962 | 0.962 | −27.63 | −27.51 | +0.12
+| 11_drums | 0.794 | 0.793 | −21.68 | −21.61 | +0.07
+| flourish | 0.599 | 0.599 | −21.23 | −21.18 | +0.05
+| **MEAN (68 items)** | **0.929** | **0.928** | **−31.58** | **−31.53** | **+0.05**
+|===
+
+**The targeted item improves sharply**: `25_pan_law`'s r +0.002, residual
+−7.33 dB, both directions better — expected, since it is graded directly
+against the same 9-anchor table this law now reproduces exactly.
+
+**The corpus-wide mean marginally regresses**: r 0.929 -> 0.928 (−0.001),
+residual −31.58 -> −31.53 dB (+0.05 dB, worse per this project's own
+convention that residual less negative is worse). This is a broad spread
+of small-to-moderate regressions across `field/` content and
+`07_pan_volume` specifically (the probe xref:entry7[Entry 7]'s law was fit
+against), not one outlier: 15 of the 68 items get worse by more than a
+rounding unit, against 5 that improve. `07_pan_volume` — the second probe
+this item's own briefing named to watch — moves from −45.60 to −42.15 dB
+(+3.45 dB, worse); `CrystalOscillator`'s `r` drop of 0.030 is the largest
+single `r` move in either direction after the targeted item itself.
+Re-run twice to rule out measurement noise: `07_pan_volume`/
+`25_pan_law`/`CrystalOscillator` reproduced identically both times.
+
+**Reported plainly, not resolved.** This file's own rule for `[F:fitted]`
+values applies here even though the 9 anchors are `[M]` measured, not
+fitted: they are SPEC.adoc's own data, not a free parameter, and are not
+retuned to chase this regression. The 9 anchors are correct by
+construction (SPEC's own measured law); the corpus-wide dip is left for a
+future pass to weigh against the fact that xref:entry7[Entry 7]'s
+superseded law matched the corpus better while structurally violating
+SPEC's own stated pan-law shape (near channel exceeding unity) at 8 of 9
+measured anchors.
+
+'''
+
+'''
+
+[#item44]
+== 2026-08-01 — RCV CHANNEL now writes a real per-Part->channel map, and USE RHYTHM PART reads through it — item44, SHIPPED, closes item11
+
+**Status: SHIPPED.**
+
+**Path:** `SPEC.adoc` xref:SPEC.adoc#s4-5[S4.5] (the `RCV CHANNEL`/`USE RHYTHM
+PART` SysEx rows), xref:SPEC.adoc#s4-2-2[S4.2.2] (`device+0x12fc`'s per-Part
+byte array), xref:SPEC.adoc#s4-6-4[S4.6.4] (RCV CHANNEL's reset row: "reload
+static table" for `ResetDevice`/GS Reset/GM System On-Off/System Reset), and
+xref:SPEC.adoc#t8[T.8] (the static default table at VMA `0x1a600`) vs.
+`src/engine/synth.c`'s `a2==0x02` handler, previously a literally empty
+block. Closes xref:item11[item11] (2026-07-26): that entry left `RCV CHANNEL`
+itself unmodeled, so a `USE RHYTHM PART` sent after a `RCV CHANNEL` remap
+still landed on the Part's *default* channel, not the reassigned one.
+
+**Tests:** 125, 126 (`src/unit.c`, `t_synth()` — renumbered from item11's
+123/124 by an unrelated earlier pass today; content unchanged). 125 remaps
+block 1's Part to channel 5 via `RCV CHANNEL`, then sends `USE RHYTHM PART`
+for block 1 and asserts channel 5's `is_rhythm` flips. 126 asserts channel
+0 (block 1's un-remapped default target) is left untouched by that same
+message. Both were RED against the empty `a2==0x02` block; both are GREEN
+now.
+
+=== The fix
+
+A single 16-entry map, `part_to_channel[16]`, added to `synth.c` alongside
+`g_channels[]`. It is the one piece of SPEC's Part-indexed device model this
+change adds — everything else in the engine (`g_channels[]` itself, and
+every array hung off it: volume, pan, bank/program, RPN state, and so on)
+stays indexed directly by physical MIDI channel, exactly as before.
+`part_to_channel` only mediates the one place SPEC's model and the tests
+require it: resolving `USE RHYTHM PART`'s target.
+
+[source,c]
+----
+static const uint8_t kPartChannelDefault[16] =        // SPEC.adoc T.8, VMA 0x1a600
+    { 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15 };
+static uint8_t part_to_channel[16];                    // device+0x12fc, S4.2.2
+
+// synth_reset() -- reached by System Reset (0xFF), GS Reset and GM System
+// On/Off alike (S4.6.4's "RCV CHANNEL: reload static table" row is identical
+// across all four reset triggers, so one reload site covers all of them):
+for (i = 0; i < 16; i++) {
+    channel_defaults(&g_channels[i], i);
+    part_to_channel[i] = kPartChannelDefault[i];       // was: absent
+}
+
+// synth_sysex(), GS DT1 part-parameter address (a0=0x40, a1=0x1<block>):
+block = a1 & 0x0F;                                     // == Part index, S4.2.2
+if (a2 == 0x02) {                                      // RCV CHANNEL
+    part_to_channel[block] = buf[7];                   // was: empty block
+} else if (a2 == 0x15) {                               // USE RHYTHM PART
+    ch = part_to_channel[block] & 0x0F;                // was: fixed block_to_channel[block]
+    g_channels[ch].is_rhythm = buf[7] ? 1 : 0;
+    reset_all_channel_controllers_device();
+}
+----
+
+The old fixed `block_to_channel[16]` local (a copy of the same default
+table, hardwired) is deleted outright — `part_to_channel` already holds
+those same default values until a `RCV CHANNEL` message overwrites one, so
+keeping both would just be two names for the same fact.
+
+`RCV CHANNEL` itself gets no shared-reset-tail call: S4.5's table lists one
+for `USE RHYTHM PART` (`ResetAllChannelControllers`) but not for `RCV
+CHANNEL`, and the existing `USE RHYTHM PART` branch's
+`reset_all_channel_controllers_device()` call is untouched.
+
+**Defensive mask, not a SPEC reading.** `part_to_channel[block] & 0x0F` at
+the `USE RHYTHM PART` read site bounds a byte written verbatim from
+arbitrary SysEx data (`buf[7]`, 0-127) before it is used to index
+`g_channels[16]`. SPEC.adoc's own S4.2.2 row already documents this field's
+domain as "0-15"; a value outside it has no real-content precedent (GS
+authoring tools don't send channel targets above 15, and neither
+`field/Kot_and_A64-GENERAL_SERUM.mid` nor any other corpus file sends `RCV
+CHANNEL` at all — xref:item11[item11]). The real driver never needs an
+equivalent guard because its `ShortMsg` dispatch *compares* the stored byte
+against an incoming channel nibble (0-15 by construction) rather than using
+it as an array index (S4.2.2's `[A:0x13267]` citation) — an artifact of this
+engine's narrower, index-based model, not a behavior difference from
+`swmidi.sys`.
+
+=== What is deliberately NOT generalized (residual gap, left open)
+
+SPEC.adoc's S4.2.2 citation for `device+0x12fc` describes ``ShortMsg``'s
+*entire* per-Part dispatch loop matching every incoming short message's
+channel against this array before routing it to CC/note handling for that
+Part — i.e., in the real driver, a `RCV CHANNEL` remap redirects Note-On,
+Control Change, Pitch Bend and Program Change for that Part too, not only
+`USE RHYTHM PART`. This engine still dispatches all of those directly by
+physical channel (`synth_midi()`'s `ch = status & 0x0F`, unchanged) and
+never consults `part_to_channel` for them. `part_to_channel` here mediates
+only the one path SPEC.adoc's own text calls out as depending on it
+(`USE RHYTHM PART`, item11's original finding) and that the tests check.
+Converting `synth_midi()`'s whole dispatch to route through
+`part_to_channel` would be the "convert the whole engine to Part indexing"
+move item11 already weighed and left open (rare in real content); not
+attempted here, and not needed for tests 125/126.
+
+=== Corpus expectation
+
+`RCV CHANNEL` is rare in real GM/GS content (item11's own finding, above).
+Checked, not assumed: `12_gs_sysex`, `16_drum_parts`, `48_rhythm_part_reset`
+(the three probes/tests that exercise this code path) — see the report for
+the before/after numbers; none of the three sends `RCV CHANNEL`, so none is
+expected to move.
+
+'''
+
+[#item42]
+== 2026-08-01 — CC121 (Reset All Controllers) gates its Channel Volume and Pan re-schedules on the incoming message's own value byte; SPEC's S4.3 row was incomplete, not wrong — item42, SHIPPED for Volume; Pan stays open
+
+**Status: SHIPPED for Channel Volume.** Pan is left exactly as SPEC already
+states it (unresolved sub-question below); no engine change for Pan.
+
+**Path:** `SPEC.adoc` S4.3 CC121 row (`[A:0x1351f]`) vs. `[M: probe 37]` /
+`tests/warm-echo.mid`; `src/engine/synth.c`'s `CC121_RESETS_VOLUME 0`;
+`artifacts/INVESTIGATE.adoc` xref (item i7); `src/unit.c` test 88.
+
+`artifacts/INVESTIGATE.adoc` framed this as "SPEC is probably wrong" because
+a CC121 arriving up to 500 ms after a CC7 never reset Volume, and half a
+second is too much separation for a same-timestamp queue tie-break to
+explain. **SPEC was not wrong — it was incomplete.** Its `[A:0x1351f]` field
+identification (the store targets the Channel-Volume array element) is
+correct; what it omitted is a gate on that store.
+
+=== The gate
+
+Re-read `0x1351f`–`0x135d0` directly. `0x79` = 121 reaches this handler via
+`cmp $0x79,%eax` / `je 0x1351f` in the controller-number dispatch chain:
+
+[source,c]
+----
+case 121:                                  // data1==0x79 dispatch [A:0x1351f]
+    if (data2 != 0) {                      // cmpb $0x0,0x18(%ebp) / je 0x1355e
+                                            // [A:0x1351f]-[0x13523]
+        schedule(chanVolume, ts, 100);      // [A:0x1352b]-[0x1353c]
+        schedule(pan,        ts, ebx);      // [A:0x13545]-[0x13551] -- value open, see below
+    }
+    // else: both schedule() calls above are skipped entirely; nothing else
+    // is touched -- Volume/Pan retain whatever they already were.
+    schedule(expression, ts, 127);          // [A:0x13567]-[0x13575] -- unconditional
+    schedule(pitchBend,  ts, 8192);         // [A:0x13581]-[0x13592] -- unconditional
+    schedule(modulation, ts, 0);            // [A:0x1359b]-[0x135a9] -- unconditional
+    data2 = 0;                              // [A:0x135bf]
+    queueSustainRelease();                  // sentinel 0xFE, [A:0x135d0]
+----
+
+`data2` here is `0x18(%ebp)` — the incoming CC121 message's own value byte,
+not a mode flag: the same stack slot every sibling CC handler in this
+function reads as "the value to schedule" (CC7 `0x133aa`, CC11 `0x134b2`,
+CC10 `0x1343b`, CC32 `0x1349f`, CC38 `0x1345d`, CC100/CC101 `0x13502`/`0x134f2`).
+
+=== Three independent offset cross-checks
+
+Every target CC121 schedules is the byte-identical offset a standalone CC
+handler in the same function reads/writes, computed from the same `pan_i`
+base (`device+0xa50+chan*0x20`, set up at `0x13231`):
+
+[options="header"]
+|===
+| CC121 target | offset from `pan_i` | cross-checked against
+| Channel Volume `:=100` | `pan_i - 0x400` | **CC7 handler, `0x133a7`** — identical `-0x400` target
+| Pan `:=ebx` | `pan_i - 0x0` | **CC10 handler, `0x1343b`** — identical, no offset
+| Expression `:=127` | `pan_i - 0x200` | **CC11 handler, `0x134af`/`0x134b2`** — identical `-0x200`
+|===
+
+=== How this reconciles probe 37
+
+Every CC121 event in both `tests/warm-echo.mid` and
+`artifacts/probes/37_rac_volume_order.mid` carries `data2==0` (confirmed by
+an independent SMF parse enumerating every event in both files) — the
+MIDI-conventional value for this controller. The gate at `0x1351f` is
+therefore CLOSED for every real CC121 message either file ever sends, at any
+spacing from the preceding CC7 (same-tick, +50 ms, +500 ms all measured at
+an identical −29.29 dB). That is exactly probe 37's finding. No
+queue-ordering tie-break is involved — the Volume write is never attempted
+for a standard-conforming CC121, at any distance. Expression, which sits
+outside the gate, resets in the same messages (probe 37's case G), which the
+old "SPEC is wrong" framing could not explain in the same pass.
+
+=== Engine consequence
+
+**No behavioral change for Channel Volume.** `CC121_RESETS_VOLUME 0` already
+produces exactly the `data2==0` observable behavior; what changes is its
+justification — from an unexplained `[M]`-driven exemption to a documented
+consequence of an `[A]`-confirmed gate. The one actual behavioral gap the old
+code had is the *other* branch: `data2!=0` never worked at all (the macro
+was compile-time all-or-nothing), so `reset_all_channel_controllers()` now
+takes the CC121 value byte and applies `volume=100` only when it is nonzero,
+matching the gate exactly. `dispatch_cc`'s `case 121:` already has `val` in
+hand for this. The `CC121_RESETS_VOLUME` compile-time knob is retired — the
+gate is now the real condition, decided per-message from `val`, not a
+build-time constant.
+
+=== Open sub-questions (not resolved by this item)
+
+. **The Pan value.** The write at `0x13545`–`0x13551` pushes `%ebx`, not a
+  literal. In the enclosing per-Part loop, `ebx` is used as a per-Part
+  *pointer* (`cmpb $0x0,(%ebx)` at `0x132e8`, incremented by one per Part at
+  `0x1332d`, cached at `-0x20(%ebp)`) — not obviously a controller value at
+  this point in the trace. **`SPEC.adoc`'s existing "Pan=64" claim is left
+  exactly as it stands** — neither confirmed nor retracted here.
+. **Whether Pan should also be gated in the engine.** The gate at
+  `0x1351f`/`0x13523` covers the Pan `schedule()` call by the identical
+  instruction range as Volume's, so by the disassembly alone Pan should be
+  gated the same way Volume now is. The engine is **deliberately not**
+  changed to gate Pan in this pass: `reset_all_channel_controllers()` keeps
+  writing `c->pan = 64` unconditionally. Gating Pan on a pushed value that is
+  not itself confirmed to be `64` risks encoding a wrong number as if it
+  were established fact. No probe exists isolating CC121's effect on Pan
+  alone (same shape as probe 37, reading CC10 instead of CC7, would resolve
+  this) — not built in this pass.
+
+`artifacts/impl-chart/CHART.adoc`'s "Reset All Controllers" section is
+updated alongside this item (below the usual threshold — the chart's own
+documented example message is `Bn 79 00`, i.e. `data2==0`, and its existing
+table claimed Channel Volume unconditionally becomes `100` for that exact
+message, which was already inaccurate against the shipped engine's
+pre-existing `CC121_RESETS_VOLUME 0` and remains inaccurate under the
+now-corrected SPEC reading — a musician relying on the documented example
+would be misled about what their own DAW's Reset-All-Controllers button
+actually does to Channel Volume).
+
+'''
+
+[#item43]
+== 2026-08-01 — RE pass on the per-buffer service routine (`0x13054`) confirms the frame-count cadence is genuinely caller-supplied; tests 179/180/198 remain not retirable — item43, CLOSED (no SPEC/engine/test change)
+
+**Status: CLOSED — investigated, cannot retire.** No `SPEC.adoc` change (it
+already says the right thing), no engine change, no test change.
+
+**Path:** `artifacts/INVESTIGATE.adoc` item i9 vs. `SPEC.adoc` §5.4 and its
+open-questions register (`o2`); `src/unit.c` tests 179, 180, 198 (`# TODO`,
+correctly so); `src/engine/voice.c`'s `TOPUP_INTERVAL_FRAMES`;
+`src/engine/render.c`'s `GAIN_SEGMENT_FRAMES`.
+
+=== What was re-disassembled
+
+The per-buffer service routine and its sole caller in the image:
+
+[source,c]
+----
+// 0x13054 - the per-buffer service routine
+void Service(Device *dev, void *buf, uint32_t frames) { // frames = ebp+0xc [A:0x13054]
+    uint32_t nbytes = frames << (dev->fmt_field + 1);     // [A:0x13084]-[0x13087]
+    ...                                                    // frames used verbatim throughout
+}
+
+// 0x181da - Service's only caller in the whole image
+bool Dispatch(Descriptor *desc) {
+    uint32_t frames = desc->raw_len >> (dev->fmt_field + 1); // [A:0x181fa]-[0x181fe]
+    Service(dev, desc->buffer, frames);                       // [A:0x18206]
+}
+----
+
+`frames` arrives at `0x13054` as a stack parameter and is consumed verbatim
+at `0x13084`; nothing inside `0x13054` computes it. Its sole origin is
+`desc->raw_len` (`+0x44`), read once by the caller `0x181da`. An exhaustive
+sweep of the image for any instruction that writes a literal into that field
+found none: the only structurally similar hits are an unrelated per-voice
+phase accumulator (`voice+0x44`) and, at `0x184e3`, a distinct pool
+allocation storing its returned pointer into a different object's `+0x44` —
+neither is the KS descriptor's length field, and neither is a constant.
+
+=== Verdict
+
+**Corroborates `SPEC.adoc`, not a new disagreement.** §5.4 already states
+the per-buffer frame count is supplied by the audio class driver above
+`swmidi.sys` and warns against modeling a fixed period; the `o2`
+open-questions entry says the same. This RE pass reproduces that claim at
+the instruction level (the `0x181da` caller, the descriptor's `+0x44` field,
+the negative sweep for any literal writer) rather than merely re-citing it.
+`SPEC.adoc` needed no edit — verified directly by reading §5.4 and `o2`
+before writing this entry.
+
+**Tests 179 (S5.4 reserve top-up cadence), 180 (S3.4.1/S3.4.2 envelope
+update cadence) and 198 (S6.6 ramp/envelope cadence) remain `# TODO` and are
+not retirable**, and the `# TODO` wording in each is already correctly
+phrased — left unchanged. `TOPUP_INTERVAL_FRAMES` (`voice.c`) and
+`GAIN_SEGMENT_FRAMES` (`render.c`, `= SERVICE_BLOCK_FRAMES`) remain justified
+`[F]` stand-ins: the *mechanism* each models (once per buffer-service call;
+once per active voice per buffer) is `[A]`-confirmed and matches this
+binary's structure exactly, but the *numeric* cadence is a caller-supplied
+value this binary never fixes anywhere — there is no constant left to
+converge on. Recorded here so a future session does not re-run this same
+dead-end RE pass.
+
+'''
+
+[#item41]
+== 2026-08-01 — `channel_defaults()` was double-booked as both the S4.2.1 power-on constructor and the body of the three S4.6.4 reset paths; split it so RPN0, the RPN/NRPN-select register and the sustain byte stop getting clobbered on reset — item41, SHIPPED
+
+**Status: SHIPPED.**
+
+**Path:** `src/engine/synth.c` (`channel_defaults()` line 57, `synth_reset()`
+line 77, `reset_all_channel_controllers_device()` line 200) vs.
+`SPEC.adoc`'s S4.6.4 reset-state summary table.
+
+**Finding.** `SPEC.adoc` needed no change here — its S4.6.4 table already
+marks all three of these fields "not touched"/"unchanged" for every one of
+`ResetDevice` (`0x12354`), `ResetAllChannelControllers` (`0x126c2`) and
+`ResetAllProgramsAndRhythmGroups` (`0x12780`), and identically so in the
+net-effect columns for GS Reset, GM System On/Off and System Reset (`0xFF`):
+
+* **RPN0 (pitch-bend range).** SPEC: unchanged by all three. src forced 200
+  cents.
+* **RPN/NRPN-select register (`+0xf10`).** SPEC: unchanged by all three. src
+  forced `0x3FFF` (Null).
+* **Sustain-pedal raw byte (CC64 cache).** SPEC: not touched — the reset only
+  queues a sentinel-`0xFE` release event. src zeroed the stored byte outright.
+
+=== Root cause
+
+`channel_defaults(c, idx)` was doing two SPEC-distinct jobs with one set of
+field writes: it is genuinely the S4.2.1 power-on constructor (where
+`pb_range_cents=200`, `rpn_select=0x3FFF`, `sustain=0` ARE the correct
+defaults) *and* it was the shared body `synth_reset()` runs across all 16
+channels for every reset path — and `synth_reset()` is reached by the MIDI
+System Reset (`0xFF`) handler directly, and by GS Reset / GM System On/Off
+via `synth_sysex()`. One function, two roles, so nothing could set the ctor
+value without also becoming "the" reset value.
+
+A second, independent copy of the same sustain bug lived in
+`reset_all_channel_controllers_device()` — the engine's model of
+`ResetAllChannelControllers` (`0x126c2`), reached only via USE RHYTHM PART's
+shared reset tail (`src/engine/synth.c:356`, the only caller). It zeroed
+`c->sustain` in its own per-channel loop instead of leaving the raw byte
+alone.
+
+=== Tests
+
+**8 failures, one root cause, all in `src/unit.c`'s `t_synth()`:** 45, 52, 57
+(S4.6.4 net effect via `synth_midi(0xFF,0,0)`, System Reset), 62, 63, 64
+(S4.6.4 net effect via GS Reset SysEx), 68, 69 (S4.6.4 net effect via GM
+System On/Off SysEx). Each drives the field away from its ctor default with
+real MIDI first, then fires the reset path under test, then asserts SPEC's
+stated post-reset value — so no fix that merely reorders the defaults can
+satisfy them.
+
+=== The fix
+
+[source,c]
+----
+// before -- one function, two roles
+channel_defaults(c, idx):        // ctor AND reset body
+    ...
+    c->pb_range_cents = 200      // right at construction, wrong at reset
+    c->rpn_select     = 0x3FFF   // right at construction, wrong at reset
+    c->sustain        = 0        // right at construction, wrong at reset
+
+// after -- role split
+channel_defaults(c, idx):        // reset body ONLY: bank/program, volume,
+    ...                          // pan, expression, modulation, pitch_bend,
+                                  // rpn1/rpn2 result fields, data_entry,
+                                  // is_rhythm, mono_mode -- everything
+                                  // S4.6.4 says the resets DO set
+
+channel_construct_only(c):       // S4.2.1 power-on constructor ONLY
+    c->pb_range_cents = 200
+    c->rpn_select     = 0x3FFF
+    c->sustain        = 0
+
+synth_construct(void):           // NEW -- device construction/open
+    for each channel: channel_construct_only(c)
+    synth_reset()                 // then the ordinary reset body
+
+synth_reset(void):                // MIDI System Reset (0xFF) / GS Reset /
+    ...                           // GM System On-Off net effect -- unchanged
+    for each channel: channel_defaults(c, idx)  // minus the three fields
+    voice_pool_reset()
+    acquire_collection()
+----
+
+`reset_all_channel_controllers_device()` had its `c->sustain = 0;` line
+removed the same way, with no replacement write. No `voice_sustain_lift()`
+call was added there or in `synth_reset()`: that function (like
+`synth_reset()`) calls `voice_pool_reset()` — an unconditional, immediate cut
+of every voice on every channel — before touching any per-channel field, so
+by the time the S4.6.4-described sentinel-`0xFE` release event would fire
+there is nothing left active to release. The bulk cut already subsumes it;
+adding a no-op call would be unmotivated.
+
+=== Call sites
+
+`synth_reset()`'s old double duty meant every caller that used it purely to
+get a freshly-defaulted device (never modeling an actual reset MESSAGE
+arriving mid-session) now needs `synth_construct()` instead, or the three
+fields silently start leaking stale state between callers:
+
+* `src/wasm.c` — `msgs_init` (first-ever device bring-up) and, per its own
+  "channels at their defaults" contract, `msgs_reset` and `msgs_load_smf`
+  (both host-level "give me a known-clean device" calls, not a modeled MIDI
+  message) all move to `synth_construct()`.
+* `src/cli.c` — all four call sites (`selftest`'s per-pass fixture, the
+  saturation-probe fixture, and `main()`'s two device-bring-up calls) are the
+  same category and move to `synth_construct()`.
+* `src/unit.c` — all ~42 bare `synth_reset();` fixture calls ("give me a
+  clean device" at the top of an unrelated test block) move to
+  `synth_construct()`. The reset paths actually under test —
+  `synth_midi(0xFF,0,0)`, `sy_gs_reset()`, `sy_gm(1)`/`sy_gm(2)` — are
+  untouched; they still call `synth_sysex()`/`synth_reset()` internally,
+  exactly as before.
+
+None of these are behavioral findings about `swmidi.sys` itself — `smf.c`
+and the `msgs_*`/CLI wrapper layer have no counterpart in the original driver
+(S1.5.4) — so this classification is this project's own engineering call,
+not a SPEC reading, and is recorded here only because it rides on the same
+diff.
+
+=== Corpus expectation
+
+None of the reclassified `cli.c`/`wasm.c` call sites change behavior: every
+one of them already ran at a point where the device had no prior state to
+preserve (first bring-up, or "load a new song"), so `synth_construct()`
+there produces byte-identical output to the old conflated `synth_reset()`.
+The only behavior change is what item 2 of `artifacts/INVESTIGATE.adoc`
+already flagged audible: a mid-file GS Reset / GM System On-Off / System
+Reset SysEx no longer snaps a widened RPN0 back to ±2 semitones, drops the
+active RPN/NRPN selection, or force-lifts the sustain pedal's stored value.
+`artifacts/impl-chart/CHART.adoc` already documented this correctly (its
+own S4.6.4-derived warnings at "Reset All Controllers" and "`FF` Reset" state
+RPN0 and the RPN/NRPN selection survive every reset path, and list the
+sustain pedal's reset effect as "Released" — the audible description of the
+queued release event, not of the raw byte) — checked and left unchanged.
+
+'''
+
 [#item40]
 == 2026-07-30 — Probe 50's reference is recorded: the per-voice ceiling is confirmed in the real synth, slopgs's flat top sits 1.61 dB high, and its sub-knee levels sit 1.35–2.96 dB low — item40
 

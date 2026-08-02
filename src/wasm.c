@@ -124,7 +124,7 @@ int32_t msgs_init(uint32_t dls_ptr, uint32_t dls_len) {
         tables_build();
         g_tables_built = 1;
     }
-    synth_reset();
+    synth_construct();
     smf_set_loop(0);
 
     const uint8_t *dls_data = (const uint8_t *)(uintptr_t)dls_ptr;
@@ -140,14 +140,14 @@ int32_t msgs_init(uint32_t dls_ptr, uint32_t dls_len) {
  * resetting only the control plane would leave it stuck on. */
 WASM_EXPORT
 void msgs_reset(void) {
-    synth_reset();
+    synth_construct();
     smf_rewind();
 }
 
 WASM_EXPORT
 int32_t msgs_load_smf(uint32_t smf_ptr, uint32_t smf_len) {
     const uint8_t *data = (const uint8_t *)(uintptr_t)smf_ptr;
-    synth_reset();
+    synth_construct();
     return smf_load(data, smf_len);
 }
 
