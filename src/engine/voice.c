@@ -778,77 +778,15 @@ void voices_advance_lfo(uint32_t frames) {
     }
 }
 
-/* Pan law, SPEC.adoc S3.6. SHAPE and FLOOR are both `[M: probe 25]`'s own
- * 9-anchor measured table, consumed here directly (PAN_L_HDB/PAN_R_HDB
- * below); between anchors the curve is `[F]` per SPEC.adoc S3.6's own text
- * ("linear interpolation in the hundredths-of-a-dB domain reproduces the
- * anchors exactly"). SPEC_LOG.adoc item45 has the measured error this
- * replaced: up to 3.04 dB on shape (the near channel rising above unity
- * instead of holding at 0 dB) and ~1.8 dB on the hard-pan floor.
- *
- * This is NOT the disassembly-derived linear/sqrt table `g_table_lin`
- * (SPEC.adoc S3.6's `gainA`, reverse-indexed by 127-pan) this function used
- * until item45 -- that table corroborated the pan law's overall SHAPE
- * against probe 07 well enough to ship (SPEC_LOG.adoc Entry 7), but its own
- * `- g_table_lin[63]` re-centering term let the near channel rise up to
- * +3.04 dB above unity instead of holding exactly 0 dB at every anchor, as
- * SPEC.adoc S3.6 requires ("true unity on both sides simultaneously").
- * g_table_lin is no longer consumed by src/engine -- its disassembly
- * reading stays in SPEC.adoc and its byte-exact contents are still
- * asserted by unit.c's S T.3 test, so it is kept, just unused here.
- * `gainB` is NOT the squared table `g_table_vel` either, per SPEC.adoc
- * S3.6's disassembly reading: that predicts -11.90 dB at center pan where
- * probe 07 measures -3.72 dB; REFUTED, see SPEC_LOG.adoc S9. (Neither
- * branch of the law below touches g_table_vel, so this refutation no
- * longer has a "which table" question to resolve -- it is kept only
- * because it is still why SPEC.adoc's own `[O]` two-table asymmetric-law
- * reading, `0x19c12`-`0x19c2a`, is not implemented as written; see the
- * standing `[O]` at SPEC.adoc S3.6.)
- *
- * The anchor-table/lerp scheme below resembles one this project shipped
- * once before and then superseded (SPEC_LOG.adoc Entry 5,
- * `artifacts/probes/25_pan_law.mid`) -- it is NOT that same mistake
- * recurring. Entry 5 was rejected because, at the level it was fit
- * against (Sine patch, CC7=127), probe 25's flat centre plateau was
- * GAIN_CEILING saturation (~4.78 dB above the 32767/65536 ceiling), not
- * the pan law itself (SPEC_LOG.adoc Entry 7). item45's 9-anchor sweep uses
- * CC7=40/CC11=127 instead (src/unit.c's own S3.6 tests) and reaches a
- * centre gain of only 0.099312 -- well clear of GAIN_CEILING (0.499985),
- * confirmed by the test's own diagnostic before it asserts anything
- * (src/unit.c ~1602-1630). This time the plateau IS the pan law. */
-
-/* Per-voice output ceiling, SPEC.adoc S6.4.5 -- `[A]`, derived from the two
- * confirmed MMX opcodes in the mixer's gain stage, not fit to any single
- * probe number:
- *   - the per-voice gain accumulator is narrowed with `packssdw` into a
- *     SIGNED 16-bit lane (max representable value +32767) immediately
- *     before the multiply `[A:0x19f47]`;
- *   - the multiply itself is `pmulhw` (mono `[A:0x19f56]`, stereo
- *     `[A:0x1a12d]`), which computes `high16(gain_Q * sample)`, i.e.
- *     `floor(gain_Q * sample / 65536)` -- a Q16 fixed-point multiply.
- * For that multiply to ever pass a sample through unattenuated (gain_linear
- * == 1.0, atten_hdb == 0, true unity), `gain_Q` would need to equal 65536 --
- * one bit wider than the signed 16-bit lane `packssdw` narrows it into.
- * True unity is therefore structurally unreachable: **no voice's gain can
- * ever exceed 32767/65536 (~0.499985) of computed unity**, regardless of
- * how the intermediate `<<8>>5` scaling maps hundredths-of-a-dB attenuation
- * to the raw register (SPEC.adoc S6.4.5's hdB->raw-gain conversion table,
- * `[A:0x18dea]`, now resolved -- its own ceiling independently lands on this
- * same bound to ~0.002dB) -- that mapping is irrelevant to *this* bound,
- * which falls straight out of "signed 16-bit register, Q16 multiply" alone.
- *
- * Cross-checked against probe 27 (artifacts/probe-results/27.flac), Sine patch (bank
- * MSB 8 / program 80): back-computing the driver's own uncapped squared-law
- * output from the unclamped low-velocity points (v40/20/8, each clear of
- * the ceiling) gives an implied v127 value of ~25700-26050; the measured
- * flat-top ceiling is 13200. 13200/25919 = 0.5093 -- matches 32767/65536 =
- * 0.499985 within the reference capture's own point-to-point spread
- * (25699-26050, ~1.3%), independently corroborating the disassembly-derived
- * constant. (This project's OWN unclamped baseline for that same note is
- * ~1.6-1.7 dB hotter than that implied 25919-26050 figure -- a separate,
- * pre-existing gain/attenuation-scale discrepancy, NOT touched here per the
- * assignment's scope; see report.) */
-#define GAIN_CEILING (32767.0 / 65536.0)
+/* Per-voice output ceiling, SPEC.adoc S6.4.5. There is no separate clamp:
+ * the conversion table's own zero point IS the ceiling. TABLE[0] == 4095 of
+ * 8192 == 0.49988, which is also where "signed 16-bit gain lane, Q16
+ * multiply" puts it -- `packssdw` narrows the gain into a signed 16-bit
+ * lane [A:0x19f47] and `pmulhw` [A:0x19f56] divides by 65536, so a gain of
+ * exactly 1.0 would need 65536 in a lane that saturates at 32767. True
+ * unity is structurally unreachable. The two derivations agree to 0.002 dB.
+ * Kept as a named constant only for the release-detection floor below. */
+#define GAIN_CEILING (4095.0 / 8192.0)
 
 /* SPEC.adoc S3.5 (squared volume law via g_table_vel), S3.10 (attenuation
  * sum), S3.6 (pan law). Re-read live here (never baked into a frozen value)
@@ -859,78 +797,45 @@ void voices_advance_lfo(uint32_t frames) {
  * life) is the only part NOT recomputed here. This is the single place
  * gain_l/gain_r are computed -- voice_note_on calls it too instead of
  * duplicating the math. */
-
-/* Pan law breakpoints, SPEC.adoc S3.6 [M: probe 25]: dB (hundredths of a
- * dB) relative to centre, at the nine measured CC10 anchors, taken
- * verbatim from SPEC's own table. The near channel is 0 (true unity) at
- * every anchor; only the far channel's column is non-zero. See the pan-law
- * comment above for why this replaces g_table_lin here. */
-static const uint8_t PAN_CC10[9]  = { 0, 16, 32, 48, 64, 80, 96, 112, 127 };
-static const int16_t PAN_L_HDB[9] = { 0, 0, 0, 0, 0, 0, -141, -452, -2021 };
-static const int16_t PAN_R_HDB[9] = { -2020, -420, -120, 0, 0, 0, 0, 0, 0 };
-
-/* Linear interpolation between the anchors above, in the hundredths-of-a-dB
- * domain, per SPEC.adoc S3.6's own stated treatment of the unmeasured span
- * between them ("linear interpolation ... reproduces the anchors
- * exactly"). */
-static int32_t pan_lerp_hdb(int pan, const int16_t *hdb) {
-    for (int i = 0; i < 8; i++) {
-        if (pan <= PAN_CC10[i + 1]) {
-            int32_t x0 = PAN_CC10[i], x1 = PAN_CC10[i + 1];
-            int32_t y0 = hdb[i], y1 = hdb[i + 1];
-            return y0 + (int32_t)(((int64_t)(y1 - y0) * (pan - x0)) / (x1 - x0));
-        }
-    }
-    return hdb[8];
+/* SPEC.adoc S3.6 [A:0x19c12-0x19c2a]: the pan law reads ONE 128-entry table
+ * twice -- forward for one channel, reversed for the other. That table is
+ * g_table_lin (SPEC.adoc T.3, `trunc(1000*log10(j/127))` with [0] = -2500),
+ * which this engine already builds and unit.c already asserts byte-exact;
+ * amp = 10^(PAN/2000) = sqrt(j/127), a constant-power law.
+ *
+ * Pan is summed into the attenuation BEFORE conversion, not applied as a
+ * separate gain factor afterwards. That ordering is what makes S3.6's
+ * measured plateau fall out: the conversion clamps its index at 0, so a
+ * channel whose sum reaches the table's ceiling pins at TABLE[0] and stops
+ * responding to pan. SPEC's nine measured anchors are this law sampled at
+ * one operating point, reproduced to within 0.05dB (SPEC_LOG.adoc item50);
+ * they are NOT a law in their own right, which is why the nine-anchor
+ * interpolation that used to live here is gone.
+ *
+ * SPEC.adoc S6.4.5 [A:0x18dea]: the hdB->raw-gain conversion is a table
+ * lookup, not an exponential, and its own ceiling TABLE[0] == 4095 is the
+ * per-voice output ceiling -- there is no separate output clamp. The raw
+ * value is a fraction of 8192, not 65536: the mixer does `pslld $8` then
+ * `psrld $5` (a net <<3) before a Q16 `pmulhw`, i.e. >>13 overall
+ * [A:0x19e95, 0x19e9f, 0x19f56]. */
+static double atten_to_gain(int32_t atten_hdb) {
+    int32_t i = atten_hdb / 10;          /* 0x18e0b: signed index, 0.1dB steps */
+    if (i > 0) i = 0;                    /* 0x18dea: clamp(.., -1000, 0) */
+    if (i < -1000) i = -1000;
+    return (double)g_table_dbamp[i + 1000] / 8192.0;
 }
-
-/* SPEC.adoc S3.5 [A:0x19bcd]/S6.4.5 [A:0x18dea]: the driver folds a literal
- * +1200 (12.00dB) into atten_const_hdb (voice_note_on, below) and its
- * hdB->raw-gain conversion table's zero point (atten_hdb==0) is its own
- * ceiling, TABLE[0] == 4095 == GAIN_CEILING's numerator to within ~0.002dB
- * -- not a literal 1.0. Anchoring gain_linear on GAIN_CEILING instead of
- * 1.0, paired with the +1200, was meant to reproduce that. Measured against
- * the corpus and REJECTED (SPEC_LOG.adoc item47: mean residual moved
- * +2.90dB worse, 33 items regressed >1dB, and the pair's own falsifiable
- * v=96 knee prediction overshot to v=80). This engine's atten_hdb
- * composition is not yet on the same footing as the driver's, so the pair
- * does not currently reproduce it; kept behind ATTEN_PLUS_1200 as a single
- * -D away for a future pass rather than lost. The pair is a pure uniform
- * level shift of +5.98dB (+1200 less GAIN_CEILING's -6.02dB) and nothing
- * else -- cancelling that net reproduces the default build exactly, and
- * the corpus optimum sits near +3dB, not +6dB (SPEC_LOG.adoc item48). Default build uses the
- * pre-item47 form with the GAIN_TRIM_DB hook (always 0.0, SPEC_LOG.adoc
- * items 39/40). */
-#ifndef ATTEN_PLUS_1200
-#define ATTEN_PLUS_1200 0   /* SPEC S3.5's [A:0x19bcd] +1200 paired with the GAIN_CEILING
-                               re-anchor; measured and rejected by the corpus gate, see
-                               SPEC_LOG item47. Kept so the pair is one -D away for the
-                               follow-up pass, not an edit. */
-#endif
 
 void voice_update_gain(Voice *v) {
     if (!v->active) return;
     int32_t chan_vol = g_table_vel[g_channels[v->channel].volume];
     int32_t expr = g_table_vel[g_channels[v->channel].expression];
     int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr + v->atten_const_hdb;
-#if ATTEN_PLUS_1200
-    double gain_linear = GAIN_CEILING * rt_pow(10.0, (double)atten_hdb / 2000.0);
-#else
-#ifndef GAIN_TRIM_DB
-#define GAIN_TRIM_DB 0.0
-#endif
-    double gain_linear = rt_pow(10.0, ((double)atten_hdb / 100.0 + GAIN_TRIM_DB) / 20.0);
-#endif
 
     int pan = (int)g_channels[v->channel].pan + v->artic->pan_cb;
     if (pan < 0) pan = 0;
     if (pan > 127) pan = 127;
-    int32_t gainA_hdb = pan_lerp_hdb(pan, PAN_L_HDB);
-    int32_t gainB_hdb = pan_lerp_hdb(pan, PAN_R_HDB);
-    v->gain_l_target = gain_linear * rt_pow(10.0, (double)gainA_hdb / 2000.0);
-    v->gain_r_target = gain_linear * rt_pow(10.0, (double)gainB_hdb / 2000.0);
-    if (v->gain_l_target > GAIN_CEILING) v->gain_l_target = GAIN_CEILING;
-    if (v->gain_r_target > GAIN_CEILING) v->gain_r_target = GAIN_CEILING;
+    v->gain_l_target = atten_to_gain(atten_hdb + g_table_lin[127 - pan]);
+    v->gain_r_target = atten_to_gain(atten_hdb + g_table_lin[pan]);
 }
 
 void voices_update_modulation(void) {
@@ -1297,15 +1202,10 @@ void voice_note_on(int channel, int note, int velocity) {
      * hundredths, so it is summed in directly here with no further
      * conversion, per S1.4.4/S3.10. */
     /* SPEC.adoc S3.5 [A:0x19bcd]: the driver folds a literal +1200 (12.00 dB)
-     * into this same sum, paired with voice_update_gain's GAIN_CEILING
-     * re-anchor above -- see the ATTEN_PLUS_1200 comment there. Measured
-     * and rejected by the corpus gate (SPEC_LOG.adoc item47); default
-     * build omits it. */
-#if ATTEN_PLUS_1200
+     * into this same sum (`lea 0x4b0(%ecx,%eax,1)`). It is not a boost: the
+     * conversion at S6.4.5 clamps its index at 0, so the +1200 moves the
+     * clamp knee 12 dB earlier rather than adding 12 dB everywhere. */
     v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb + 1200;
-#else
-    v->atten_const_hdb = scaled + (int32_t)r->attenuation_hdb;
-#endif
 
     /* Pan, SPEC.adoc S3.6 (L/R assignment is an inference; see SPEC_LOG.adoc).
      * The region's own pan offset (artic->pan_cb) is fixed; the channel's

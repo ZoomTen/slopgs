@@ -110,6 +110,19 @@ their own.
 `Bn 07 vv` — Channel Volume:: Recognized. Default `64` (100).
 
 `Bn 0A vv` — Pan:: Recognized. Default `40` (64, center).
++
+The law is constant-power: each channel is attenuated by
+`10·log10(position)`, so a centered note sits about 3 dB down on both sides
+rather than at full scale, and hard pan leaves the far channel 25 dB down
+rather than silent.
++
+How much of the sweep is audible depends on how loud the part is. Each
+channel has a fixed output ceiling; a part running near it has both channels
+pinned there through the middle of the sweep, so pan does nothing until the
+far channel drops below the ceiling — the plateau is wide at high Channel
+Volume and Expression, and narrows as the part gets quieter. At low levels
+the sweep is smooth from end to end. Whichever side you pan toward never
+gets louder than it already was.
 
 `Bn 0B vv` — Expression:: Recognized. Default `7F` (127).
 

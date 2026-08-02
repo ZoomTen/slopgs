@@ -2548,17 +2548,20 @@ on both sides with a wide flat plateau from CC10≈48 to ≈80 while the
 underlying law is constant-power throughout. **The plateau is the clamp, not
 the pan law.**
 
-**One discrepancy remains `[O]`.** The law above puts the hard-pan floor at
-`PAN[0] − PAN[64]` = −22.03 dB, where the sweep measures **−20.20 dB** and
-that figure is a real floor rather than an unmeasured tail. The store is not
-in doubt (`movl $0xfffff63c,0x1bfd0` at `0x16a8a`, `0xfffff63c` = −2500), so
-this is a confirmed instruction against a confirmed measurement. The
-measured table below is what the reference does and is what the engine
-implements.
+**The law and the measurement agree.** Fitting the law to the sweep below
+with the pre-pan sum as the only free parameter reproduces all nine anchors
+on both channels to within **0.05 dB**, at a sum of +476 hundredths of a dB
+above the clamp point. The table below is therefore this law sampled at one
+operating point, not an independent description of it — an implementation
+must reproduce the law, because the table's flat regions are clamp artefacts
+that move with channel volume, expression and region attenuation.
 
 Measured over a CC10 sweep {0,16,32,48,64,80,96,112,127} on a held Sine Wave
 tone (bank 8 program 80), four independent sub-windows in the first 200 ms of
-each of the nine notes, all agreeing to within 0.03 dB:
+each of the nine notes, all agreeing to within 0.03 dB. The near channel
+holds at −10.98 dBFS across CC10 0–80 — that flat is the clamp pin, and the
+capture is digitally silent between notes, so the floor is a real floor and
+not a noise-floor artefact:
 
 [options="header"]
 |===
@@ -2792,11 +2795,7 @@ if (region.keyGroup != 0) {
   region-selection gate (`0x1473e`, must be `>0`) — confirmed load-bearing
   for region selection; its deeper meaning (candidate: wave-data readiness)
   is not recovered.
-* **`[O]`** Why the hard-pan floor the pan table produces (−22.03 dB,
-  `PAN[0] − PAN[64]`) is 1.8 dB deeper than the measured floor of −20.20 dB
-  (xref:s3-6[§3.6]). The table's construction and its `PAN[0] = −2500` store
-  are both `[A]` and confirmed; the measurement is `[M: probe 25]` and
-  explicitly a real floor. The rest of the law reconciles.
+
 * **`[O]`** Whether the linear/√-law table at `0x1bfd4` has any velocity-side
   consumer. Its confirmed consumer is the pan-law addressing at
   `0x19c12`; the note-on velocity term is unconditionally the squared-law
@@ -5499,7 +5498,6 @@ even though the exact instruction is unlocated.
 | xref:o1[1] | The 22050→44100 upsampler downstream of this driver (`kmixer.sys`) | Out of scope
 | xref:o2[2] | Frames per invocation of the per-buffer service routine `0x13054` | Behaviourally significant
 | xref:o3[3] | Whether the linear/√-law table `0x1bfd4` has any velocity-side consumer | Cosmetic
-| xref:o4[4] | Why the pan table's −22.03 dB hard-pan floor is 1.8 dB deeper than the measured −20.20 dB | Behaviourally significant
 | xref:o5[5] | The write site that populates `region+0x14`, the phase-increment's rate multiplicand | Cosmetic
 | xref:o6[6] | Design intent behind the 48-primary + 6-reserve pool split | Cosmetic
 | xref:o8[8] | The real-time unit of the choke/steal release clamp divisor `70` at `0x19834` | Behaviourally significant
@@ -5550,17 +5548,6 @@ even though the exact instruction is unlocated.
 *How it would be settled.* A targeted search of the un-cited PAGE address space for any reference to `0x1bfd4` outside `0x19bfe`–`0x19c2a`
 
 *Significance.* Cosmetic — the confirmed velocity path is unconditional, not a runtime choice.
-
-[#o4]
-==== Why the pan table's hard-pan floor is 1.8 dB deeper than the measured floor
-
-*Known.* The law is `[A]` and reconciles with the measurement everywhere except the extremes. `0x19c12`–`0x19c2a` reads a single 128-entry table forward and reversed (the bases differ by exactly `127·4`); `0x16a3e` builds it as `PAN[j] = trunc(1000 · log10(j/127))` with `PAN[0] = −2500` stored explicitly at `0x16a8a`. The measured plateau across CC10 48–80 is the `0x18dea` sum clamp pinning both channels at `TABLE[0]`, not a property of the pan law (xref:s3-6[§3.6]).
-
-*Not known.* Why the resulting floor, `PAN[0] − PAN[64]` = −22.03 dB, sits 1.8 dB below the measured −20.20 dB. Both sides are confirmed: the store was re-read byte-for-byte (`movl $0xfffff63c,0x1bfd0`), and `[M: probe 25]` records the floor as real rather than an unmeasured tail.
-
-*How it would be settled.* Re-measure the CC10 extremes against a reference captured at a level that keeps the far channel clear of both the sum clamp and the capture noise floor; failing that, locate a second attenuation term that applies only at the extremes.
-
-*Significance.* Behaviourally significant — 1.8 dB at hard pan is audible, and it is the single term blocking the instruction-level law from replacing the measured table in the engine.
 
 [#o5]
 ==== The write site that populates `region+0x14`, the phase-increment's rate multiplicand

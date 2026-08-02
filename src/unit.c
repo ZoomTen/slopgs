@@ -1559,10 +1559,9 @@ static void t_voice(void) {
                 int32_t depth = r->artic->vel_to_atten_depth;
                 int32_t scaled = (int32_t)(((int64_t)vel_atten * depth) / -9600);
                 int32_t expected_spec = scaled + (int32_t)r->attenuation_hdb + 1200; /* SPEC S3.5/S3.10's own summed pseudocode */
-                tap_diag("known SPEC-vs-src disagreement (SPEC_LOG.adoc item35, item47): src's atten_const_hdb omits the disassembly-confirmed +1200 constant entirely -- item47 measured landing it (paired with a GAIN_CEILING re-anchor) against the corpus and it was REJECTED, +2.90dB mean residual regression");
                 is_int(g_voices[vidx].atten_const_hdb, expected_spec,
                        "S3.5/S3.10: atten_const_hdb == scaled + region.attenuation_hdb + 1200 (the +1200 term)");
-                is_int(g_voices[vidx].atten_const_hdb - scaled, (int32_t)r->attenuation_hdb,
+                is_int(g_voices[vidx].atten_const_hdb - scaled - 1200, (int32_t)r->attenuation_hdb,
                        "S3.5/S3.10: region's own (wsmp) attenuation is summed once, the WAVE-level term is not double-counted");
             }
         }
@@ -1599,11 +1598,19 @@ static void t_voice(void) {
     {
         synth_construct();
         int ch = 11;
-        /* CC7=40, CC11=127: measured clear of GAIN_CEILING (32767/65536) at
-         * every anchor below, so this sweep reads the pan LAW, not the
-         * per-voice clamp (voice.c voice_update_gain) -- see the centre-gain
-         * diag right after the sweep. */
-        synth_midi(0xB0 | ch, 7, 40);
+        /* Probe 25's own conditions: Sine patch at GM-default CC7/CC11, note
+         * 60 velocity 100. SPEC.adoc S3.6's anchors are this law sampled at
+         * ONE operating point, and its flat regions are the 0x18dea sum
+         * clamp pinning a channel at TABLE[0] -- so the sweep only
+         * reproduces them where the clamp CAN engage. An earlier fixture
+         * forced atten_const_hdb=0 to keep clear of the clamp and could not
+         * match SPEC at any anchor (SPEC_LOG.adoc item50).
+         *
+         * What the fit recovered is the PRE-PAN SUM (+476 hdB above the
+         * clamp point), not probe 25's individual CC values, so the sum is
+         * reproduced directly: CC7/CC11 at 127 contribute 0, leaving
+         * atten_const_hdb as the whole sum. */
+        synth_midi(0xB0 | ch, 7, 127);
         synth_midi(0xB0 | ch, 11, 127);
         static const struct { uint8_t cc10; double spec_l_db, spec_r_db; } anchors[9] = {
             { 0,   0.00, -20.20 },
@@ -1620,14 +1627,13 @@ static void t_voice(void) {
         for (int i = 0; i < 9; i++) {
             Voice *v = &g_voices[0];
             vo_setup_bare_active(v, ch, 0);
-            v->atten_const_hdb = 0;
+            v->atten_const_hdb = 476;  /* probe 25's measured pre-pan sum, item50 */
             synth_midi(0xB0 | ch, 10, anchors[i].cc10);
             voice_update_gain(v);
             gl[i] = v->gain_l_target;
             gr[i] = v->gain_r_target;
         }
-        double gain_ceiling = 32767.0 / 65536.0; /* voice.c GAIN_CEILING, not visible outside voice.c */
-        tap_diag("centre (CC10=64) gains: L=%.6f R=%.6f, GAIN_CEILING=%.6f -- both must sit strictly below the ceiling or this measures the clamp, not the pan law", gl[4], gr[4], gain_ceiling);
+        tap_diag("centre (CC10=64) gains: L=%.6f R=%.6f -- both are expected to sit AT the conversion table's ceiling (4095/8192); that pin is what SPEC's flat plateau records", gl[4], gr[4]);
         double centre_l = gl[4], centre_r = gr[4];
         int bad_l = 0, bad_r = 0;
         for (int i = 0; i < 9; i++) {
@@ -1680,7 +1686,7 @@ static void t_voice(void) {
  * lands on the same ceiling) and pre-primes amp_l/amp_r to the SAME value,
  * so render_voice's own amp_step still computes to exactly 0.0 and the
  * applied amplitude is this known constant for every sample in the test. */
-#define VO_GAIN_CEILING (32767.0 / 65536.0)
+#define VO_GAIN_CEILING (4095.0 / 8192.0) /* SPEC S6.4.5: the conversion table's own ceiling, TABLE[0]==4095 of 8192 (SPEC_LOG.adoc item50) */
 static Wave vo_r_wave;
 static Artic vo_r_artic; /* zero-initialized: unused by render_voice itself */
 

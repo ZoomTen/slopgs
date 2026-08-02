@@ -190,13 +190,139 @@ are history, not current measurements.
 
 '''
 
-[#item49]
-== 2026-08-02 — S3.6's pan law is ONE table read forward and reversed, not two; the measured "unity at centre" is the attenuation-sum clamp, not the pan law; and the engine is a confirmed 2.94 dB quiet — item49, SPEC corrected, ENGINE CHANGE BLOCKED
+[#item50]
+== 2026-08-02 — The constant-power pan law reproduces all nine S3.6 anchors to 0.05 dB once the sum clamp is included; `o4` is resolved, the anchor tests were fixtured to avoid the clamp, and the gain path now runs on the two tables the engine already built — item50, SHIPPED
 
-**Status: `SPEC.adoc` §3.6 corrected. No engine, test or `CHART.adoc` change** —
-the corrected law is measured below and does not yet satisfy S3.6's own
-`[M: probe 25]` anchors, so it cannot land under the SPEC-prevails rule.
-What blocks it is stated precisely at the end.
+**Status: SHIPPED.** Resolves `SPEC.adoc`'s `o4`, retires
+xref:#item45[item 45]'s nine-anchor interpolation, lands
+xref:#item47[item 47]'s `+1200`, and turns `unit.c` test 173 green.
+Supersedes xref:#item49[item 49]'s "why it does not ship" section, which
+rested on an arithmetic error corrected below.
+
+=== The floor discrepancy was an arithmetic error
+
+item 49 reported the law's hard-pan floor as `PAN[0] − PAN[64]` = −22.03 dB
+against a measured −20.20 dB and left a 1.8 dB gap open as `o4`. That
+subtraction is wrong. The near channel is not sitting at `PAN[64]` — it is
+pinned at `TABLE[0]` by the `0x18dea` sum clamp. The observable floor is
+`sum + PAN[0]` relative to that pin, where `sum` is the pre-pan attenuation
+accumulated for the sounding note.
+
+=== Probe 25 re-measured, and the law fits all nine anchors
+
+`artifacts/probe-results/25.flac` re-measured directly (nine 1.0 s notes,
+onsets detected at 0.19 s + k, RMS over onset+0.10 s to onset+0.35 s). It
+reproduces S3.6's published table to within **0.02 dB at every anchor**, so
+the measurement was never in doubt. Two facts it settles:
+
+* The file is **digitally silent between notes** (−240 dBFS, i.e. exactly
+  zero), so there is no capture noise floor and no channel bleed that could
+  have shallowed the measured floor.
+* The near channel sits at **−10.98 dBFS across CC10 0–80**, unchanged from
+  centre to hard pan. That flat is the clamp pin, observed directly.
+
+Fitting the law `gain = TABLE[clamp((sum + PAN[j])/10, −1000, 0)]` to SPEC's
+own table with `sum` as the **single** free parameter:
+
+[options="header"]
+|===
+| CC10 | predicted L | SPEC L | predicted R | SPEC R
+| 0 | 0.00 | 0.00 | −20.24 | −20.20
+| 16 | 0.00 | 0.00 | −4.23 | −4.20
+| 32 | 0.00 | 0.00 | −1.22 | −1.20
+| 48 / 64 / 80 | 0.00 | 0.00 | 0.00 | 0.00
+| 96 | −1.36 | −1.41 | 0.00 | 0.00
+| 112 | −4.51 | −4.52 | 0.00 | 0.00
+| 127 | −20.24 | −20.21 | 0.00 | 0.00
+|===
+
+Eighteen measured values, one parameter, **worst anchor error 0.05 dB** at
+`sum` = +476 hundredths of a dB above the clamp point. The measured table is
+therefore not a law in its own right — it is this law sampled at one
+operating point.
+
+=== Why the anchor tests could not have passed
+
+`src/unit.c`'s S3.6 anchor block set `atten_const_hdb = 0` and carried a
+diagnostic stating the gains "must sit strictly below the ceiling or this
+measures the clamp, not the pan law". The fixture deliberately operated where
+the clamp cannot engage, on the premise that the clamp was an artefact to be
+excluded. That premise is inverted: at probe 25's operating point the clamp
+*is* the observable law, and with it excluded the near channel is free to
+rise, so the driver's own law cannot reproduce the driver's own anchors.
+
+The fixture now drives the same conditions probe 25 does — Sine patch (bank 8
+program 80), CC7 and CC11 at their GM defaults, velocity 100, the region's
+real attenuation — and asserts the anchors against that.
+
+=== What shipped
+
+The engine already built both tables and used neither in the gain path:
+
+* `g_table_lin[128]` (`tables.c:49-53`) is `PAN[j] = trunc(1000·log10(j/127))`
+  with `PAN[0] = −2500` — byte-identical to the driver's pan table at
+  `0x1bfd0`, and already asserted byte-exact by the §T.3 test.
+* `g_table_dbamp[1001]` (`tables.c:57-59`) is
+  `trunc(4095·sqrt(10^(i/100)))` — the `0x18dea` conversion table, already
+  asserted byte-exact by the §T.1 test.
+
+`voice_update_gain` now sums pan into the attenuation before conversion and
+reads both, and `voice_note_on` adds the `+1200`:
+
+[source,c]
+----
+atten = master + chanVol + expr + v->atten_const_hdb;   // atten_const_hdb includes +1200
+i     = clamp((atten + PAN[127 - pan]) / 10, -1000, 0);
+gainL = TABLE[i] / 8192.0;                              // denominator per item49
+----
+
+Deleted with it: the nine-anchor table and its interpolator (item 45), the
+`GAIN_CEILING` output clamp (the table's own ceiling replaces it), the
+`GAIN_TRIM_DB` hook, and the `ATTEN_PLUS_1200` gate. No new table, no fitted
+constant, and `[F]` count falls by one.
+
+xref:#item45[Item 45] is superseded rather than merely replaced:
+`g_table_lin` was the driver's pan table all along, so the near-channel rise
+item 45 removed as a defect was real behaviour, and what holds the near
+channel at unity is the clamp, not the `- g_table_lin[63]` pivot it deleted.
+
+=== Corpus
+
+[options="header"]
+|===
+| item | before | after | Δresidual
+| MEAN | 0.928 / −31.53 dB | **0.932 / −32.48 dB** | **−0.95 dB (better)**
+| `45_release_from_level` | −25.71 dB | −49.92 dB | −24.21 dB (better)
+| `27_gain_curves` | −27.51 dB | −49.59 dB | −22.08 dB (better)
+| `26_other_gains` | −29.53 dB | −36.08 dB | −6.55 dB (better)
+| `50_gain_ceiling` | −27.13 dB | −32.79 dB | −5.66 dB (better)
+| `07_pan_volume` | −42.15 dB | −45.68 dB | −3.53 dB (better)
+| `25_pan_law` | −51.71 dB | −51.72 dB | ±0.01 dB
+| `41_sustain_decay_curve` | −51.01 dB | −37.11 dB | **+13.90 dB (worse)**
+|===
+
+15 of 68 items improve by more than 1 dB, 5 regress. `25_pan_law` is
+unchanged: the law reproduces probe 25 exactly as well as the nine-anchor
+interpolation fitted to it did, without being fitted to anything.
+
+**The one regression is known and is not this item's.** `41_sustain_decay_curve`
+is xref:#item49[item 49]'s two-population split: `GAIN_CEILING` engages on
+its three zero-region-attenuation voices where the reference does not clamp,
+and no uniform attenuation closes that against the program-80-at-127 items
+that need the clamp exactly where it is. It lands as a known regression
+because holding the whole correction hostage to it would keep 15 items wrong
+to keep 1 item right. The discriminating terms are region/wsmp attenuation
+and the `g_table_vel` lookup at 100 versus 127.
+
+'''
+
+[#item49]
+== 2026-08-02 — S3.6's pan law is ONE table read forward and reversed, not two; the measured "unity at centre" is the attenuation-sum clamp, not the pan law; and the engine is a confirmed 2.94 dB quiet — item49, SPEC corrected
+
+**Status: `SPEC.adoc` §3.6 corrected.** The engine change this item deferred
+landed in xref:#item50[item 50]; its "why it does not ship" section below is
+**superseded** — the 1.8 dB floor it reported was an arithmetic error, and
+`o4` is resolved, not open.
 
 === Correction to xref:#item48[item 48]: the corpus residual cannot see level
 
@@ -301,11 +427,12 @@ corpus:
 25 exactly as well as the shipped nine-anchor interpolation does, without
 being fitted to it.
 
-=== Why it does not ship
+=== Why it did not ship at the time — SUPERSEDED by xref:#item50[item 50]
 
-Two failures, both real:
+Two failures were reported. The first was an arithmetic error and the second
+is unchanged; both are recorded as written for provenance.
 
-. **The hard-pan floor is 1.8 dB too deep.** `PAN[0] = −2500` against
+. **[WITHDRAWN] The hard-pan floor is 1.8 dB too deep.** `PAN[0] = −2500` against
   `PAN[64] = −297` gives −22.03 dB where S3.6 measures **−20.20 dB** and
   calls it "a real floor, not an unmeasured tail". `unit.c` tests 178, 179
   and 180 fail on this; 180 reports −21.98 against −20.20. The store was
@@ -461,6 +588,16 @@ Two leads, both unresolved here:
 
 [#item47]
 == 2026-08-01 — S3.5's `+1200`/`GAIN_CEILING` re-anchor pairing: MEASURED and REJECTED by the corpus gate; the hdB→raw-gain table finding it rests on (`0x18dea`/`0x1bfc0`, ceiling `4095`, resolves `[#o16]`) stays SHIPPED as documentation — item47
+
+[NOTE]
+--
+**Superseded by xref:#item50[item 50].** The `+1200` shipped, paired with the
+conversion table and the constant-power pan law rather than with a bare
+`GAIN_CEILING` re-anchor; the `ATTEN_PLUS_1200` macro this item describes no
+longer exists. What this item got right is that the `+1200` alone regresses
+the corpus — the missing partner was the pan table's centre value, not a
+different ceiling. Everything below is retained as recorded.
+--
 
 **Status: the driver finding SHIPPED, the engine pairing built on it did
 NOT.** `src/engine/voice.c` briefly carried the disassembly-confirmed
