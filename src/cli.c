@@ -1,16 +1,17 @@
 /* cli.c -- the native interface: a standalone command-line renderer, same
  * role as wasm.c (drives the synth core directly; a host pointer doesn't
- * fit in wasm.c's uint32 ABI). msgs-render <dls> <smf|""> <loops> <max_frames> <out_wav> */
+ * fit in wasm.c's uint32 ABI). msgs-render <dls> <smf|""> <loops> <max_frames>
+ * <out_wav> */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine/rt.h"
-#include "engine/tables.h"
 #include "engine/dls.h"
-#include "engine/synth.h"
 #include "engine/render.h"
+#include "engine/rt.h"
 #include "engine/smf.h"
+#include "engine/synth.h"
+#include "engine/tables.h"
 #include "engine/voice.h"
 
 /* allocator: malloc, never freed -- gm.dls's sample data (SPEC.adoc S1.5.5)
@@ -18,10 +19,12 @@
 
 static uint32_t g_total = 0;
 
-void *rt_alloc(uint32_t nbytes) {
+void *rt_alloc(uint32_t nbytes)
+{
     nbytes = (nbytes + 7u) & ~7u;
     void *p = calloc(1, nbytes ? nbytes : 8);
-    if (!p) {
+    if (!p)
+    {
         fprintf(stderr, "msgs-render: out of memory (%u bytes)\n", nbytes);
         exit(3);
     }
@@ -29,32 +32,49 @@ void *rt_alloc(uint32_t nbytes) {
     return p;
 }
 
-uint32_t rt_mem_size(void) {
-    return g_total;
-}
+uint32_t rt_mem_size(void) { return g_total; }
 
-static unsigned char *read_file(const char *path, uint32_t *len_out) {
+static unsigned char *read_file(const char *path, uint32_t *len_out)
+{
     FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    if (!f)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0)
+    {
+        fclose(f);
+        return NULL;
+    }
     long n = ftell(f);
-    if (n < 0) { fclose(f); return NULL; }
+    if (n < 0)
+    {
+        fclose(f);
+        return NULL;
+    }
     rewind(f);
-    unsigned char *buf = (unsigned char *)malloc((size_t)n ? (size_t)n : 1);
-    if (!buf) { fclose(f); return NULL; }
-    if (n > 0 && fread(buf, 1, (size_t)n, f) != (size_t)n) {
-        fclose(f); free(buf); return NULL;
+    unsigned char *buf = (unsigned char *) malloc((size_t) n ? (size_t) n : 1);
+    if (!buf)
+    {
+        fclose(f);
+        return NULL;
+    }
+    if (n > 0 && fread(buf, 1, (size_t) n, f) != (size_t) n)
+    {
+        fclose(f);
+        free(buf);
+        return NULL;
     }
     fclose(f);
-    *len_out = (uint32_t)n;
+    *len_out = (uint32_t) n;
     return buf;
 }
 
 /* Canonical 44-byte PCM WAV header, stereo 16-bit @ RENDER_RATE. Written as a
- * zero-size placeholder, rewritten once `frames` is known (streaming render). */
-static void write_wav_header(FILE *f, unsigned long frames) {
+ * zero-size placeholder, rewritten once `frames` is known (streaming render).
+ */
+static void write_wav_header(FILE *f, unsigned long frames)
+{
     uint32_t sample_rate = RENDER_RATE, byte_rate = RENDER_RATE * 4;
-    uint32_t data_bytes = (uint32_t)frames * 4;
+    uint32_t data_bytes = (uint32_t) frames * 4;
     uint32_t riff_size = 36 + data_bytes;
     uint32_t fmt_size = 16;
     uint16_t audio_fmt = 1, channels = 2, block_align = 4, bits = 16;
@@ -75,29 +95,47 @@ static void write_wav_header(FILE *f, unsigned long frames) {
     fwrite(&data_bytes, 4, 1, f);
 }
 
-/* Inherited single-line JSON format from the legacy Node-based harness runner. */
+/* Inherited single-line JSON format from the legacy Node-based harness runner.
+ */
 static void emit(int abi, int init_ret, int load_ret, unsigned long frames,
-                 int truncated, const char *error) {
+                 int truncated, const char *error)
+{
     printf("{\"abi_version\":%d,\"init_ret\":%d,\"load_ret\":", abi, init_ret);
-    if (load_ret == 0x7fffffff) printf("null"); else printf("%d", load_ret);
-    printf(",\"frames\":%lu,\"truncated\":%s,\"error\":",
-           frames, truncated ? "true" : "false");
-    if (error) printf("\"%s\"", error); else printf("null");
+    if (load_ret == 0x7fffffff)
+        printf("null");
+    else
+        printf("%d", load_ret);
+    printf(",\"frames\":%lu,\"truncated\":%s,\"error\":", frames,
+           truncated ? "true" : "false");
+    if (error)
+        printf("\"%s\"", error);
+    else
+        printf("null");
     printf("}\n");
 }
 
 #define CHUNK 4096
 
 /* --selftest: replay/reload check, guards a real bug -- before smf_rewind()
- * existed, msgs_is_finished()'s latch never cleared, so a second loaded song reported "finished" immediately. */
-static int selftest(const char *dls_path, const char *smf_path) {
+ * existed, msgs_is_finished()'s latch never cleared, so a second loaded song
+ * reported "finished" immediately. */
+static int selftest(const char *dls_path, const char *smf_path)
+{
     uint32_t dls_len = 0, smf_len = 0;
     unsigned char *dls = read_file(dls_path, &dls_len);
     unsigned char *smf = read_file(smf_path, &smf_len);
-    if (!dls || !smf) { fprintf(stderr, "selftest: could not read inputs\n"); return 1; }
+    if (!dls || !smf)
+    {
+        fprintf(stderr, "selftest: could not read inputs\n");
+        return 1;
+    }
 
     tables_build();
-    if (dls_load(dls, dls_len) != 0) { fprintf(stderr, "selftest: dls_load failed\n"); return 1; }
+    if (dls_load(dls, dls_len) != 0)
+    {
+        fprintf(stderr, "selftest: dls_load failed\n");
+        return 1;
+    }
 
     static int16_t buf[CHUNK * 2];
     int fail = 0;
@@ -106,37 +144,57 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * run a song to the end and latched finished. */
     unsigned long frames[2] = {0, 0};
     long long energy[2] = {0, 0};
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 2; pass++)
+    {
         synth_construct();
-        if (smf_load(smf, smf_len) != 0) { fprintf(stderr, "selftest: smf_load failed\n"); return 1; }
+        if (smf_load(smf, smf_len) != 0)
+        {
+            fprintf(stderr, "selftest: smf_load failed\n");
+            return 1;
+        }
         smf_set_loop(0);
 
-        if (smf_is_finished()) {
-            fprintf(stderr, "FAIL pass %d: finished latch still set right after smf_load\n", pass + 1);
+        if (smf_is_finished())
+        {
+            fprintf(
+                stderr,
+                "FAIL pass %d: finished latch still set right after smf_load\n",
+                pass + 1);
             fail = 1;
         }
-        for (;;) {
+        for (;;)
+        {
             uint32_t n = smf_render(buf, CHUNK);
-            for (uint32_t i = 0; i < n * 2; i++) {
+            for (uint32_t i = 0; i < n * 2; i++)
+            {
                 long long s = buf[i];
                 energy[pass] += s < 0 ? -s : s;
             }
             frames[pass] += n;
-            if (n == 0 || smf_is_finished()) break;
-            if (frames[pass] > (unsigned long)RENDER_RATE * 600UL) break; /* 10 min cap */
+            if (n == 0 || smf_is_finished())
+                break;
+            /* 10 min cap */
+            if (frames[pass] > (unsigned long) RENDER_RATE * 600UL)
+                break;
         }
-        if (!smf_is_finished()) {
-            fprintf(stderr, "FAIL pass %d: song never latched finished\n", pass + 1);
+        if (!smf_is_finished())
+        {
+            fprintf(stderr, "FAIL pass %d: song never latched finished\n",
+                    pass + 1);
             fail = 1;
         }
-        if (energy[pass] == 0) {
+        if (energy[pass] == 0)
+        {
             fprintf(stderr, "FAIL pass %d: rendered pure silence\n", pass + 1);
             fail = 1;
         }
     }
 
-    if (frames[0] != frames[1] || energy[0] != energy[1]) {
-        fprintf(stderr, "FAIL: replay differs from first play -- frames %lu vs %lu, energy %lld vs %lld\n",
+    if (frames[0] != frames[1] || energy[0] != energy[1])
+    {
+        fprintf(stderr,
+                "FAIL: replay differs from first play -- frames %lu vs %lu, "
+                "energy %lld vs %lld\n",
                 frames[0], frames[1], energy[0], energy[1]);
         fail = 1;
     }
@@ -144,14 +202,23 @@ static int selftest(const char *dls_path, const char *smf_path) {
     /* Same latch, the other way a host clears it: rewinding in place rather
      * than reloading (what msgs_reset does for a looping <bg-sound>). */
     smf_rewind();
-    if (smf_is_finished()) {
+    if (smf_is_finished())
+    {
         fprintf(stderr, "FAIL: finished latch still set after smf_rewind\n");
         fail = 1;
     }
     uint32_t n = smf_render(buf, CHUNK);
     long long e3 = 0;
-    for (uint32_t i = 0; i < n * 2; i++) { long long s = buf[i]; e3 += s < 0 ? -s : s; }
-    if (n == 0) { fprintf(stderr, "FAIL: rewound song rendered no frames\n"); fail = 1; }
+    for (uint32_t i = 0; i < n * 2; i++)
+    {
+        long long s = buf[i];
+        e3 += s < 0 ? -s : s;
+    }
+    if (n == 0)
+    {
+        fprintf(stderr, "FAIL: rewound song rendered no frames\n");
+        fail = 1;
+    }
 
     /* Pool saturation: Branch B fast-releases active voices, which keep
      * rendering for their full release before recycling -- exactly the defect
@@ -161,30 +228,43 @@ static int selftest(const char *dls_path, const char *smf_path) {
      * events into a fixed-frame window shifted it and cost one voice (47/48)
      * in an earlier version of this check. */
     synth_construct();
-    for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
-    for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(buf, CHUNK); /* ~7.4s */
+    for (int k = 0; k < 80; k++)
+        voice_note_on(0, 36 + (k % 60), 100);
+    /* ~7.4s */
+    for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++)
+        render_frames(buf, CHUNK);
     int surviving = 0;
-    for (int k = 0; k < NUM_VOICES; k++) if (g_voices[k].active) surviving++;
-    if (surviving != 48) {
-        fprintf(stderr, "FAIL: 80 held note-ons left %d voices sounding, expected 48"
-                        " (SPEC.adoc S5.5 [M]) -- reserve top-up cadence?\n", surviving);
+    for (int k = 0; k < NUM_VOICES; k++)
+        if (g_voices[k].active)
+            surviving++;
+    if (surviving != 48)
+    {
+        fprintf(stderr,
+                "FAIL: 80 held note-ons left %d voices sounding, expected 48"
+                " (SPEC.adoc S5.5 [M]) -- reserve top-up cadence?\n",
+                surviving);
         fail = 1;
     }
 
     printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames;"
            " %d/48 voices survive saturation\n",
            fail ? "FAIL" : "PASS", frames[0], frames[1], n, surviving);
-    (void)e3;
+    (void) e3;
     return fail;
 }
 
-int main(int argc, char **argv) {
-    if (argc == 4 && strcmp(argv[1], "--selftest") == 0) {
+int main(int argc, char **argv)
+{
+    if (argc == 4 && strcmp(argv[1], "--selftest") == 0)
+    {
         return selftest(argv[2], argv[3]);
     }
-    if (argc != 6) {
-        fprintf(stderr, "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_wav>\n"
-                        "       %s --selftest <dls> <smf>\n", argv[0], argv[0]);
+    if (argc != 6)
+    {
+        fprintf(stderr,
+                "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_wav>\n"
+                "       %s --selftest <dls> <smf>\n",
+                argv[0], argv[0]);
         return 1;
     }
     const char *dls_path = argv[1];
@@ -198,21 +278,27 @@ int main(int argc, char **argv) {
     smf_set_loop(0);
 
     int init_ret = 0;
-    if (dls_path[0]) {
+    if (dls_path[0])
+    {
         uint32_t dls_len = 0;
         unsigned char *dls = read_file(dls_path, &dls_len);
-        if (!dls) {
+        if (!dls)
+        {
             emit(1, -1, 0x7fffffff, 0, 0, "could not read dls");
             return 2;
         }
-        init_ret = dls_load(dls, dls_len); /* referenced in place: never freed */
+        /* referenced in place: never freed */
+        init_ret = dls_load(dls, dls_len);
     }
 
-    int load_ret = 0x7fffffff; /* sentinel -> JSON null, as node_runner emits */
-    if (smf_path[0]) {
+    /* sentinel -> JSON null, as node_runner emits */
+    int load_ret = 0x7fffffff;
+    if (smf_path[0])
+    {
         uint32_t smf_len = 0;
         unsigned char *smf = read_file(smf_path, &smf_len);
-        if (!smf) {
+        if (!smf)
+        {
             emit(1, init_ret, 0x7fffffff, 0, 0, "could not read smf");
             return 2;
         }
@@ -220,31 +306,43 @@ int main(int argc, char **argv) {
         load_ret = smf_load(smf, smf_len);
     }
 
-    smf_set_loop((int32_t)loops);
+    smf_set_loop((int32_t) loops);
 
     FILE *out = fopen(out_path, "wb");
-    if (!out) {
+    if (!out)
+    {
         emit(1, init_ret, load_ret, 0, 0, "could not open out_wav");
         return 2;
     }
-    write_wav_header(out, 0); /* placeholder, patched below once total is known */
+    /* placeholder, patched below once total is known */
+    write_wav_header(out, 0);
 
     static int16_t buf[CHUNK * 2]; /* stereo interleaved */
     unsigned long total = 0;
     int truncated = 0;
-    for (;;) {
+    for (;;)
+    {
         uint32_t n = smf_render(buf, CHUNK);
-        if (n > 0) {
-            if (fwrite(buf, 4, n, out) != n) {
+        if (n > 0)
+        {
+            if (fwrite(buf, 4, n, out) != n)
+            {
                 fclose(out);
-                emit(1, init_ret, load_ret, total, truncated, "short write to out_wav");
+                emit(1, init_ret, load_ret, total, truncated,
+                     "short write to out_wav");
                 return 2;
             }
             total += n;
         }
-        if (n == 0) break;
-        if (smf_is_finished()) break;
-        if (total >= max_frames) { truncated = 1; break; }
+        if (n == 0)
+            break;
+        if (smf_is_finished())
+            break;
+        if (total >= max_frames)
+        {
+            truncated = 1;
+            break;
+        }
     }
     write_wav_header(out, total);
     fclose(out);

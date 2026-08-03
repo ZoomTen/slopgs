@@ -273,20 +273,37 @@ If the listener is able to isolate the track and
 affected portion, treat it as a test corpus and
 perform analysis on it.
 
-== How to act
+== Code style
 
-From the `fable-mode`:
+`.clang-format` is available, so use this after a code edit.
 
-[quote]
+Never comment on the same line:
+
+[code,c]
+----
+// NO
+
+int something; // Something something
+
+int something2; /* Something else
+                   that's a bit longer */
+----
+
+[code,c]
+----
+// YES
+
+// Something something
+int something;
+
+/* Something else that's a
+   bit longer */
+int something2;
+----
+
+[NOTE]
 --
-. *Stage map first*. Numbered stages, expected output each, one verifiable artifact per stage. Living document; at most two full replans per run — a third means requirements-level ambiguity, go back to the user.
-
-. *Delegate by name where possible.* Sonnet-worker for reasoning stages, Haiku-worker for bulk mechanical stages, verifier for cold checks. Workers get: task, exact output path, context, named pass condition. Workers don't spawn workers. Cap concurrency.
-
-. *Verify with a check that can fail.* A test that runs, a file in the expected shape, a source actually fetched, an output diffed against spec. "Looks right" is not a check. Name the exact command/file/comparison or mark the stage unverified. A fix at stage N re-runs the checks it invalidated.
-
-. *Self-critique before delivery.* Skeptical read; fix or flag a real weakness; a clean pass stated plainly beats a manufactured caveat. Beyond capability → name what was attempted and where it failed.
+Exception to be made for structs and short function calls.
+But make sure the resulting line is still < 80 chars, and
+the comment must not continue in the next line.
 --
-
-For the self-critique stage, you may spawn a worker for
-this so it doesn't have the context that you have.
