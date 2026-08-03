@@ -1,18 +1,8 @@
-/* unit.c -- unit test suite for the msgs engine (the .c files under
- * src/engine/) against artifacts/SPEC.adoc. Run with `make unit` (builds
- * dist/msgs-unit and runs it) or directly as `./dist/msgs-unit`. Output is
- * TAP version 14.
- *
- * Every assertion's description cites the SPEC.adoc section it traces to
- * (e.g. "S4.3", "S T.5", "S3.4.1"). Where src/ and SPEC.adoc disagree, the
- * governing rule is: SPEC is right and the assertion is written to SPEC's
- * own value, so a "not ok" here can mean a real, documented src/SPEC
- * disagreement rather than a bug in this file -- see each failing test's own
- * description/tap_diag for the citation. Assembled mechanically from four
- * fragments (tables/rt, synth, voice/render, dls) plus this header, the
- * PRELUDE below, and main(); see the assignment brief in git history for the
- * assembly process and the three deliberate fixes applied while assembling.
- */
+/* unit.c -- unit test suite for src/engine/ against artifacts/SPEC.adoc.
+ * Run with `make unit` (builds dist/msgs-unit) or `./dist/msgs-unit`.
+ * TAP version 14 output. Where src/ and SPEC.adoc disagree, SPEC wins and
+ * the assertion is written to SPEC's value, so a "not ok" can be a real,
+ * documented disagreement rather than a bug in this file. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,17 +18,9 @@
 
 static int have_dls;   /* set by main(): 1 if dist/gm.dls loaded and parsed */
 
-/* frag_tables.c -- SPEC.adoc Appendix T / S3.3.1 / S1.4 vs. tables.c/rt.c.
- * Concatenated into src/unit.c verbatim. Governing rule: where src/ and
- * SPEC disagree, SPEC is right and the test asserts SPEC's value -- so it
- * fails. See SCRATCH/claims_tables.md for the full claim inventory this
- * fragment tests against.
- */
+/* frag_tables.c -- SPEC.adoc Appendix T / S3.3.1 / S1.4 vs. tables.c/rt.c. */
 
-/* ------------------------------------------------------------------ */
-/* Golden data, mechanically extracted from SCRATCH/golden_tables.h by
- * SCRATCH/gen_golden.py (verified byte-for-byte round-trip against the
- * source by SCRATCH/verify_golden.py -- see report). Do not hand-edit. */
+/* Golden data is machine-generated and round-trip verified; do not hand-edit -- SPEC_LOG item56 */
 
 static const int32_t tb_golden_vel[128] = {
     -9600, -8415, -7211, -6506, -6006, -5619, -5302, -5034, -4802, -4598, -4415, -4249, -4098, -3959, -3830, -3710,
@@ -228,8 +210,6 @@ static const uint8_t tb_golden_companding[2048] = {
     127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
 };
 
-/* ------------------------------------------------------------------ */
-
 static void t_tables(void) {
     int i;
 
@@ -249,11 +229,7 @@ static void t_tables(void) {
 
     is_int(g_table_vel[0], -9600, "S T.2 velocity table[0] is the hardcoded -9600 silence floor, not a curve point");
 
-    /* S T.3 -- linear/pan table, whole-table compare. g_table_lin is indexed
-     * by raw MIDI velocity v (0..127, index 0 = the separate v=0 floor
-     * scalar); tb_golden_lin[k] is SPEC's row for v=k+1 (SPEC T.3: "index
-     * k = v-1, i.e. table[0] corresponds to v=1"), so compare g_table_lin[v]
-     * against tb_golden_lin[v-1] for v=1..127. */
+    /* S T.3: g_table_lin[v] vs tb_golden_lin[v-1] (SPEC's row for v=k+1 is table[k]). */
     {
         int v, mism = 0, first = -1;
         for (v = 1; v <= 127; v++) {
@@ -272,10 +248,7 @@ static void t_tables(void) {
     is_int(g_table_lin[64], -297, "S T.3 SPEC's own check: v=64 -> -297");
     is_int(g_table_lin[127], 0, "S T.3 SPEC's own check: v=127 -> 0");
 
-    /* S T.4 -- Table C, whole-table compare. EXPECT FAIL: tables.c's loop
-     * (tables.c:64-68) computes trunc(1000 + x*x*10000/96) -- it is missing
-     * the log10() call SPEC's formula requires entirely, so all 200 non-
-     * zero entries differ (claims_tables.md claim #9 / disagreement #1). */
+    /* S T.4: Table C mismatch is the missing-log10 bug, SPEC_LOG item46. */
     {
         int mism = 0, first = -1;
         for (i = 0; i <= 200; i++) {
@@ -292,18 +265,7 @@ static void t_tables(void) {
     is_int(g_table_envshape[0], 0, "S T.4 Table C t[0] is the explicit zeroing, not part of the trunc formula");
     is_int(g_table_envshape[200], 999, "S T.4 SPEC's own check: t[200] -> 999 (tables.c's missing-log10 bug gives 1104 instead, see disagreement #1)");
 
-    /* S T.5 -- Table D (sine LFO), whole-table compare. Executed check (not
-     * an EXPECT FAIL, unlike Table C above): tables_build() populates all
-     * 256 entries identically to SPEC's golden dump (mism=0), including at
-     * i=64/i=192. tables.c:72 does use the full double-precision 2*pi
-     * literal (6.28318530717958647692) rather than the binary's stored
-     * float32-rounded 2*pi (0x11d18 = 6.2831854820251465), but that constant
-     * mismatch never survives rt_sin's own Taylor-series undershoot plus the
-     * final trunc-to-int16 at any of the 256 sampled phases -- verified by
-     * direct execution, not merely at the two spot-checked indices below
-     * (claims_tables.md claim #12 / disagreement #2 describes the
-     * theoretical mismatch; it does not manifest in this table's actual
-     * output). */
+    /* Table D matches SPEC despite tables.c's full-double 2*pi (vs float32-rounded); verified over all 256 phases -- SPEC_LOG item56 */
     {
         int mism = 0, first = -1;
         for (i = 0; i < 256; i++) {
@@ -353,9 +315,7 @@ static void t_tables(void) {
     is_int((int32_t)(-6506.72987141667), -6506, "S1.4.2 language-level check: C's (int32_t) cast truncates toward zero (matches the driver's shared 0x106e0 helper), not round()");
 
     {
-        /* Table-level consequence, S1.4.2 applied to S T.2's own v=3 entry:
-         * recompute SPEC's formula with libm directly here (not via the
-         * golden table) and show the table took the truncating branch. */
+        /* S1.4.2/S T.2 v=3: libm recompute shows the table took the truncating branch. */
         double val = 1000.0 * log10(pow(3.0 / 127.0, 4.0));
         int32_t t = (int32_t)val;        /* truncate toward zero, matches tables.c's trunc_i32() */
         int32_t r = (int32_t)round(val); /* round to nearest -- NOT what the driver does */
@@ -365,9 +325,7 @@ static void t_tables(void) {
     }
 
     {
-        /* S T.2's own divergence claim: "64 of 127 entries would differ by
-         * one unit under round-to-nearest instead of truncate". Recompute
-         * all 127 entries with libm and count. */
+        /* S T.2's own claim: 64/127 entries differ under round-to-nearest vs truncate. */
         int v, diff_count = 0;
         for (v = 1; v <= 127; v++) {
             double ratio = (double)v / 127.0;
@@ -380,15 +338,10 @@ static void t_tables(void) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-
 static void t_rt(void) {
     int i;
 
-    /* rt_pow(2.0,x) vs libm pow(2.0,x) across the cents domain the driver
-     * actually uses (x = -4800/1200 .. 4800/1200). Tolerance is this
-     * test's own choice, not a SPEC number -- SPEC S1.4.3 only says plain
-     * double is sufficient and bit-exactness vs MSVC's CRT is not required. */
+    /* rt_pow(2,x) vs libm over the driver's cents domain; tolerance is this test's own choice, not SPEC's (S1.4.3 only requires plain double). */
     {
         int cents;
         double maxrel = 0.0, worst_x = 0.0;
@@ -433,9 +386,7 @@ static void t_rt(void) {
         ok(maxrel < 1e-10, "S1.4.3 rt_log10(v/127.0) agrees with libm log10(v/127.0) to < 1e-10 relative error across the S T.2 velocity domain v=1..127; tolerance is this test's own choice (observed worst case is ~1.2e-12, this bound gives headroom), not SPEC's number");
     }
 
-    /* rt_sqrt exactness: both rt_sqrt and libm sqrt should lower to the
-     * hardware sqrtsd instruction, so bit-for-bit equality is expected
-     * (not merely close). */
+    /* rt_sqrt and libm sqrt both lower to hardware sqrtsd -- bit-exact, not merely close. */
     {
         static const double vals[] = { 0.0, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 96.04, 100.0, 1.0/3.0, 1.0e10 };
         int n = (int)(sizeof(vals) / sizeof(vals[0]));
@@ -447,10 +398,8 @@ static void t_rt(void) {
         is_int(mism, 0, "rt.c's own contract (both rt_sqrt and libm sqrt lower to the hardware sqrtsd instruction): rt_sqrt(x) == sqrt(x) bit-for-bit for a spread of test values");
     }
 
-    /* rt_sin vs libm sin at the 256 Table-D LFO phases, using the same
-     * full-double 2*pi both sides so this isolates rt_sin's own polynomial
-     * accuracy from the float32-2pi table-building issue tracked separately
-     * in t_tables (S T.5). Absolute (not relative) error, since sin crosses 0. */
+    /* rt_sin vs libm at the 256 Table-D phases, same full-double 2*pi both sides --
+     * isolates polynomial accuracy from the float32-2pi issue tracked in t_tables (S T.5). */
     {
         const double pi2 = 6.28318530717958647692;
         double maxabs = 0.0, worst_ph = 0.0;
@@ -477,20 +426,12 @@ static void t_rt(void) {
         ok(maxabs < 1e-9, "S1.4.3 rt_log(rt_exp(x)) round-trips x to < 1e-9 absolute error over x=-20.0..20.0; tolerance is this test's own choice, not SPEC's number");
     }
 
-    /* Documented edge-case contracts from rt.c's own comments (not SPEC
-     * behavioral claims -- S1.5.1 only establishes that the module must
-     * supply its own runtime math primitives, it makes no statement about
-     * these specific edge cases). */
+    /* Edge-case contracts are rt.c's own documented behavior, not SPEC claims (S1.5.1 only requires the primitives exist). */
     ok(rt_sqrt(-1.0) == 0.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own sqrt primitive): rt_sqrt(-1.0) == 0.0 per rt.c's x<=0 domain clamp");
     ok(rt_pow(0.0, 2.0) == 0.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own pow primitive): rt_pow(0.0, 2.0) == 0.0 per rt.c's base==0 special case");
     ok(rt_pow(0.0, -1.0) == 1.0, "rt.c's own documented contract, not a SPEC claim (S1.5.1 only requires rt.c supply its own pow primitive): rt_pow(0.0, -1.0) == 1.0 per rt.c's base==0,exponent<=0 special case");
 
-    /* SPEC S3.4.1's own documented worst case (a real, checkable number, not
-     * an invented tolerance): tc=4330.571090698242 evaluated as
-     * rt_pow(2.0, tc/1200.0)*22050.0 must truncate to 269009 samples.
-     * Executed check: libm gives 269009.99992038216 -- exactly SPEC's own
-     * printed figure -- and rt_pow gives 269009.99992788181; both truncate
-     * to 269009. */
+    /* S3.4.1's own worst-case tc=4330.571090698242 truncates to 269009 samples; libm and rt_pow both agree. */
     {
         double tc = 4330.571090698242;
         double got = rt_pow(2.0, tc / 1200.0) * 22050.0;
@@ -498,13 +439,8 @@ static void t_rt(void) {
         is_int((int32_t)got, 269009, "S3.4.1 SPEC's documented worst-case timecent (tc=4330.571090698242) truncates to 269009 samples");
     }
 
-    /* Margin-headroom test: S3.4.1 says the minimum distance to a truncation
-     * boundary on gm.dls's actual timecent values is 1,367,824 ULP. Convert
-     * that to a relative-error margin at the worst-case magnitude (269010
-     * samples) and assert rt_pow's OWN measured worst relative error against
-     * libm, over the driver's timecent domain, stays below it -- reporting
-     * via tap_diag exactly how much of the margin is consumed, since SPEC's
-     * "over a million ULP" prose reads far roomier than the measured number. */
+    /* S3.4.1's 1,367,824-ULP margin, converted to relative error at 269010 samples;
+     * rt_pow's own worst-case error must stay under it. */
     {
         double margin_ulp = 1367824.0;
         double ulp_at_269010 = nextafter(269010.0, INFINITY) - 269010.0;
@@ -526,20 +462,7 @@ static void t_rt(void) {
 }
 
 /* frag_synth.c -- unit tests for src/engine/synth.c against artifacts/SPEC.adoc
- * Part 4 (MIDI Control Plane), claims S-1..S-63 in SCRATCH/claims_core.md.
- *
- * Governing rule for this fragment: where src/ and SPEC.adoc disagree, SPEC
- * is right and the assertion below is written to SPEC's own text -- expected
- * failures are the point, not a bug in this file. Every failing assertion
- * carries a comment naming the disagreement.
- *
- * have_dls is 0 in this harness (see SCRATCH/harness_synth.c's main()), so
- * dls_find_region() can never resolve a region and voice_note_on() can never
- * allocate a voice. Anything that requires an actually-sounding Voice (S-19's
- * instrument-collection test, CC120/CC123's "releases/defers a held voice"
- * half) is impossible to exercise here and is explicitly tap_skip()'d rather
- * than faked.
- */
+ * Part 4 (MIDI Control Plane). */
 
 /* ---- helpers: build SysEx buffers matching S4.5's layouts. `buf` excludes
  * the leading 0xF0 (synth_sysex's own contract, synth.h). ---- */
@@ -580,19 +503,8 @@ static void sy_select_rpn(int ch, uint16_t rpn) {
 static void t_synth(void) {
     tap_diag("=== synth.c: SPEC.adoc Part 4 (MIDI Control Plane), claims S-1..S-63 ===");
 
-    /* ---------------------------------------------------------------
-     * S4.6.4 reset-state summary table -- System Reset (0xFF) net effect.
-     * ---------------------------------------------------------------
-     * synth_construct() (SPEC's S4.2.1 power-on ctor: pb_range_cents=200,
-     * rpn_select=0x3FFF, sustain=0, plus the ordinary reset body) is the
-     * fixture below -- it establishes the ctor defaults so the setup step
-     * can drive each of the three fields away from them with real MIDI.
-     * *Then* the reset path under test (synth_midi(0xFF,..)/sy_gs_reset()/
-     * sy_gm()) runs, and S4.6.4's stated post-reset value is checked --
-     * "unchanged"/"not touched", i.e. still the driven-away value, not the
-     * ctor value. synth_reset() itself (what those reset paths actually
-     * call) deliberately no longer sets these three (SPEC_LOG.adoc item41).
-     */
+    /* S4.6.4 System Reset: fixture drives pb_range_cents/rpn_select/sustain away
+     * from ctor defaults first, so "unchanged" (SPEC) != "reset" (src, SPEC_LOG item41). */
     tap_diag("--- S4.6.4 reset-state summary table: System Reset (0xFF) net effect ---");
     {
         int ch = 0;
@@ -651,9 +563,7 @@ static void t_synth(void) {
         is_int(g_gs_mode, 0, "S4.6.4 GS-mode flag -> 0 after System Reset");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.6.4 net effect via GS Reset SysEx.
-     * --------------------------------------------------------------- */
+    /* S4.6.4 reset-state summary table: GS Reset SysEx net effect. */
     tap_diag("--- S4.6.4 reset-state summary table: GS Reset SysEx net effect ---");
     {
         int ch = 1;
@@ -676,9 +586,7 @@ static void t_synth(void) {
                "S4.6.4 Sustain raw value not force-zeroed by GS Reset (SPEC: only a release event queued; src (S-16) zeroes the byte)");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.6.4 net effect via GM System On/Off SysEx.
-     * --------------------------------------------------------------- */
+    /* S4.6.4 reset-state summary table: GM System On/Off net effect. */
     tap_diag("--- S4.6.4 reset-state summary table: GM System On/Off net effect ---");
     {
         int ch = 2;
@@ -704,9 +612,7 @@ static void t_synth(void) {
                "S4.6.4 Sustain raw value not force-zeroed by GM System Off (src (S-16) zeroes the byte)");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.1.2/S4.1.3 entry-point semantics.
-     * --------------------------------------------------------------- */
+    /* S4.1.2/S4.1.3 entry-point semantics. */
     tap_diag("--- S4.1.2/S4.1.3 entry-point semantics ---");
     {
         int ch = 0;
@@ -739,9 +645,7 @@ static void t_synth(void) {
         is_int(g_gs_mode, 1, "S4.1.3 no checksum is ever computed/checked -- GS Reset with the checksum byte absent still processed");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.3 Control Change table -- implemented controllers.
-     * --------------------------------------------------------------- */
+    /* S4.3 Control Change table: implemented controllers. */
     tap_diag("--- S4.3 CC table: implemented controllers ---");
     {
         int ch = 0;
@@ -790,10 +694,7 @@ static void t_synth(void) {
         synth_midi(0xB0 | ch, 101, 0x15); /* MSB -> bits 7-13, must not disturb bits 0-6 */
         is_int(g_channels[ch].rpn_select, 0x0AAA, "S4.4/S4.3 CC101 RPN MSB sets bits 7-13, preserves bits 0-6");
 
-        /* SPEC.adoc S4.3 [A:0x1351f]-[0x13523] (SPEC_LOG.adoc item42): Channel
-         * Volume and Pan re-schedule only when CC121's own value byte is
-         * non-zero; Expression/Pitch Bend/Modulation are unconditional. Both
-         * sides of the gate are exercised below. */
+        /* SPEC.adoc S4.3 [A:0x1351f]-[0x13523]: CC121 gates Volume/Pan re-schedule on a nonzero value byte (SPEC_LOG item42). */
         synth_construct();
         synth_midi(0xB0 | ch, 7, 40);
         synth_midi(0xB0 | ch, 10, 20);
@@ -876,9 +777,7 @@ static void t_synth(void) {
                  "S4.3/S5.9 CC123 All Notes Off defers a held voice when sustain is down, honouring it (via synth_midi CC dispatch, real note-on)");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.3 Control Change table -- discarded controllers.
-     * --------------------------------------------------------------- */
+    /* S4.3 Control Change table: discarded controllers. */
     tap_diag("--- S4.3 CC table: discarded controllers (send-and-assert-nothing-moved) ---");
     {
         static const int discarded_ccs[] = {2, 5, 8, 66, 91, 96, 122};
@@ -892,9 +791,7 @@ static void t_synth(void) {
         }
     }
 
-    /* ---------------------------------------------------------------
-     * S4.4 RPN and NRPN.
-     * --------------------------------------------------------------- */
+    /* S4.4 RPN and NRPN. */
     tap_diag("--- S4.4 RPN and NRPN ---");
     {
         int ch = 0;
@@ -933,23 +830,7 @@ static void t_synth(void) {
                "S4.4 Null/unselected RPN: the raw combined data-entry word still updates");
     }
 
-    /* ---------------------------------------------------------------
-     * S3.3.2(c) live pitch-bend-cents formula.
-     *
-     * NOTE on a citation nit in synth.c's own comment (see report): the
-     * comment above synth_pitch_bend_cents attributes this floor behaviour
-     * to "SPEC.adoc S4.4", and the assignment brief that generated this
-     * fragment characterized that as a live disagreement with S4.4's
-     * "C-style truncation toward zero" text. Having read SPEC.adoc directly:
-     * S4.4's truncation-toward-zero statement is about the *RPN1* formula
-     * (a different formula, tested above and confirmed agreeing), not this
-     * one. This formula's own SPEC citation is S3.3.2(c), whose text reads,
-     * verbatim: "with an arithmetic right shift -- truncation toward
-     * negative infinity, not toward zero." That IS floor, and it is exactly
-     * what synth.c's `>>13` computes. So the assertions below assert floor
-     * (matching both SPEC S3.3.2(c) and src) and are expected to PASS, not
-     * fail -- there is no live S3.3.2(c) disagreement here.
-     * --------------------------------------------------------------- */
+    /* synth.c mis-cites S4.4 instead of S3.3.2(c) for the bend-cents floor; no live disagreement -- SPEC_LOG item56 */
     tap_diag("--- S3.3.2(c) pitch bend -> cents (see NOTE above re: a citation nit, not a functional bug) ---");
     {
         int ch = 0;
@@ -977,9 +858,7 @@ static void t_synth(void) {
         is_int(synth_pitch_bend_cents(ch), 350, "S3.3.2c pitch bend cents at raw=12288, re-ranged to 700 cents");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch.
-     * --------------------------------------------------------------- */
+    /* S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch. */
     tap_diag("--- S4.8 channel 10/drum-part selection; S4.2.1 scheduled-locale latch ---");
     {
         synth_construct();
@@ -1005,9 +884,7 @@ static void t_synth(void) {
                "S4.2.1 a following Program Change latches the new bank into the scheduled locale");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.5/T.8 RCV CHANNEL: SPEC's Part-indirection model vs src's no-op.
-     * --------------------------------------------------------------- */
+    /* S4.5/T.8 RCV CHANNEL: SPEC's Part-indirection model vs src's no-op. */
     tap_diag("--- S4.5 RCV CHANNEL: SPEC's Part-indirection model vs src's documented no-op (S-59) ---");
     {
         synth_construct();
@@ -1020,9 +897,7 @@ static void t_synth(void) {
                "S4.5/T.8 ...and channel 0 (block 1's un-remapped default target) is left untouched");
     }
 
-    /* ---------------------------------------------------------------
-     * S4.5 unrecognized SysEx addresses; Master Volume MSB-only.
-     * --------------------------------------------------------------- */
+    /* S4.5 unrecognized SysEx addresses; Master Volume MSB-only. */
     tap_diag("--- S4.5 unrecognized GS DT1 addresses; Master Volume MSB-only ---");
     {
         synth_construct();
@@ -1047,25 +922,10 @@ static void t_synth(void) {
     synth_construct(); /* leave global state clean for the next fragment */
 }
 
-/* frag_voice.c -- unit coverage for voice.c (SPEC Parts 3 & 5) and render.c
- * (SPEC Part 6), concatenated verbatim into src/unit.c. No main(); PRELUDE
- * (stdio/stdlib/string/math, unit_tap.h, engine/{tables,rt,synth,voice,dls,
- * render}.h, `have_dls`) is supplied by the assembly stage above this file.
- *
- * Where src and SPEC.adoc disagree, these tests assert what SPEC.adoc says
- * (per the assignment's governing rule), so some are EXPECTED to fail --
- * each such case is called out in a tap_diag() right next to the assertion.
- */
+/* frag_voice.c -- unit coverage for voice.c (SPEC Parts 3 & 5) and render.c (SPEC Part 6). */
 
-/* ------------------------------------------------------------------ */
-/* Shared fixtures and helpers.                                        */
-/* ------------------------------------------------------------------ */
-
-/* A minimal, always-valid Artic for hand-built voices that only exercise
- * pool/steal/choke/release ROUTING (not real DLS-authored envelope shape).
- * eg1_release_tc==0 (not the INT32_MIN "never" sentinel) gives a finite,
- * exactly-known 1.0s authored release (2^(0/1200)==1), which is what makes
- * the fast-release clamp (S5.6) deterministically bind in the tests below. */
+/* Minimal Artic for pool/steal/choke/release ROUTING fixtures (not real DLS
+ * envelope shape); eg1_release_tc==0 gives a known 1.0s release so S5.6's fast-release clamp binds deterministically below. */
 static Artic vo_bare_artic;
 
 static void vo_setup_bare_active(Voice *v, int channel, int note) {
@@ -1087,11 +947,8 @@ static int vo_all_eq_i16(const int16_t *buf, uint32_t n, int16_t val) {
     return 1;
 }
 
-/* SPEC S3.4.1: tc = lScale/65536.0; duration = 2^(tc/1200); DLS "never"
- * sentinel INT32_MIN -> 0. Independent reimplementation (voice.c's own
- * timecents_to_seconds is `static`, unreachable without #include-ing a .c
- * file) sharing rt_pow -- the same primitive src's build calls -- so results
- * are directly, exactly comparable rather than merely "close". */
+/* S3.4.1: tc=lScale/65536, duration=2^(tc/1200), INT32_MIN->0. Independent
+ * reimplementation (voice.c's own is static) sharing rt_pow, so directly comparable. */
 static double vo_timecents_to_seconds(int32_t tc) {
     if (tc == (int32_t)0x80000000) return 0.0;
     double t = (double)tc / 65536.0;
@@ -1108,10 +965,8 @@ static int32_t vo_scale_tc_by_source(int32_t tc, int16_t depth, int src) {
     return tc + cents * 65536;
 }
 
-/* SPEC S3.3.3 CentsToRatio: clamp +-4800, direct T2 lookup for |cents|<=100,
- * else T2/T3 decomposition. Independent reimplementation reading the same
- * PUBLIC g_table_cents/g_table_semi tables src's static cents_to_ratio_q12
- * also reads -- not a call into voice.c's own function. */
+/* S3.3.3 CentsToRatio: clamp +-4800, T2 lookup for |cents|<=100, else T2/T3
+ * decomposition. Reads the same public tables src's static cents_to_ratio_q12 does. */
 static int32_t vo_cents_to_ratio_q12(int32_t cents) {
     if (cents > 4800) cents = 4800;
     if (cents < -4800) cents = -4800;
@@ -1126,7 +981,6 @@ static int32_t vo_cents_to_ratio_q12(int32_t cents) {
     return (int32_t)((t3 * scaled) >> 12);
 }
 
-/* ==================================================================== */
 static void t_voice(void) {
     synth_construct();
     voice_pool_reset();
@@ -1598,18 +1452,9 @@ static void t_voice(void) {
     {
         synth_construct();
         int ch = 11;
-        /* Probe 25's own conditions: Sine patch at GM-default CC7/CC11, note
-         * 60 velocity 100. SPEC.adoc S3.6's anchors are this law sampled at
-         * ONE operating point, and its flat regions are the 0x18dea sum
-         * clamp pinning a channel at TABLE[0] -- so the sweep only
-         * reproduces them where the clamp CAN engage. An earlier fixture
-         * forced atten_const_hdb=0 to keep clear of the clamp and could not
-         * match SPEC at any anchor (SPEC_LOG.adoc item50).
-         *
-         * What the fit recovered is the PRE-PAN SUM (+476 hdB above the
-         * clamp point), not probe 25's individual CC values, so the sum is
-         * reproduced directly: CC7/CC11 at 127 contribute 0, leaving
-         * atten_const_hdb as the whole sum. */
+        /* Probe 25 conditions: Sine patch, GM-default CC7/CC11, note 60 vel 100.
+         * atten_const_hdb=476 is probe 25's measured pre-pan sum (SPEC_LOG item50);
+         * an earlier zero-sum fixture could not match SPEC at any anchor. */
         synth_midi(0xB0 | ch, 7, 127);
         synth_midi(0xB0 | ch, 11, 127);
         static const struct { uint8_t cc10; double spec_l_db, spec_r_db; } anchors[9] = {
@@ -1670,22 +1515,12 @@ static void t_voice(void) {
     synth_construct();
 }
 
-/* ==================================================================== */
-/* t_render: SPEC Part 6.                                                */
-/* ==================================================================== */
+/* t_render: SPEC Part 6. */
 
-/* A flat-amplitude, one-shot voice fixture for phase/interpolation/
- * saturation tests. render_frames() ALWAYS calls voices_update_modulation()
- * -- which calls voice_update_gain() -- for every active voice on every
- * sub-chunk, so any gain_l/gain_r/amp_l/amp_r priming is overwritten before
- * render_voice ever runs; there is no way to make a real render_frames()
- * call bypass that. VO_GAIN_CEILING (S6.4.5-1's own stated 32767/65536
- * bound) is what voice_update_gain deterministically clamps to once
- * atten_const_hdb is pushed far enough positive -- so instead of fighting
- * the pipeline, the fixture forces that clamp (any channel/pan state still
- * lands on the same ceiling) and pre-primes amp_l/amp_r to the SAME value,
- * so render_voice's own amp_step still computes to exactly 0.0 and the
- * applied amplitude is this known constant for every sample in the test. */
+/* render_frames() always recomputes gain via voices_update_modulation(),
+ * overwriting any gain/amp priming -- so this fixture forces the
+ * VO_GAIN_CEILING clamp (S6.4.5-1, SPEC_LOG item50) instead, which lands
+ * on the same value regardless of channel/pan state. */
 #define VO_GAIN_CEILING (4095.0 / 8192.0) /* SPEC S6.4.5: the conversion table's own ceiling, TABLE[0]==4095 of 8192 (SPEC_LOG.adoc item50) */
 static Wave vo_r_wave;
 static Artic vo_r_artic; /* zero-initialized: unused by render_voice itself */
@@ -1918,33 +1753,13 @@ static void t_render(void) {
     synth_construct();
 }
 
-/* frag_dls.c -- t_dls() unit tests for src/engine/dls.c against SPEC.adoc
- * Part 2 (RIFF/DLS parser). Concatenated into src/unit.c verbatim; see
- * SCRATCH/claims_dls.md for the full claim inventory (D-1..D-33) this test
- * traces to. PRELUDE (stdio/stdlib/string/math, unit_tap.h, the engine
- * headers, `static int have_dls`) is provided by the assembly stage above
- * this file.
- *
- * Block A: S2.10/S2.11 gm.dls inventory, walked off the real g_dls that
- *          main() populates from dist/gm.dls. Gated on have_dls.
- * Block B: S2.4/S2.5 articulation -- default velocity->attenuation depth and
- *          one real lScale conversion, both off the real g_dls. Gated on
- *          have_dls.
- * Block C: S2.9/S2.10 locale packing + S3.1 three-tier fallback, off the
- *          real g_dls (probe-36's key-25 silence). Gated on have_dls.
- * Block B3/C-synth: S2.4.4 ignored usSource==4, and S3.1.4 region-selection
- *          file-order -- both need a crafted connection/region gm.dls itself
- *          never authors, so these two run unconditionally on their own tiny
- *          synthetic buffers.
- * Block D: S2.2.2 malformed-buffer error table (D-21/D-22/D-23/D-26/D-27).
- *          Runs unconditionally, does not need gm.dls.
- *
- * IMPORTANT: dls_load() overwrites the global g_dls on every call. Blocks
- * A/B(real)/C(real) above must run first, while g_dls is still the real
- * dist/gm.dls parse. From the "synthetic" sub-block of B3/C onward, every
- * test below calls dls_load() on a hand-built buffer and g_dls is clobbered
- * for good -- nothing after that point may assume g_dls is dist/gm.dls.
- */
+/* frag_dls.c -- t_dls() coverage for dls.c against SPEC.adoc Part 2.
+ * Block A/B/C: S2.10/S2.11 inventory, S2.4/S2.5 articulation, S2.9/S3.1
+ * locale+fallback -- all off the real g_dls from dist/gm.dls (have_dls).
+ * Block B3/C-synth/D: S2.4.4 ignored usSource==4, S3.1.4 region file-order,
+ * S2.2.2 malformed-buffer table -- synthetic buffers, no gm.dls needed.
+ * IMPORTANT: dls_load() overwrites g_dls on every call; A/B/C (real) MUST
+ * run before any synthetic-buffer test below clobbers it for good. */
 
 /* -------------------------------------------------------------------- */
 /* Tiny RIFF/DLS buffer builder for the synthetic (Block B3/C-synth/D)
@@ -2187,7 +2002,6 @@ static void dl_build_overlap(dl_buf *out) {
     dl_raw(out, body.d, body.n);
 }
 
-/* -------------------------------------------------------------------- */
 /* Small read-side helpers over the parsed g_dls (Blocks A/B/C). */
 
 static Instrument *dl_find_inst(uint32_t locale) {
@@ -2205,8 +2019,6 @@ static int dl_range_covered(Instrument *inst, int lo, int hi) {
         if (!dl_key_covered(inst, k)) return 0;
     return 1;
 }
-
-/* -------------------------------------------------------------------- */
 
 static void t_dls(void) {
     tap_diag("--- Block A: S2.10/S2.11 gm.dls inventory ---");
@@ -2358,16 +2170,7 @@ static void t_dls(void) {
         ok(bad == 0, "S2.5: every region's artic->vel_to_atten_depth == -9600 default "
                       "(gm.dls has zero KEYONVELOCITY->ATTENUATION art1 connections, S2.11)");
 
-        /* Instrument locale 0x1007a (bank MSB 4, program 122): its shared
-         * instrument-level lart carries exactly one (0,0,0x0002) connection,
-         * lScale=-8, and one (0,0,0x0004) connection, lScale=-524288 (raw
-         * values read independently via SCRATCH/riff_walk.py). Per S2.4.2/
-         * S2.4.3, dest 0x0002 -> (lScale<<4)/125 = (-8<<4)/125 = -128/125 =
-         * -1 (truncated toward zero); dest 0x0004 -> (lScale>>12)/125 =
-         * (-524288>>12)/125 = -128/125 = -1. Both write the same pan_cb
-         * field, and both formulas happen to agree at -1 for this
-         * instrument's real data, so file order between the two connections
-         * doesn't matter for this assertion. */
+        /* gm.dls instrument 0x1007a (bank MSB 4, prog 122): pan_cb data point for S2.4.2/S2.4.3 -- SPEC_LOG item56 */
         Instrument *inst = dl_find_inst(0x1007au);
         ok(inst != 0, "S2.9/S2.10: instrument locale 0x1007a (bank MSB 4, program 122) present in gm.dls");
         ok(inst && inst->first_region && inst->first_region->artic && inst->first_region->artic->pan_cb == -1,
@@ -2471,8 +2274,6 @@ static void t_dls(void) {
         ok(dls_load(buf.d, buf.n) < 0, "S2.2.2/S2.7.2: data chunk before fmt (error 0x80041389) should abort the whole load (D-27)");
     }
 }
-
-/* ------------------------------------------------------------------ */
 
 int main(void) {
     tap_begin();

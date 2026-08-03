@@ -1,4 +1,3 @@
-/* synth.h -- channel state, MIDI dispatch, CC/RPN/SysEx. SPEC.adoc Part 4. */
 #ifndef SYNTH_H
 #define SYNTH_H
 
@@ -6,12 +5,7 @@
 
 typedef struct Channel {
     uint8_t bank_msb, bank_lsb, program;
-    /* SPEC.adoc S4.2.1: the Bank/Program queue's "+0x18 current value" is the
-     * SCHEDULED 21-bit locale (programme|bankLSB<<7|bankMSB<<14, no drum
-     * bit), latched by 0x16df4 only on Program Change / GS Reset / GM
-     * System On-Off / System Reset -- NOT recomputed live from bank_msb/
-     * bank_lsb on every read. A Bank Select alone does not move it; only a
-     * following Program Change (or a reset) does (SPEC_LOG.adoc #14). */
+    /* SPEC.adoc S4.2.1: scheduled 21-bit locale, latched at Program Change/reset only, not recomputed live from bank bytes (SPEC_LOG.adoc item14). */
     uint32_t scheduled_locale;
     uint8_t volume;       /* CC7, default 100 */
     uint8_t expression;   /* CC11, default 127 */
@@ -33,25 +27,15 @@ extern uint8_t g_gs_mode;          /* gates CC0/CC32 storage, SPEC.adoc S3.1.1/S
 extern int32_t g_master_vol_hdb;   /* master volume attenuation, hundredths of a dB */
 
 void synth_reset(void);
-/* Device construction/open: SPEC.adoc S4.2.1's power-on defaults, then the
- * synth_reset() body. Use this (not synth_reset()) anywhere a caller wants a
- * freshly-defaulted device rather than to model an actual MIDI-level reset
- * (System Reset/GS Reset/GM System On-Off) arriving mid-session -- those
- * three deliberately do NOT reset RPN0, the RPN/NRPN-select register or the
- * sustain byte (SPEC.adoc S4.6.4, SPEC_LOG.adoc item41). */
+/* Device construction/open: SPEC.adoc S4.2.1 power-on defaults + synth_reset() body; MIDI-level resets don't touch RPN0/RPN-select/sustain (SPEC.adoc S4.6.4, SPEC_LOG.adoc item41). */
 void synth_construct(void);
 uint32_t synth_channel_locale(int ch); /* program|bankLSB<<7|bankMSB<<14|drum<<31 */
 int32_t synth_pitch_bend_cents(int ch);
 
-/* Dispatch one short MIDI message (explicit status byte; running-status
- * expansion, if any, is the caller's job -- SPEC_LOG.adoc). status==0xFF is
- * treated as System Reset. */
+/* Running-status expansion (if any) is the caller's job -- SPEC_LOG item55 */
 void synth_midi(uint32_t status, uint32_t d1, uint32_t d2);
 
-/* Internal-only SysEx handler (NOT part of the public ABI -- see
- * SPEC_LOG.adoc: msgs_midi's 3-byte signature cannot carry a SysEx message,
- * so this is invoked only from smf.c for SysEx events embedded in a loaded
- * Standard MIDI File). buf points at the byte right after the leading 0xF0. */
+/* Internal-only SysEx handler, not public ABI: msgs_midi's 3-byte signature can't carry a SysEx message (SPEC_LOG.adoc item1). Invoked only from smf.c. buf points right after the leading 0xF0. */
 void synth_sysex(const uint8_t *buf, uint32_t len);
 
 #endif /* SYNTH_H */

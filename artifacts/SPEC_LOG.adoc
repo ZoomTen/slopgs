@@ -18,8 +18,8 @@ all, but a mechanism `SPEC.adoc` documents and this project has not implemented.
 Check before treating a "the spec is silent" claim in this document as fact.
 
 Two numbering series run through the entries and are referred to by number
-throughout: **items** (`item1`…`item49`) are discrepancies and gaps between
-`SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry16`) are
+throughout: **items** (`item1`…`item58`) are discrepancies and gaps between
+`SPEC.adoc` and this project's engine; **entries** (`entry1`…`entry17`) are
 fitted values, shipped or rejected. The numbers are stable identifiers, not
 positions in this document — the entries are ordered by date, not by number.
 
@@ -187,6 +187,649 @@ before/after tables in Entries 1–6. Those tables are kept as recorded; they
 are history, not current measurements.
 
 '''
+
+'''
+
+[#item58]
+== 2026-08-03 — Three findings dropped by the comment-reduction pass without being moved anywhere: EG2 shape corroboration, a Branch B cadence data point, and the `rt_pow` worst-case check — item58
+
+Recovered verbatim from source comments that were compacted or removed during
+the comment-reduction pass, before this document existed to hold them. None
+of these change a shipped value; they are provenance that would otherwise
+have been lost. Grouped here because all three were found the same way
+(diffing decimal literals that left `src/` against what survives in the
+docs), not because they are related to each other.
+
+=== EG2 segment shape: probe 34 bank 2 corroboration for xref:#item20[item 20]'s linear-in-cents shape
+
+Migrated from a `src/engine/voice.c` comment on `EG2_LINEAR_SEGMENTS`. Not a
+new decision -- xref:#item20[item 20] already ships linear-in-cents segments
+and cites the -2.73 dB / -2.59 dB corpus improvement that decided it. This is
+the shape-corroboration reasoning behind that decision, which never made it
+into the log.
+
+EG1's segments are exponential in amplitude because that is linear in dB --
+the unit its destination (level) actually lives in. EG2's destination is
+PITCH, whose natural unit is cents, so the same DLS-units convention makes
+EG2's segments linear in CENTS instead, i.e. linear in the envelope level.
+Rendering EG2 with EG1's exponential coefficient produces a visibly "eased"
+sweep where the reference's is straight -- spotted by eye on probe 34 bank 2.
+
+That visual read was then weakly corroborated, not proven, numerically:
+linear-in-cents R² 0.5403 against exponential R² 0.5161. Both are poor fits
+-- probe 34 is a tire-screech SFX, hostile to pitch tracking -- so the shape
+claim rests on the visual and on the DLS units convention, not on that
+margin. `SPEC.adoc` xref:SPEC.adoc#s6-6[S6.6] marks the envelope generator's
+own behaviour `[O]`. `EG2_LINEAR_SEGMENTS` stays overridable to compare the
+two renderings.
+
+=== Branch B reserve top-up cadence sweep: a fourth data point, still OPEN
+
+Migrated from a `src/engine/voice.c` comment on the same VMA chain
+xref:#item21-reap[item 21's reap addendum] recovers
+(`[A:0x12be7]`/`0x12bd6`/`0x13054`/`[A:0x130af]`/`[A:0x184c0]`) --
+`TopUpReserve` runs at `[A:0x12be7]`, once per `0x12bd6`, which runs once per
+`0x13054` `[A:0x130af]`, which renders one KS buffer, so the driver's true
+call cadence is once per service block; the driver allocates 1024-frame
+buffers `[A:0x184c0]`.
+
+Wired up at that cadence, this model breaks the very probe S5.5 bounds it
+with. Measured, corpus mean / `20_voice_count` residual:
+
+[options="header"]
+|===
+| configuration | corpus mean residual | `20_voice_count` residual
+| 256 frames (our block) | -31.0087 | -17.25
+| 1024 frames (the driver's buffer) | -31.1163 | -22.95
+| this value (shipped) | -31.1440 | -24.14
+| pre-segment build | -31.1483 | -24.13
+|===
+
+So the recovered cadence is not usable AS a cadence, which means something
+else in Branch B is wrong. The suspect named in the comment: `need`. A voice
+Branch B marks stays `active` while it drains, so it never reduces
+`reserve_free`, and the next call recomputes the same shortfall and marks
+another batch. The driver's own `reserveCount` may be incremented at MARK
+time rather than at recycle time, which would make one -- the comment is cut
+off there in the source and does not say what "one" refers to.
+
+**This is OPEN, not retired.** xref:#item21-reap[Item 21's reap addendum]
+examined the same VMA chain earlier and reached a different diagnosis for
+its own two-way sweep (`FAST_RELEASE_S` clamped 5x too slow, not `need`);
+the two are not reconciled here, only both recorded as found.
+
+=== `rt_pow` worst-case precision check against SPEC.adoc S3.4.1
+
+Migrated from a `src/unit.c` comment; the check itself still runs, compacted.
+`SPEC.adoc` xref:SPEC.adoc#s3-4-1[S3.4.1]'s own documented worst case -- a
+real, checkable number, not an invented tolerance -- is `tc =
+4330.571090698242` evaluated as `rt_pow(2.0, tc/1200.0) * 22050.0`, which
+must truncate to 269009 samples.
+
+Executed check: libm gives 269009.99992038216 -- exactly SPEC.adoc's own
+printed figure -- and this project's `rt_pow` gives 269009.99992788181; both
+truncate to 269009.
+
+'''
+
+[#item51]
+== 2026-08-03 — Bank/Program note-lookahead within a MIDI tick is an empirical fit to probes 38/40/42, not the driver's own reach-to-end mechanism — item51, SHIPPED (`SMF_BANKPROG_LOOKAHEAD`)
+
+**Status: `[F:fitted]`, empirical fit against captures, contradicts a confirmed `[A]` reading of the disassembly.** Migrated from a `src/engine/smf.c` comment (the largest single comment block in the engine, `slide_notes_past_bankprog()`/`SMF_BANKPROG_LOOKAHEAD`).
+
+`SPEC.adoc` xref:SPEC.adoc#s4-2-1[S4.2.1]/xref:SPEC.adoc#s4-7[S4.7]: the Bank/Program pair is the one scheduled-controller
+queue whose value a note-on reads back, and the read is a LOOK-AHEAD — at one
+timestamp the note takes the last Program Change BEFORE THE NEXT NOTE EVENT
+of that timestamp, not the one that preceded it in the byte stream.
+
+=== The reach: probe 40 and probe 38
+
+`[M: probe 40]`, 13 of 13 cases land within 1.9 dB of their control against
+28-49 dB of separation between the three controls (`000:080` / `001:080` /
+`008:080`, all program 80 so only the bank moves). The two cases that
+separate this from plain stream order are case F (`b1 pc80, on60, b8 pc80`
+→ `008:080`) and case G (`b8 pc80, on60, b1 pc80` → `001:080`):
+
+[options="header"]
+|===
+| model | probe 40 score (of 13 cases)
+| look-ahead (shipped) | 13/13
+| plain stream order | 11/13
+| order-independent "highest bank wins" | 8/13
+|===
+
+`[M: probe 38]` says the same for the program half, 7 of its 8 cases,
+including its own case G — three layered locales at one tick on three keys,
+`serum_opening`'s own shape, which collapses to the last group's patch on
+all three notes and sits 19 dB from what stream order renders. Probe 38's
+case F disagrees with probe 40's case G on byte-identical input — 1 outlier
+in 21 observations across the two captures, unexplained and still `[O]`.
+
+Probe 40's case K settles that this is the PROGRAM CHANGE queue and not the
+bank byte: two Bank Selects with ONE Program Change and no queue tie at all
+reads the last bank, in stream order. Cases L/M settle that a Bank Select
+with no Program Change after it never reaches the note, so there is no live
+bank read at voice-render time either.
+
+=== Where the reach stops: probe 42
+
+Probe 42 restages probe 40's cases across separate tracks the way a
+sequencer lays out layered parts, and adds two shapes probe 40 structurally
+cannot have: more than one note in a tick. Its own cases F/G still say the
+read passes over a following group, but cases H (three groups, three keys)
+and J (`serum_opening`'s Type B shape — two tracks playing both keys, a
+third playing only the upper one, the last group the sine) both refute
+reaching all the way to the end of the tick:
+
+[options="header"]
+|===
+| probe 42 case | shape | stop-at-next-note (dB) | reach-to-end (dB) | plain stream order (dB)
+| F | two groups | 3.67 | — | 28.65
+| G | two groups | 3.29 | — | 30.69
+| H | three groups, three keys | 3.15 | 12.05 | —
+| J | `serum_opening` Type B (3 tracks) | 2.40 | 23.31 | —
+|===
+
+So the scope is the merged tick, not the track — but the reach stops at the
+next note, it does not run to the end of the tick. Probe 40 cannot see this
+difference, 13/13 either way, because it never puts two notes in one tick.
+Probe means, ref-vs-build, for stream / reach-to-end / stop-at-next-note:
+probe 42 is 8.98/5.68/2.70 dB, probe 38 is 10.20/9.01/8.89 dB (probe 38's
+own case G improves 9.46 → 8.55).
+
+=== This is a fit, not the recovered mechanism
+
+Read directly from `artifacts/swmidi.sys`, the driver is unambiguously
+reach-to-end:
+
+* `[A:0x17fa2]` the KSMUSICFORMAT parser advances its 64-bit timestamp per
+  BLOCK (`add [ebp-0x18],eax` / `adc [ebp-0x14],edx`, `0x18073`), never
+  between messages inside one block, so a tick's messages tie exactly.
+* `[A:0x13667]` note-on/off queue into `device+0x150` and `[A:0x132d2]`
+  Program Change schedules into `device+0xc50+part*0x28`, same timestamp.
+* `[A:0x16bae]` insert walks PAST every equal-timestamp node — FIFO.
+* `[A:0x12bd6]` the drain, called once per audio block from the render
+  callback `[A:0x130af]` with `now+nframes`, pops every due event in a loop
+  (`0x1302a` → `0x16cac` → `jne 0x12c0b`).
+* `[A:0x12dbc]` each note-on reads its locale at its OWN event timestamp via
+  `0x16daa` → `[A:0x16c50]`, which walks the whole list and returns the LAST
+  node with `ts <= req` (default: `object+0x18`).
+
+Nothing there stops at a note. What the driver does NOT have is any
+serialisation between MIDI parsing and rendering — they are separate KS pin
+entry points (dispatch table at `0x1cbd4`) — so a note-on can drain before
+the rest of its tick has been submitted. That is the likeliest source of what
+probes 38/42 measured, and the only explanation offered so far for probe
+38's case F answering differently to byte-identical input in two captures.
+**Treat everything above as fitted to the captures on hand**; if the
+references are re-recorded and probe 42's cases H/J stop reproducing, delete
+this and go back to reach-to-end.
+
+=== What shipped (`SMF_BANKPROG_LOOKAHEAD`, default 1)
+
+The narrowest change that reproduces the captures: within one timestamp,
+each NOTE event slides right over the run of Bank Select/Program Change
+events immediately following it, preserving their order among themselves so
+each Program Change still latches the bank byte that was live when it ran.
+Nothing else moves — not SysEx, not tempo, not the other five
+xref:SPEC.adoc#s4-2-1[S4.2.1] queues. Moving those too was measured and is
+wrong twice over: it puts controllers ahead of a tick-0 GS Reset (wiping
+it), and probe 37 already pinned same-tick CC7/CC121 behaviour that a
+blanket hoist would disturb.
+
+On `serum_opening` this restores the Type B saw layer the reach-to-end
+reading deleted: its tick is `[t4 b1 pc80][n3][n15][t5 b1 pc81][n3'][n15'][t6
+b8 pc80][n15'']`, and stopping at the next note leaves n3' on `001:081`,
+which survives the same-key choke. Both gestures improve over reach-to-end
+(Type A 10.8 → 9.3 dB, Type B 25.2 → 16.7 dB rms band error), and the two
+field files densest in same-tick groups stop regressing (GENERAL_SERUM
+-19.24 → -19.54, CrystalOscillator -24.66 → -24.96). Type B is still 16.7 dB
+out, now uniformly too LOUD rather than too quiet — a level/patch question,
+not an ordering one, and unresolved.
+
+`SMF_BANKPROG_LOOKAHEAD` is an A/B guard for measurement only, same role as
+xref:#item55[item 55]'s `SYNTH_SCHEDULE_LOCALE`; `0` restores plain stream
+order. Not exposed by the Makefile.
+
+'''
+
+[#entry17]
+== 2026-08-03 — Pitch-bend ramp DURATION: `RAMP_HORIZON_FRAMES = 320` (14.5 ms), fitted against probe 33's corpus mean, disagreeing ~40% with the per-rep edge measurement — entry17, SHIPPED
+
+**Status: `[F:fitted]`.** Migrated from `src/engine/voice.c`'s largest
+single comment block (161 lines, `RAMP_HORIZON_FRAMES`). `SPEC.adoc`
+xref:SPEC.adoc#s6-6[S6.6]/xref:SPEC.adoc#s6-4-1[S6.4.1] `[A]`: the mixer
+holds the phase step in a "ramp accumulator" re-derived from a
+caller-supplied LINEAR step every `ramp_period` samples, held constant
+between refreshes — not written directly (xref:#item19[item 19]'s prior
+defect) and not a one-pole exponential (that shape is a separate,
+already-fitted stand-in used only for GAIN, xref:#entry4[entry 4]; probes
+28/32 already showed a one-pole is the wrong shape there too, but this fit
+changes pitch only). What determines the caller's slope between calls is
+genuinely `[O]` (S6.6), so the DURATION is measured, not derived.
+
+=== Duration: flat across a 30x range of step sizes
+
+`[M: probe 33]`, every condition the probe offers, read off
+`artifacts/probe-results/33.flac` alone (the reference is the ground truth
+here; the render is not consulted). 10-90% transition time, ensemble-averaged
+over the 8 reps:
+
+[options="header"]
+|===
+| step | ±200c | ±600c | ±2400c | ±4000c | 6000c (section C)
+| ref 10-90% | 23-24 ms | 24 ms | 21-22 ms | 20-22 ms | 29-31 ms
+|===
+
+FLAT across a 30x range of step sizes — so the ramp is fixed-DURATION, not
+the fixed-RATE slew this project shipped before (xref:#item19[item 19],
+xref:#entry9[entry 9]). A rate law predicts ~2 ms for the 200c step and
+~400 ms for the 6000c one; neither is observed. Section C's uptick to ~29 ms
+is confounded (bigger step AND a mid-note re-aim rather than a fresh bend on
+a settled note), so it does not carry the fit.
+
+SHAPE is linear, same measurement: the 50% crossing lands at
+`(t50-t10)/(t90-t10) = 0.43..0.54` in every condition, against 0.50 for a
+linear ramp and 0.27 for a first-order exponential approach. 10-90% covers
+80% of a linear ramp, so 22 ms of 10-90% is ~27.5 ms total; that figure and
+the 320-frame value shipped below agree to well inside the ensemble spread.
+Estimators: heterodyne (carrier at the key's centre frequency, low-pass,
+unwrap+differentiate) for the ±200c/±600c steps, where FFT bin resolution is
+far too coarse; per-cycle zero-crossing for the big steps, where a
+heterodyne's target leaves the passband. FFT peak tracking, the obvious
+third choice, is resolution-bound on both ends and under-reads a fast edge
+by ~50%.
+
+Two things this replaces, both now known to be wrong rather than merely
+unconstrained: xref:#entry9[entry 9]'s single -24-semitone fit point
+(16.51 ms, sd 3.90 ms) came from an FFT tracker and is the under-read above
+— the same condition measures 21.3/21.7 ms here. And the old rate law scaled
+off the voice's `phase_step` AT RAMP START, which made upward moves slow and
+downward moves fast: probe 33's `C_square_17ms` shows the consequence
+directly, the render's swing sat entirely on one side (+396..+2645c) instead
+of straddling ±3000c. A duration law is symmetric by construction.
+
+=== Period: `[M: probe 32 + probe 33, per-rep]`, 512 frames, 23.22 ms
+
+Two independent readings land on it.
+
+* **Duration.** Both probes' references glide a fixed 10-90% of
+  16.4-16.8 ms for every step from 100 to 600 cents, 50% crossing at
+  0.46-0.51 (linear), i.e. a full ramp of ~20.5-21 ms. Measured PER REP, not
+  ensemble-averaged: the reference's bend-application time jitters ±18 ms rep
+  to rep, and averaging edges that are each ~16.5 ms wide but mutually
+  offset by up to 18 ms manufactures a ~23 ms composite that is the JITTER,
+  not the ramp. An earlier pass of this project reported exactly that
+  artifact (23.2/24.3 ms), and it is what the 27.5 ms figure above was fit
+  to.
+* **Grid.** Those same transition times concentrate on a period of 23.22 ms
+  (circular concentration R=0.83) == 1024 samples at the 44.1 kHz the
+  references were captured at == 512 samples at this driver's own 22050 Hz.
+  The reference also renders a minority of reps (18 of 48 in probe 32) as
+  near-instant steps at the estimator's floor, clustered at one end of that
+  period — which is what a block grid does and a per-message countdown
+  cannot do at all.
+
+The bimodality itself is `[O]`: a plain "reach the target by the end of the
+block" model predicts a continuum of durations, and the measured ones are
+tightly bimodal at 4.2 and 16.5 ms with nothing between. Modelled here as the
+uniform case; the instant minority is not reproduced.
+
+=== Shape: fixed horizon per voice, not a shared grid
+
+An earlier version of this file re-aimed every voice on a free-running
+global clock — one refresh per period, and a mid-period message got whatever
+was left of that period. That made two identical gestures traverse at
+different speeds depending only on where the clock happened to be when the
+message arrived — measured directly on `field/town.mid` (two near-identical
+200-cent bend gestures, ~13 ms message spacing each, landing at different
+phases of that clock: per-message slopes differed by up to 2x between the
+two gestures with no musical cause) and on the corpus as a spectral ripple
+at exactly the clock's period (`tests/radio.mid`, 8.0 cents peak-to-peak at
+14.50ms — the period to the resolution of the estimator).
+
+A held slope re-derived from the CURRENT value every period was also tried
+(`SPEC.adoc`'s own "re-derived ... every `ramp_period` samples" read as
+literally as possible); at any period other than the one chosen to size THIS
+message's ramp, it either overshoots (short period, held past the point it
+should have stopped) or degenerates into a never-settling exponential
+(xref:#entry12[entry 12]'s geometric ramp, shown to reproduce here at
+`horizon == period`). Every voice instead now gets its own fixed HORIZON,
+sized once when a bend message moves its target and left alone until it
+arrives — no shared clock, no periodic re-derivation, nothing to walk in and
+out of phase with the music. `voice_ramp_tick` is a per-voice countdown that
+retires an arrived ramp (`render.c` has no arrival test of its own); it no
+longer re-aims anything (see also xref:#item52[item 52]).
+
+Restarting a fixed duration per message never converges when messages arrive
+faster than the duration either: it degenerates into a first-order lag whose
+error GROWS with message density. Measured: `field/Kot_and_A64-GENERAL_SERUM.mid`
+carries 36,763 bend events at a 6.7 ms median spacing, and `tests/radio.mid`
+371 events at 8.0 ms, both far inside a ~27 ms duration — the reference's
+kick pitch-drop is visibly and audibly quicker than a restarting ramp can
+render, and radio's sweeps come out curved where the reference's are
+straight. `tests/lazers.mid` is the same gesture as GENERAL_SERUM's, slowed
+down (bends 41.7 ms apart, wider than the period), so a restarting ramp very
+nearly completes and the file cannot distinguish the two models — do not fit
+against it, fit against the dense files.
+
+`ponytail:` one constant, no ceiling, no magnitude keying, no per-source
+exemption — the measurement says duration does not depend on step size, so
+nothing here should either.
+
+=== Value shipped: the one honest wart in this fit
+
+The corpus prefers **320 frames (14.5ms)**, not the 448-512 the per-rep edge
+measurement above implies, and the shipped value is the corpus one. Swept
+against the dedicated bend probes:
+
+[options="header"]
+|===
+| | 192 | 256 | 320 | 384 | 448 | 512 | rate law (baseline)
+| `33_ramp` | -27.86 | -31.45 | -34.04 | -32.75 | -32.29 | -30.39 | -30.04
+| `05_bend` | -31.68 | -28.95 | -28.12 | -28.33 | -25.08 | -27.14 | -27.78
+|===
+
+320 is a clean optimum on `33_ramp` — the probe built for this question —
+and beats the rate law it replaces by 4.0 dB there, the largest improvement
+any variant of this ramp has produced. It disagrees with the edge
+measurement (448-512 frames) by ~40%, which is not resolved. Reasons to
+distrust the corpus side: the two items driving the corpus-mean regression,
+`32_ramp_shape` and `field/HueArme-Weekend`, both have references whose
+capture alignment is known bad — `32.flac` drifts 422 ms over 158 s
+NON-linearly (43 ms residual to a straight line, 55 ms of spread within one
+12-rep section), so no single lag aligns it and `score.py` uses exactly one.
+Reasons to distrust the measurement side: none found, but it rests on one
+analysis pass. **Re-derive both before treating 320 as recovered rather than
+fitted.**
+
+=== Still open: a possible rise/fall asymmetry
+
+Not explained by any shape tried, this one included: `field/town.mid`'s two
+bend gestures glide at measurably different rates depending on direction
+(~2.2 vs ~4.24 cents/ms) at nearly the same message spacing. That may be a
+real rise/fall asymmetry, or may be confounded with note age (the two
+gestures sit at different offsets from note-on) — not separated. `[O]`. A
+probe pairing a rise and a fall at equal note age would settle it; until
+then this one constant is being asked to fit what may be two different
+numbers.
+
+'''
+
+[#item52]
+== 2026-08-03 — Pitch-bend ramp: companion mechanism findings (LSB precision, LFO/EG2 exclusion, instant re-aim) — item52, addendum to xref:#entry17[entry 17]
+
+**Status: mechanism `[A]`/`[M]`, not itself a fitted value.** Three small
+`src/engine/render.c`/`src/engine/voice.c` comment blocks migrated together
+because all three explain design choices around xref:#entry17[entry 17]'s
+`RAMP_HORIZON_FRAMES` fit rather than the fitted number itself.
+
+=== 1/256-LSB ramp-step precision (`render.c`)
+
+The mixer applies the held slope in 1/256 `phase_step` LSBs, not whole LSBs.
+A whole-LSB slope cannot express this ramp at all below about a semitone: a
+±2 semitone bend at key 72 moves ~420 Q12 LSBs, under 1 LSB per sample, and
+truncating the slope to 1 silently turns the ramp into a rate limit —
+measured, that made the period inert from 10 ms to 40 ms on probe 33's ±2
+semitone conditions. The accumulator spends whole LSBs and keeps the
+1/256ths remainder.
+
+No arrival test lives in `render.c`'s per-sample accumulator itself:
+`voice_ramp_tick` owns that, via a per-voice frame countdown rather than by
+watching `phase_step` approach its target. Overshoot before the countdown
+fires is bounded by one rounding step, since the slope was sized to land
+exactly on arrival.
+
+=== Only BEND is ramped (`voice.c`)
+
+The period above is measured on bend steps and nothing else — probe 33 and
+probe 32 send no LFO and no pitch envelope, so what the driver does with
+those is `[O]`, and routing them through this ramp is a guess that measures
+badly: **06_modwheel -3.2 dB, 26_other_gains -1.3 dB**, both files
+containing no bend at all. Carried through instead by shifting `phase_step`
+and its target by the SAME amount: the LFO/EG2 delta lands immediately while
+whatever error the in-flight bend ramp is still carrying is preserved, so the
+two do not fight over one accumulator.
+
+=== Re-aim NOW, not the remainder of a shared clock (`voice.c`)
+
+The bend is re-aimed the instant the target moves, over the FIXED horizon —
+not the remainder of some shared clock's current period. Every bend gesture
+of a given size therefore traverses at the same speed regardless of when it
+happens to land, which a shared periodic clock cannot promise (see
+xref:#entry17[entry 17]). No dead time either: a fresh voice's first bend is
+re-aimed on the same call that moves its target, not left for a tick to
+notice later.
+
+'''
+
+[#item53]
+== 2026-08-03 — `dls.c`: internal-mechanism deviations from `SPEC.adoc`'s parse model (never observably different for gm.dls) — item53
+
+**Status: `[I]`/`[O]`, no observable-output deviation for gm.dls.** Four
+`src/engine/dls.c` comment blocks grouped: all describe places where this
+parser's internal mechanism differs from what `SPEC.adoc` §2/§3 describes for
+the original binary's mechanism, without changing the resolved
+`Region`/`Wave` structures gm.dls itself produces.
+
+=== Two-pass ptbl/wvpl resolution instead of a placeholder linked list
+
+`SPEC.adoc` xref:SPEC.adoc#s2-8[S2.8] describes the original driver's
+placeholder-linked-list-with-pointer-fixup mechanism for resolving `ptbl`/
+`wvpl` references. This parser instead resolves them directly via a two-pass
+offset array. The wave-level fmt/data/wsmp decode happens eagerly during
+that pass, rather than at the deferred/unlocated point
+xref:SPEC.adoc#s2-8-6[S2.8.6] flags as `[O]` in the original driver. Both
+produce the same resolved `Region`→`Wave` structure for a well-formed file
+such as gm.dls. Chunk-walk shape is unaffected and matches the driver: `next
+= cur + 8 + size`, no RIFF odd-size padding except inside an INFO list where
+size is rounded up to even (xref:SPEC.adoc#s2-2-1[S2.2.1]'s stated single
+exception) — gm.dls's own chunks are all even-sized anyway, so this only
+matters for defensive correctness on a hypothetical odd-sized foreign file.
+
+=== `colh`/`vers`/`msyn`/`edit`: leniently size-validated
+
+These four chunk types are parsed off with no state kept beyond size
+validation, and that validation is deliberately lenient (a malformed size on
+one of these four does not fail the load). Not exercised by gm.dls, which
+carries well-formed instances of all four.
+
+=== DLS-1 wsmp inheritance fallback, never exercised by gm.dls, `[O]` in general
+
+A region with no wsmp chunk of its own falls back to its wave's
+wsmp-derived unity note / fine tune — the standard DLS-1 region-overrides-wave
+convention. `SPEC.adoc` xref:SPEC.adoc#s3-3-2[S3.3.2] flags this exact
+fallback path as never exercised by gm.dls (every one of its **1498
+regions** carries its own wsmp) and, for the driver in general, `[O]` — this
+is a DLS-1-spec inference, not disassembly-confirmed. No change for gm.dls;
+present for correctness on any other DLS bank.
+
+=== The key-range walk is part of `FindInstrument` itself
+
+`[A:0x147b7]`: the key-range walk is part of `FindInstrument`, not a step
+after it — an instrument whose regions do not cover the requested note is
+rejected exactly like a locale mismatch, so the caller's next fallback tier
+gets a turn. This is what makes a drum kit with a hole in its key map
+(gm.dls's SFX kit, program 56, covers only keys 39-84) fall through to the
+Standard kit for a missing key instead of dropping the note, matching
+xref:SPEC.adoc#s3-1-3[S3.1.3]'s three-tier fallback.
+
+'''
+
+[#item54]
+== 2026-08-03 — `voice.c`: small migrated notes (reserve-tier tagging, cents-clamp rationale, `DECAY_RATE_MULT` removal, `exp_coef_scaled` re-verification, mixer priming) — item54
+
+**Status: mixed `[I]`/`[O]`/measurement addenda, grouped for size.** Five
+small `src/engine/voice.c` comment blocks with no natural larger home.
+
+=== Reserve-tier starting index is cosmetic
+
+`SPEC.adoc` xref:SPEC.adoc#s5-2[S5.2]/S5.5's 48/6 split: which physical
+array index starts primary vs. reserve is cosmetic/`[O]` — nothing
+downstream distinguishes a voice's tier once it becomes active, and
+`voice_topup_reserve`'s own Branch A retags nodes over time anyway (see
+xref:#item7[item 7]).
+
+=== `±CENTS_CLAMP` left at ±4800 after RPN1/RPN2 were added to the cents sum
+
+The clamp itself (`±4800`, byte-confirmed) is already in `SPEC.adoc`
+xref:SPEC.adoc#s3-3-3[S3.3.3]. This addendum is the rejected-alternative
+reasoning: the clamp was left as-is even after adding RPN1/RPN2 into the
+cents sum, because the reference file's actual RPN2 usage (±1200/±2400
+cents) plus ordinary bend/base_cents stays far under 4800, and raising the
+clamp would deviate from a confirmed hardware behaviour, not fix a bug. Also
+applied to EG2's pitch contribution in `voice_step_eg2` — same hardware
+bound, same table domain.
+
+=== `DECAY_RATE_MULT` was removed, not merely left unused (addendum to xref:#entry15[entry 15])
+
+SUPERSEDED 2026-07-26 by `SPEC.adoc` xref:SPEC.adoc#s5-1-2-1[S5.1.2.1]: the
+macro was a rate multiplier on the OLD asymptotic approach-to-target decay
+shape, entangled with that shape's own "100 dB over seconds" calibration.
+The decay segment is now a geometric ramp whose coefficient is derived
+directly from `env_sustain_level` and the already-rescaled
+decay-to-sustain duration — there is no free rate parameter left to scale,
+both endpoints are pinned by the target/duration formulas. The macro was
+removed rather than left dead; xref:#entry15[entry 15]'s 0.965 measurement
+stays on record as history.
+
+=== `exp_coef_scaled` `mult=1.0` re-verified 2026-07-25 under the corrected aligner (addendum to xref:#entry1[entry 1]/xref:#entry15[entry 15])
+
+`mult` is a rate multiplier, 1.0 = the shipped calibration.
+xref:#entry1[Entry 1] fit 2.85 for the decay segment against probe 04 and did
+not ship it. Re-tested 2026-07-25 under the corrected harness aligner (see
+"Harness re-baseline, 2026-07-25" above; decay, release, and both segments at
+2.85) and the shipped 1.0 still wins on the corpus mean, probe 04, GENERAL
+SERUM and envelope r — so that rejection was not an artifact of the old
+broken alignment. Kept overridable so the sweep is one `-D` away rather than
+an edit.
+
+=== `amp_l`/`amp_r` primed from the envelope's starting level
+
+Matches the driver's own `nsamples==0` mixer priming: `[A:0x18fba]` called
+with `nsamples==0` writes the gains straight into the ramp state without
+rendering, `[A:0x18fd9]`. Leaving them at zero instead makes every
+instant-attack patch (`attack_s <= 0` sets `env_level = 1.0`) fade in across
+a whole segment — measured as a 23 ms ramp-up on every note of probe 14, 5x
+too quiet at 4 ms in.
+
+'''
+
+[#item55]
+== 2026-08-03 — `synth.c`/`synth.h`: small migrated notes (`SYNTH_SCHEDULE_LOCALE` A/B confound, bend-cents `sar` vs `/` and int64 bound, running-status) — item55
+
+**Status: measurement-harness provenance / `[I]` rationale, not behavioral
+findings.** Three small `src/engine/synth.c`/`synth.h` comment blocks grouped
+for size.
+
+=== `SYNTH_SCHEDULE_LOCALE` A/B guard, confounded by a concurrent change (addendum to xref:#item14[item 14])
+
+`SYNTH_SCHEDULE_LOCALE`, default 1 (shipped), selects xref:SPEC.adoc#s4-2-1[S4.2.1]'s
+scheduled locale, latched only at Program Change/reset (xref:#item14[item 14]).
+`0` restores the prior behavior this item replaces (recompute live from
+`bank_msb`/`bank_lsb`/`program` on every call). This macro exists so the two
+behaviors can be A/B'd from the exact same tree state: a concurrent,
+unrelated change landed in `voice.c`/`render.c` during the same work, so this
+item's own effect could not be cleanly isolated from that concurrent work by
+diffing two builds — flipping this single macro and rebuilding twice in a
+row can be. Not a permanent feature flag; not exposed by the Makefile.
+
+=== Pitch-bend-cents: `sar` vs `/` and the int64-vs-int32 magnitude bound
+
+`(raw * rangeCents) >> 13`, FLOOR, matches `SPEC.adoc`
+xref:SPEC.adoc#s3-3-2[S3.3.2](c)'s stated "arithmetic right shift —
+truncation toward negative infinity, not toward zero" — confirmed, not a
+deviation (see xref:#s3-5-pitch-cents-correction[s3-5-pitch-cents-correction]).
+S4.4's "C-style truncation toward zero" is a different formula entirely:
+RPN1 Channel Fine Tuning's `((combined14bit - 8192) * 100) / 8192`, not this
+one (see also xref:#item56[item 56]'s citation-mislabel note on this same
+distinction, found independently in `synth.c`'s own comment above this
+function).
+
+Two rejected-alternative facts recorded here: `sar` (this shift) floors,
+`/` rounds toward zero — they differ by one cent on every downward bend that
+is not an exact multiple of 8192, which is most of them. And int64 here vs.
+the driver's 32-bit multiply is not itself a difference: `|raw| <= 8192` and
+`range <= 4800` peaks at 39.3M, well inside int32 either way.
+
+=== Running-status expansion is the caller's job
+
+`synth_midi()` dispatches one short MIDI message with an explicit status
+byte; running-status expansion, if any, is the caller's own responsibility.
+`status == 0xFF` is treated as System Reset.
+
+'''
+
+[#item56]
+== 2026-08-03 — `unit.c`: small migrated notes (golden-data provenance, Table D float32-vs-double, a citation mislabel in `synth.c`, one gm.dls data point) — item56
+
+**Status: measurement-harness provenance / a documentation-accuracy note,
+not behavioral findings.** Four small `src/unit.c` comment blocks grouped
+for size.
+
+=== Golden test-vector provenance
+
+The golden data arrays are mechanically extracted from
+`SCRATCH/golden_tables.h` by `SCRATCH/gen_golden.py`, and verified
+byte-for-byte round-trip against the source by `SCRATCH/verify_golden.py`.
+Neither script nor `SCRATCH/` is present in this repository — historical
+provenance narration of a check that was run when the golden arrays were
+generated, not a pointer to a file that exists now. Do not hand-edit the
+golden arrays.
+
+=== Table D matches SPEC despite a float32-vs-double `2*pi` constant
+
+`tables_build()` populates all 256 Table D (sine LFO) entries identically to
+SPEC's golden dump (mism=0), including at i=64/i=192. `tables.c` uses the
+full double-precision `2*pi` literal (`6.28318530717958647692`) rather than
+the binary's stored float32-rounded `2*pi` (`0x11d18` =
+`6.2831854820251465`), but that constant mismatch never survives `rt_sin`'s
+own Taylor-series undershoot plus the final trunc-to-int16 at any of the 256
+sampled phases — verified by direct execution over all 256 phases, not
+merely at two spot-checked indices.
+
+=== `synth.c` mis-cites S4.4 instead of S3.3.2(c) for the bend-cents floor
+
+`src/engine/synth.c`'s own comment above `synth_pitch_bend_cents` attributes
+the floor (arithmetic-right-shift) behaviour to `SPEC.adoc` S4.4. S4.4 is
+actually about the *RPN1* Channel Fine Tuning formula (truncation toward
+zero), a different formula (see xref:#item55[item 55]). The correct citation
+is xref:SPEC.adoc#s3-3-2[S3.3.2](c), whose text reads, verbatim: "with an
+arithmetic right shift — truncation toward negative infinity, not toward
+zero." That IS floor, and it is exactly what `synth.c`'s `>>13` computes. No
+live disagreement: this is a citation correction in `synth.c`'s own comment,
+not a behavioral fix, and does not change any `unit.c` assertion.
+
+=== gm.dls instrument `0x1007a` pan_cb data point
+
+Instrument locale `0x1007a` (bank MSB 4, program 122): its shared
+instrument-level `lart` carries exactly one `(0,0,0x0002)` connection,
+`lScale=-8`, and one `(0,0,0x0004)` connection, `lScale=-524288` (raw values
+read independently via `SCRATCH/riff_walk.py`, also not present in this
+repository). Per xref:SPEC.adoc#s2-4-2[S2.4.2]/xref:SPEC.adoc#s2-4-3[S2.4.3]:
+dest `0x0002` → `(lScale<<4)/125` = `(-8<<4)/125` = `-128/125` = `-1`
+(truncated toward zero); dest `0x0004` → `(lScale>>12)/125` =
+`(-524288>>12)/125` = `-128/125` = `-1`. Both write the same `pan_cb` field,
+and both formulas happen to agree at `-1` for this instrument's real data, so
+file order between the two connections doesn't matter for this data point.
+
+'''
+
+[#item57]
+== 2026-08-03 — `render.c`: probe 44's four short-release patches imply a 24-28 ms segment length (addendum to xref:#item21[item 21]/xref:#item21-resolved[item 21-resolved])
+
+**Status: `[M]` addendum, does not resolve the existing disagreement.**
+`GAIN_SEGMENT_FRAMES` already has a "direct measurement (~512 frames) vs.
+corpus sweep (128 frames)" disagreement on record (xref:#item21[item 21]).
+Probe 44's four short-release patches — authored `eg1_release_tc` of
+6.4/8.8/22.8/25.7 ms, already classified LINEAR-to-zero on record under item
+21 — read against the shipped segment mechanism to imply a **24-28 ms**
+segment length, a synthesized reading not previously recorded. This sits
+between the two existing readings and resolves neither: it is closer to
+probe 46's note-off sweep spread (already on record: 0-27.8 ms, mean
+12.5 ms, half a segment) than to either extreme, but does not itself pin a
+value. Recorded as a third data point for whichever future pass revisits
+`GAIN_SEGMENT_FRAMES`.
 
 '''
 

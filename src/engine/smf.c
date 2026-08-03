@@ -57,8 +57,7 @@ static uint32_t read_vlq(const uint8_t **pp, const uint8_t *end) {
     return v;
 }
 
-/* Walks one MTrk's bytes, calling `emit` for each event with abs_tick, or
- * just counting if `emit` is 0. Returns event count. */
+/* Walks one MTrk's bytes, calling `emit` per event with abs_tick, or just counting if `emit` is 0. Returns event count. */
 typedef void (*EmitFn)(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1, uint8_t d2,
                         const uint8_t *sysex_data, uint32_t sysex_len, uint32_t tempo_usec, uint8_t kind, void *ctx);
 
@@ -139,102 +138,12 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
     e->sample_time = 0;
 }
 
-/* SPEC.adoc S4.2.1/S4.7: the Bank/Program pair is the one scheduled-controller
- * queue whose value a note-on reads back, and the read is a LOOK-AHEAD -- at
- * one timestamp the note takes the last Program Change BEFORE THE NEXT NOTE
- * EVENT of that timestamp, not the one that preceded it in the byte stream.
- * The forward reach and where it stops were measured separately; the reach
- * first, `[M: probe 40]`:
- * 13 of 13 cases, every one within 1.9 dB of its control against 28-49 dB of
- * separation between the three controls (000:080 / 001:080 / 008:080, all
- * program 80 so only the bank moves). The two cases that separate this from
- * plain stream order are F (`b1 pc80, on60, b8 pc80` -> 008:080) and G
- * (`b8 pc80, on60, b1 pc80` -> 001:080); stream order scores 11/13 and an
- * order-independent "highest bank wins" reading 8/13. Probe 38 says the same
- * for the program half, 7 of its 8 cases, including its case G -- three
- * layered locales at one tick on three keys, serum_opening's own shape, which
- * collapses to the last group's patch on all three notes and sits 19 dB from
- * what stream order renders. (38's case F disagrees with 40's case G on
- * byte-identical input; 1 outlier in 21 observations across the two captures,
- * unexplained and still open -- not yet written up in SPEC_LOG.adoc.)
- *
- * Probe 40's K settles that this is the PROGRAM CHANGE queue and not the bank
- * byte: two Bank Selects with ONE Program Change and no queue tie at all reads
- * the last bank, in stream order. L/M settle that a Bank Select with no
- * Program Change after it never reaches the note, so there is no live bank
- * read at voice-render time either.
- *
- * Where the reach STOPS is probe 42, which restages 40's cases across separate
- * tracks the way a sequencer lays out layered parts, and adds the two shapes
- * 40 structurally cannot have: more than one note in a tick. Its F/G still say
- * the read passes over a following group (3.67/3.29 dB against 28.65/30.69 for
- * plain stream order), so the scope is the merged tick and not the track. But
- * H (three groups, three keys) and J (serum_opening's Type B shape -- two
- * tracks playing both keys, a third playing only the upper one, the last group
- * the sine) both refute reaching all the way to the end of the tick: 3.15 and
- * 2.40 dB for stopping at the next note, against 12.05 and 23.31 for running
- * to the end. Probe 40 cannot see the difference, 13/13 either way, because it
- * never puts two notes in one tick. Probe means, ref-vs-build, for
- * stream / reach-to-end / stop-at-next-note: 42 is 8.98/5.68/2.70, 38 is
- * 10.20/9.01/8.89 (38's case G improves 9.46 -> 8.55).
- *
- * THIS IS AN EMPIRICAL FIT, NOT THE DRIVER'S MECHANISM. Read from
- * artifacts/swmidi.sys, the driver is unambiguously reach-to-end:
- *   - `[A:0x17fa2]` the KSMUSICFORMAT parser advances its 64-bit timestamp
- *     per BLOCK (`add [ebp-0x18],eax / adc [ebp-0x14],edx`, 0x18073), never
- *     between messages inside one block, so a tick's messages tie exactly.
- *   - `[A:0x13667]` note-on/off queue into device+0x150 and `[A:0x132d2]`
- *     Program Change schedules into device+0xc50+part*0x28, same timestamp.
- *   - `[A:0x16bae]` insert walks PAST every equal-timestamp node -- FIFO.
- *   - `[A:0x12bd6]` the drain, called once per audio block from the render
- *     callback `[A:0x130af]` with now+nframes, pops every due event in a loop
- *     (0x1302a -> 0x16cac -> jne 0x12c0b).
- *   - `[A:0x12dbc]` each note-on reads its locale at its OWN event timestamp
- *     via 0x16daa -> `[A:0x16c50]`, which walks the whole list and returns the
- *     LAST node with ts <= req (default: object+0x18).
- * Nothing there stops at a note. What the driver does NOT have is any
- * serialisation between MIDI parsing and rendering -- they are separate KS pin
- * entry points (dispatch table at 0x1cbd4) -- so a note-on can drain before
- * the rest of its tick has been submitted. That is the likeliest source of
- * what probes 38/42 measured, and the only explanation offered so far for
- * probe 38's case F answering differently to byte-identical input in two
- * captures. Treat what follows as fitted to the captures we have; if the
- * references are re-recorded and 42's H/J stop reproducing, delete it and go
- * back to reach-to-end.
- *
- * So the narrowest change that reproduces the captures: within one timestamp,
- * each NOTE
- * event slides right over the run of Bank Select / Program Change events
- * immediately following it, preserving their order among themselves so each
- * Program Change still latches the bank byte that was live when it ran.
- * Nothing else moves -- not SysEx, not tempo, not the other five S4.2.1
- * queues. Moving those too was measured and is wrong twice over: it puts
- * controllers ahead of a tick-0 GS Reset (wiping it) and probe 37 already
- * pinned same-tick CC7/CC121 behaviour a blanket hoist would disturb.
- *
- * On serum_opening this restores the Type B saw layer the reach-to-end reading
- * deleted: its tick is `[t4 b1 pc80][n3][n15][t5 b1 pc81][n3'][n15'][t6 b8
- * pc80][n15'']`, and stopping at the next note leaves n3' on 001:081, which
- * survives the same-key choke. Both gestures improve over reach-to-end (Type A
- * 10.8 -> 9.3, Type B 25.2 -> 16.7 dB rms band error) and the two field files
- * densest in same-tick groups stop regressing (GENERAL_SERUM -19.24 -> -19.54,
- * CrystalOscillator -24.66 -> -24.96). Type B is still 16.7 dB out, now
- * uniformly too LOUD rather than too quiet -- a level/patch question, not an
- * ordering one, and unresolved.
- *
- * A/B guard for measurement only, same role as synth.c's SYNTH_SCHEDULE_LOCALE:
- * 0 restores plain stream order. Not exposed by the Makefile. */
+/* Bank/Program note-lookahead: empirical fit to probes 38/40/42, not the driver's reach-to-end mechanism -- SPEC_LOG item51 */
 #ifndef SMF_BANKPROG_LOOKAHEAD
 #define SMF_BANKPROG_LOOKAHEAD 1
 #endif
 
-/* The service block, SPEC.adoc S6.6 / `[A:0x13054]`. The driver renders one
- * audio buffer per call and drains EVERY event due anywhere inside that buffer
- * before rendering a single sample of it -- `0x12bd6` is called with
- * `pos + nframes` `[A:0x130a3]`-`[A:0x130af]`, not with `pos`. That one fact is
- * what makes a note-off take effect from the START of the block containing it,
- * which is the early release probe 46 measures and which nothing in the
- * envelope code could explain. Length is SERVICE_BLOCK_FRAMES (voice.h). */
+/* SPEC.adoc S6.6/[A:0x13054]: drains every event due in the buffer before rendering it (SPEC_LOG.adoc item21-resolved) -- this is the note-off early release probe 46 measures. Length = SERVICE_BLOCK_FRAMES (voice.h). */
 
 static int is_note_event(const Event *e) {
     if (e->kind != EKIND_MIDI) return 0;
@@ -248,9 +157,7 @@ static int is_bankprog_event(const Event *e) {
     return (e->status & 0xF0) == 0xB0 && (e->d1 == 0 || e->d1 == 32);
 }
 
-/* One pass per equal-tick run: each note event bubbles right over the run of
- * Bank Select / Program Change events immediately following it, stopping at
- * another note or at anything else (SysEx, tempo, any other CC, pitch bend). */
+/* One pass per equal-tick run: each note bubbles past the Bank Select/Program Change run immediately after it, stopping at another note or anything else. */
 static void slide_notes_past_bankprog(Event *arr, uint32_t n) {
     uint32_t i = 0;
     while (i < n) {
@@ -406,11 +313,7 @@ static void dispatch_event(Event *e) {
     }
 }
 
-/* Rewinds the sequencer to the top of the loaded song. Clearing g_finished
- * here is what makes a *second* playback possible at all: it is a latch, set
- * once the last note of a song has rung out, and nothing else ever clears it
- * -- so without this a reloaded or replayed song reports "finished" on its
- * very first render call and the host stops immediately. */
+/* Rewinds to tick 0 and clears the finished latch -- without this, a replayed song would report "finished" on its very first render call. */
 void smf_rewind(void) {
     g_event_index = 0;
     g_sample_pos = 0;
@@ -419,10 +322,7 @@ void smf_rewind(void) {
 
 uint32_t smf_render(int16_t *out, uint32_t frames) {
     if (!g_loaded) {
-        /* No SMF loaded: msgs_render still renders whatever voices are
-         * active from direct msgs_midi() injection (ABI requirement --
-         * msgs_render must work standalone, not only when a song is
-         * loaded). */
+        /* No SMF loaded: msgs_render still renders active voices from direct msgs_midi() injection (ABI requirement). */
         render_frames(out, frames);
         return frames;
     }
@@ -448,18 +348,13 @@ uint32_t smf_render(int16_t *out, uint32_t frames) {
             }
         }
 
-        /* Blocks are anchored to the absolute sample position, not to wherever
-         * this call happens to start, so the grid does not move with the host's
-         * buffer size. */
+        /* Blocks are anchored to the absolute sample position, not the call's start, so the grid doesn't move with the host's buffer size. */
         uint32_t chunk = SERVICE_BLOCK_FRAMES - (g_sample_pos % SERVICE_BLOCK_FRAMES);
         if (chunk > frames - produced) chunk = frames - produced;
 
         if (chunk == 0) chunk = 1;
 
-        /* Drain-ahead: every event due inside this block acts NOW, before a
-         * sample of it is rendered. Each carries the offset it really falls at,
-         * which only a note-on uses -- that is the whole note-on/note-off
-         * asymmetry the reference shows, in two lines. */
+        /* Drain-ahead: every event due in this block acts now; only a note-on uses its true sub-block offset (SPEC_LOG.adoc item32). */
         while (g_event_index < g_event_count &&
                g_events[g_event_index].sample_time < g_sample_pos + chunk) {
             voice_set_event_offset(g_events[g_event_index].sample_time - g_sample_pos);

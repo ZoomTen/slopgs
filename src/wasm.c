@@ -1,11 +1,6 @@
-/* wasm.c -- the freestanding wasm32 interface: the exported ABI (SPEC.adoc
- * Part 1 S1.5.3), the bump allocator over this module's own linear memory,
- * and the libc-named mem* symbols the freestanding target has no libc for.
- *
- * Everything platform-specific to wasm lives here; rt.c is portable math and
- * the rest of src/engine/ is the platform-agnostic synth. cli.c is the other
- * interface (native renderer) and supplies its own allocator instead.
- */
+/* wasm.c -- freestanding wasm32 interface: exported ABI (SPEC.adoc S1.5.3),
+ * bump allocator, and the libc-named mem* symbols this target has no libc
+ * for. rt.c is portable math; cli.c is the other interface (native). */
 #include "engine/msgs.h"
 #include "engine/rt.h"
 #include "engine/tables.h"
@@ -17,9 +12,7 @@
 
 #define WASM_EXPORT __attribute__((visibility("default")))
 
-/* ---------------------------------------------------------------------- */
-/* memcpy / memset / memmove -- real libc-named symbols so that any
- * compiler-synthesized call (struct copies, zero-init, etc.) resolves. */
+/* Real libc-named symbols so compiler-synthesized calls (struct copies, zero-init) resolve. */
 
 void *memcpy(void *dst, const void *src, size_t n) {
     unsigned char *d = (unsigned char *)dst;
@@ -47,7 +40,6 @@ void *memmove(void *dst, const void *src, size_t n) {
     return dst;
 }
 
-/* ---------------------------------------------------------------------- */
 /* bump allocator, growing this module's own linear memory via memory.grow */
 
 extern unsigned char __heap_base;
@@ -87,9 +79,6 @@ uint32_t rt_mem_size(void) {
     return g_arena_next;
 }
 
-/* ---------------------------------------------------------------------- */
-/* the ABI */
-
 static int g_tables_built = 0;
 static int g_dls_ok = 0;
 
@@ -98,11 +87,8 @@ uint32_t msgs_abi_version(void) {
     return 1;
 }
 
-/* The rate this build renders at: BASE_RATE * RESAMPLE_FACTOR (voice.h).
- * Additive to the required ABI, like msgs_debug_active_count below. Exported
- * so a host never has to keep its own copy of a build-time constant -- when
- * dist/compare.js did, a stale copy played every file at the wrong speed and
- * nothing anywhere could notice. */
+/* Exported so a host never keeps its own stale copy of RENDER_RATE --
+ * dist/compare.js once did, and played every file at the wrong speed. */
 WASM_EXPORT
 uint32_t msgs_sample_rate(void) {
     return RENDER_RATE;
@@ -133,11 +119,8 @@ int32_t msgs_init(uint32_t dls_ptr, uint32_t dls_len) {
     return rc == 0 ? 0 : rc;
 }
 
-/* Back to the state right after msgs_load_smf: channels at their defaults,
- * every voice silenced, the loaded song rewound to tick 0 and no longer
- * reporting finished. The sequencer rewind is what lets a host replay or
- * loop a song without reloading it -- msgs_is_finished() is a latch, so
- * resetting only the control plane would leave it stuck on. */
+/* Rewinds the loaded song and clears the finished latch too -- resetting
+ * only the control plane would leave msgs_is_finished() stuck on. */
 WASM_EXPORT
 void msgs_reset(void) {
     synth_construct();
@@ -172,10 +155,7 @@ void msgs_midi(uint32_t status, uint32_t d1, uint32_t d2) {
     synth_midi(status, d1, d2);
 }
 
-/* Temporary debug export for verifying the same-note retrigger fast-release
- * (SPEC.adoc S5.6/0x12ec6). Not part of the required 10-function ABI; harmless
- * to leave exported since it's additive and does not change any required
- * export's signature. Remove if a stricter export surface is desired. */
+/* Temporary debug export (SPEC.adoc S5.6/0x12ec6), additive to the required ABI; remove if a stricter export surface is desired. */
 WASM_EXPORT
 uint32_t msgs_debug_active_count(void) {
     extern Voice g_voices[NUM_VOICES];

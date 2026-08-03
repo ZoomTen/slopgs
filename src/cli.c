@@ -1,20 +1,6 @@
-/* cli.c -- the native interface: a standalone command-line renderer.
- *
- * Same role as wasm.c, different platform. wasm.c exports the ABI and bumps
- * over linear memory; this file provides main() and a malloc-backed rt_alloc,
- * and drives the synth core directly rather than through the uint32-offset
- * ABI (a host pointer does not fit in a uint32 on a 64-bit build).
- *
- * Argv and stdout shape inherited from the legacy Node-based harness runner
- * (minus its leading <wasm> argument); this program produces the same JSON
- * format to stdout, suitable for parsing by analysis scripts:
- *
- *   msgs-render <dls> <smf|""> <loops> <max_frames> <out_wav>
- *
- * <out_wav> receives a canonical 44-byte-header WAV file wrapping
- * interleaved stereo signed-16-bit-LE PCM at the synth's fixed RENDER_RATE
- * (voice.h). One JSON line goes to stdout.
- */
+/* cli.c -- the native interface: a standalone command-line renderer, same
+ * role as wasm.c (drives the synth core directly; a host pointer doesn't
+ * fit in wasm.c's uint32 ABI). msgs-render <dls> <smf|""> <loops> <max_frames> <out_wav> */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,10 +13,8 @@
 #include "engine/smf.h"
 #include "engine/voice.h"
 
-/* ---------------------------------------------------------------------- */
-/* allocator: malloc, never freed -- gm.dls's sample data is referenced in
- * place (SPEC.adoc S1.5.5) and must outlive every render call, and the process
- * renders exactly once and exits. */
+/* allocator: malloc, never freed -- gm.dls's sample data (SPEC.adoc S1.5.5)
+ * must outlive every render call; the process renders once and exits. */
 
 static uint32_t g_total = 0;
 
@@ -49,8 +33,6 @@ uint32_t rt_mem_size(void) {
     return g_total;
 }
 
-/* ---------------------------------------------------------------------- */
-
 static unsigned char *read_file(const char *path, uint32_t *len_out) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -68,10 +50,8 @@ static unsigned char *read_file(const char *path, uint32_t *len_out) {
     return buf;
 }
 
-/* Canonical 44-byte PCM WAV header, stereo 16-bit @ RENDER_RATE. Written once
- * as a zero-size placeholder before streaming render output, then rewritten
- * in place once `frames` is known -- the render loop below doesn't know the
- * total length until the synth reports it finished. */
+/* Canonical 44-byte PCM WAV header, stereo 16-bit @ RENDER_RATE. Written as a
+ * zero-size placeholder, rewritten once `frames` is known (streaming render). */
 static void write_wav_header(FILE *f, unsigned long frames) {
     uint32_t sample_rate = RENDER_RATE, byte_rate = RENDER_RATE * 4;
     uint32_t data_bytes = (uint32_t)frames * 4;
@@ -108,15 +88,8 @@ static void emit(int abi, int init_ret, int load_ret, unsigned long frames,
 
 #define CHUNK 4096
 
-/* ---------------------------------------------------------------------- */
-/* --selftest: the replay/reload check.
- *
- * msgs_is_finished() is a latch. Before smf_rewind() existed, nothing ever
- * cleared it, so the *second* song a host loaded reported "finished" on its
- * first render call and played as silence -- the bug this guards. Renders a
- * song to completion, then loads it again and asserts the sequencer really
- * did go back to the top and produce the same audio.
- */
+/* --selftest: replay/reload check, guards a real bug -- before smf_rewind()
+ * existed, msgs_is_finished()'s latch never cleared, so a second loaded song reported "finished" immediately. */
 static int selftest(const char *dls_path, const char *smf_path) {
     uint32_t dls_len = 0, smf_len = 0;
     unsigned char *dls = read_file(dls_path, &dls_len);
@@ -180,21 +153,13 @@ static int selftest(const char *dls_path, const char *smf_path) {
     for (uint32_t i = 0; i < n * 2; i++) { long long s = buf[i]; e3 += s < 0 ? -s : s; }
     if (n == 0) { fprintf(stderr, "FAIL: rewound song rendered no frames\n"); fail = 1; }
 
-    /* Pool saturation: the reserve top-up's Branch B fast-releases active
-     * voices, and a marked voice keeps rendering for its full ~70ms release
-     * before it can be recycled -- so if the top-up ever runs faster than
-     * that drain time it marks another batch before the last one freed
-     * anything and walks the whole pool into silence. That is exactly the
-     * defect TOPUP_INTERVAL_FRAMES (voice.c) exists to prevent, and it is
-     * invisible to the probe corpus (100ms event spacing) but audible on
-     * dense field MIDIs. SPEC.adoc S5.5 [M]: 80 held note-ons must leave 48
-     * sounding. Uses gm.dls program 0 via a plain reset -- no SMF needed, so
-     * this renders through render_frames rather than smf_render: the song is
-     * still loaded here, and smf_render would keep dispatching its events into
-     * the block. That made the window's contents depend on how much song the
-     * CHUNK-sized probe render above had consumed -- a fixed frame count, so
-     * half as much real time at RESAMPLE_FACTOR=2, which shifted the window and
-     * cost one voice (47/48). */
+    /* Pool saturation: Branch B fast-releases active voices, which keep
+     * rendering for their full release before recycling -- exactly the defect
+     * TOPUP_INTERVAL_FRAMES (voice.c, SPEC_LOG "reserve top-up tick period")
+     * exists to prevent. SPEC.adoc S5.5 [M]: 80 held note-ons must leave 48
+     * sounding. Renders via render_frames, not smf_render: dispatching song
+     * events into a fixed-frame window shifted it and cost one voice (47/48)
+     * in an earlier version of this check. */
     synth_construct();
     for (int k = 0; k < 80; k++) voice_note_on(0, 36 + (k % 60), 100);
     for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++) render_frames(buf, CHUNK); /* ~7.4s */

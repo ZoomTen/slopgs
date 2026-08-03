@@ -1,11 +1,4 @@
-/* tables.c -- runtime-built lookup tables, SPEC.adoc Appendix T.
- *
- * Every table below is built with the *truncating* toward-zero conversion
- * (SPEC.adoc S1.4.2: "every float->int conversion truncates toward zero,
- * never rounds" -- the driver's own 0x106e0 helper). A plain C `(int32_t)`
- * cast on a double truncates toward zero per the C standard, which is
- * exactly this semantic -- no rounding intrinsic is used anywhere here.
- */
+/* tables.c -- SPEC.adoc Appendix T. All tables truncate toward zero (S1.4.2, driver's 0x106e0 helper) via a plain (int32_t) cast. */
 #include "tables.h"
 #include "rt.h"
 
@@ -25,13 +18,11 @@ static int32_t trunc_i32(double x) {
 void tables_build(void) {
     int i;
 
-    /* T2: cents ratio table, n = -100..100 */
     for (i = -100; i <= 100; i++) {
         double v = 4096.0 * rt_pow(2.0, (double)i / 1200.0);
         g_table_cents[i + 100] = trunc_i32(v);
     }
 
-    /* T3: semitone ratio table, n = -48..48 */
     for (i = -48; i <= 48; i++) {
         double v = 4096.0 * rt_pow(2.0, (double)i / 12.0);
         g_table_semi[i + 48] = trunc_i32(v);
@@ -59,14 +50,7 @@ void tables_build(void) {
         g_table_dbamp[i + 1000] = trunc_i32(v);
     }
 
-    /* Table C: envelope/time-progress shaping curve, i = 0..200. SPEC.adoc
-     * T.4: t[i] = trunc(1000 + log10((i/200)^2) * 10000 * (1/96)). The two
-     * .rdata fraction constants driving this loop are float32 in the
-     * original (0x11d04 = 1/200, 0x11cfc = 1/96); 1/200 in particular is
-     * the float32 0.004999999888241291, not the exact decimal 0.005 --
-     * using the exact decimal changes t[200] from SPEC's 999 to 1000, so
-     * the rounding is load-bearing and is reproduced here as the exact
-     * double promotion of that float32 bit pattern. */
+    /* Table C: SPEC.adoc T.4 formula; the 1/200, 1/96 constants are float32 in the original and load-bearing (SPEC_LOG item46). */
     g_table_envshape[0] = 0;
     for (i = 1; i <= 200; i++) {
         double x = (double)i * 0.004999999888241291; /* 1/200 float32, 0x11d04 */
